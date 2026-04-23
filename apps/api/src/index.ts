@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import rateLimit from "@fastify/rate-limit";
+import multipart from "@fastify/multipart";
 import { createYoga } from "graphql-yoga";
 import { schema } from "./graphql/schema";
 import { neo4jPlugin } from "./plugins/neo4j";
@@ -25,6 +26,7 @@ async function main() {
   await fastify.register(jwt, { secret: process.env.JWT_SECRET || "change-me" });
   await fastify.register(neo4jPlugin);
   await fastify.register(postgresPlugin);
+  await fastify.register(multipart);
   await fastify.register(authPlugin);
   await fastify.register(chatRoutes);
   await fastify.register(authRoutes);
