@@ -29,18 +29,20 @@ export function UserProfileBadge() {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-700/50 transition-colors"
+        className="flex items-center justify-center w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/40 hover:scale-105 transition-all duration-200"
       >
-        <div className="w-7 h-7 rounded-full bg-indigo-500/20 flex items-center justify-center text-xs font-semibold text-indigo-300">
-          U
-        </div>
+        U
       </button>
 
       {open && (
-        <div className="absolute bottom-full right-0 mb-2 w-40 bg-gray-900 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50">
+        <div className="absolute bottom-full right-0 mb-2 w-44 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl overflow-hidden z-50">
+          <div className="px-3 py-2 border-b border-gray-800">
+            <p className="text-xs text-gray-500">Signed in as</p>
+            <p className="text-sm font-medium text-gray-200">User</p>
+          </div>
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
           >
             <LogOut className="w-4 h-4" />
             Logout
@@ -81,12 +83,16 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
     return instance?.state === "active";
   };
 
+  const isOpen = (id: string) => {
+    return state.instances.some((i) => i.id === id);
+  };
+
   return (
     <>
       {/* Context menu */}
       {contextMenu && (
         <div
-          className="fixed z-[70] bg-gray-900 border border-gray-700 rounded-lg shadow-xl overflow-hidden"
+          className="fixed z-[70] bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl overflow-hidden py-1"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -112,49 +118,59 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
       )}
 
       {/* Dock */}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 px-2 py-1.5 bg-gray-900/90 backdrop-blur-md border border-gray-700/50 rounded-2xl shadow-2xl">
-        {/* All Apps */}
-        <button
-          onClick={() => dispatch({ type: "TOGGLE_LAUNCHER" })}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-gray-700/50 transition-colors"
-          title="All Apps"
-        >
-          <LayoutGrid className="w-5 h-5 text-gray-400" />
-        </button>
+      <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50">
+        <div className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-900/70 backdrop-blur-2xl border border-white/10 rounded-[2rem] shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)]">
+          {/* All Apps */}
+          <button
+            onClick={() => dispatch({ type: "TOGGLE_LAUNCHER" })}
+            className="flex items-center justify-center w-11 h-11 rounded-2xl text-gray-400 hover:text-white hover:bg-white/10 transition-all duration-200"
+            title="All Apps"
+          >
+            <LayoutGrid className="w-5 h-5" />
+          </button>
 
-        <div className="w-px h-6 bg-gray-700/50 mx-1" />
+          <div className="w-px h-7 bg-white/10 mx-1" />
 
-        {/* Docked apps */}
-        <div className="flex items-center gap-1">
-          {state.dockedIds.map((id) => {
-            const entry = registry.find((r) => r.id === id);
-            if (!entry) return null;
-            const active = isActive(id);
-            return (
-              <button
-                key={id}
-                onClick={() => handleDockClick(id)}
-                onContextMenu={(e) => handleContextMenu(e, id)}
-                className={`relative flex items-center justify-center w-10 h-10 rounded-xl transition-all ${
-                  active
-                    ? "bg-indigo-500/20 text-indigo-300 ring-2 ring-indigo-500/50"
-                    : "hover:bg-gray-700/50 text-gray-400 hover:text-gray-200"
-                }`}
-                title={entry.name}
-              >
-                <span className="text-sm font-bold">{entry.icon[0]}</span>
-                {state.instances.some((i) => i.id === id && i.mode === "window") && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-indigo-400 rounded-full" />
-                )}
-              </button>
-            );
-          })}
+          {/* Docked apps */}
+          <div className="flex items-center gap-1">
+            {state.dockedIds.map((id) => {
+              const entry = registry.find((r) => r.id === id);
+              if (!entry) return null;
+              const active = isActive(id);
+              const open = isOpen(id);
+              return (
+                <button
+                  key={id}
+                  onClick={() => handleDockClick(id)}
+                  onContextMenu={(e) => handleContextMenu(e, id)}
+                  className={`group relative flex items-center justify-center w-11 h-11 rounded-2xl transition-all duration-200 ${
+                    active
+                      ? "bg-white/10 text-white"
+                      : "text-gray-400 hover:text-white hover:bg-white/5"
+                  }`}
+                  title={entry.name}
+                >
+                  <span className={`text-lg font-bold transition-transform duration-200 ${active ? "scale-110" : "group-hover:scale-110"}`}>
+                    {entry.icon[0]}
+                  </span>
+                  {/* Active indicator dot */}
+                  {active && (
+                    <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-400 rounded-full shadow-[0_0_6px_rgba(99,102,241,0.6)]" />
+                  )}
+                  {/* Open but dormant indicator */}
+                  {!active && open && (
+                    <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-gray-500 rounded-full" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="w-px h-7 bg-white/10 mx-1" />
+
+          {/* User profile */}
+          <UserProfileBadge />
         </div>
-
-        <div className="w-px h-6 bg-gray-700/50 mx-1" />
-
-        {/* User profile */}
-        <UserProfileBadge />
       </div>
     </>
   );

@@ -12,7 +12,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { graphqlClient } from "@/lib/api";
 import type { ShellAPI } from "@/sdk/types";
-import { Search, MapPin } from "lucide-react";
+import { Search, MapPin, X } from "lucide-react";
 
 type APINode = { id: string; name: string; class: string };
 type APIEdge = { id: string; type: string; sourceId: string; targetId: string };
@@ -218,35 +218,51 @@ export default function ServiceMapApp({ shell }: { shell: ShellAPI }) {
   }
 
   return (
-    <div className="h-full w-full flex flex-col">
-      {/* Header bar */}
-      <div className="flex items-center gap-4 px-4 py-2 bg-gray-900 border-b border-gray-800">
-        <div className="flex items-center gap-2 text-sm text-gray-400">
-          <MapPin className="w-4 h-4 text-indigo-400" />
-          <span className="text-gray-300 font-medium">{rootName || rootId}</span>
-          <span className="text-gray-600">({rootId})</span>
+    <div className="h-full w-full relative">
+      {/* Floating header */}
+      <div className="absolute top-4 left-4 right-4 z-10 flex items-center gap-3">
+        {/* Breadcrumb pill */}
+        <div className="flex items-center gap-2 px-3 py-2 bg-gray-900/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-lg shadow-black/20">
+          <div className="w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center">
+            <MapPin className="w-3.5 h-3.5 text-indigo-400" />
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-sm font-medium text-gray-200">{rootName || rootId}</span>
+            <span className="text-xs text-gray-600 font-mono">{rootId}</span>
+          </div>
         </div>
-        <div className="flex-1" />
-        <div ref={searchRef} className="relative w-72">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => handleSearch(e.target.value)}
-            onFocus={() => searchResults.length > 0 && setShowResults(true)}
-            placeholder="Search for a CI to explore..."
-            className="w-full pl-9 pr-3 py-1.5 rounded bg-gray-950 border border-gray-700 focus:outline-none focus:border-indigo-500 text-sm text-gray-200"
-          />
+
+        {/* Search pill */}
+        <div ref={searchRef} className="relative flex-1 max-w-md">
+          <div className="flex items-center gap-2 px-3 py-2 bg-gray-900/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-lg shadow-black/20 focus-within:border-indigo-500/50 focus-within:shadow-indigo-500/10 transition-all">
+            <Search className="w-4 h-4 text-gray-500 shrink-0" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              onFocus={() => searchResults.length > 0 && setShowResults(true)}
+              placeholder="Search for a CI..."
+              className="flex-1 bg-transparent text-sm text-gray-200 placeholder-gray-600 focus:outline-none"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => { setSearchQuery(""); setSearchResults([]); setShowResults(false); }}
+                className="text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           {showResults && searchResults.length > 0 && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+            <div className="absolute top-full left-0 right-0 mt-2 bg-gray-900/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden">
               {searchResults.map((ci) => (
                 <button
                   key={ci.id}
                   onClick={() => selectResult(ci.id, ci.name)}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-800 transition-colors"
+                  className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-white/5 transition-colors"
                 >
                   <span className="text-gray-300">{ci.name}</span>
-                  <span className="text-xs text-gray-500 ml-auto">{ci.class}</span>
+                  <span className="text-xs text-gray-500 ml-auto px-1.5 py-0.5 bg-gray-800 rounded-md">{ci.class}</span>
                 </button>
               ))}
             </div>
@@ -255,7 +271,7 @@ export default function ServiceMapApp({ shell }: { shell: ShellAPI }) {
       </div>
 
       {/* Graph canvas */}
-      <div className="flex-1">
+      <div className="h-full w-full">
         <ReactFlow
           nodes={nodes}
           edges={edges}
