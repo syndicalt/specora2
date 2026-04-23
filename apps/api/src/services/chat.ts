@@ -7,11 +7,11 @@ function getOpenAI(): OpenAI | null {
   return new OpenAI({ apiKey: key });
 }
 
-function getProvaraConfig(): { url: string; key: string } | null {
+function getProvaraConfig(): { url: string; key: string; tenantId: string | null } | null {
   const url = process.env.PROVARA_URL;
   const key = process.env.PROVARA_API_KEY;
   if (!url || !key) return null;
-  return { url, key };
+  return { url, key, tenantId: process.env.PROVARA_TENANT_ID || null };
 }
 
 async function callProvara(
@@ -19,12 +19,16 @@ async function callProvara(
   tools: OpenAI.Chat.ChatCompletionTool[]
 ): Promise<OpenAI.Chat.ChatCompletion> {
   const config = getProvaraConfig()!;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${config.key}`,
+  };
+  if (config.tenantId) {
+    headers["X-Tenant-ID"] = config.tenantId;
+  }
   const response = await fetch(`${config.url}/v1/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${config.key}`,
-    },
+    headers,
     body: JSON.stringify({
       model: "provara-router",
       messages,
@@ -247,6 +251,7 @@ export async function chat(
   ];
 
   let completion: OpenAI.Chat.ChatCompletion;
+  const usedProvara = !!provara;
   if (provara) {
     completion = await callProvara(apiMessages, TOOLS);
   } else {
@@ -274,16 +279,25 @@ export async function chat(
       });
     }
 
-    const secondCompletion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...messages.map((m) => ({ role: m.role as any, content: m.content })),
-        { role: "assistant", content: message.content || "", tool_calls: message.tool_calls },
-        ...toolResults,
-      ],
-      temperature: 0.3,
-    });
+    const secondMessages = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...messages.map((m) => ({ role: m.role as any, content: m.content })),
+      { role: "assistant", content: message.content || "", tool_calls: message.tool_calls },
+      ...toolResults,
+    ];
+
+    let secondCompletion: OpenAI.Chat.ChatCompletion;
+    if (usedProvara) {
+      secondCompletion = await callProvara(secondMessages, TOOLS);
+    } else {
+      secondCompletion = await openai!.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: secondMessages,
+        tools: TOOLS,
+        tool_choice: "auto",
+        temperature: 0.3,
+      });
+    }
 
     return secondCompletion.choices[0].message.content || "I processed the data but have no response.";
   }

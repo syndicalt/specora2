@@ -406,6 +406,78 @@ describe("chat", () => {
     delete process.env.PROVARA_API_KEY;
   });
 
+  it("sends X-Tenant-ID header when PROVARA_TENANT_ID is set", async () => {
+    delete process.env.OPENAI_API_KEY;
+    process.env.PROVARA_URL = "https://api.provara.xyz";
+    process.env.PROVARA_API_KEY = "pk-test";
+    process.env.PROVARA_TENANT_ID = "MHgS8IpDodNe";
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: "Hello tenant" } }],
+      }),
+    });
+    global.fetch = mockFetch;
+
+    const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
+    expect(result).toBe("Hello tenant");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.provara.xyz/v1/chat/completions",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer pk-test",
+          "X-Tenant-ID": "MHgS8IpDodNe",
+        }),
+      })
+    );
+
+    delete process.env.PROVARA_URL;
+    delete process.env.PROVARA_API_KEY;
+    delete process.env.PROVARA_TENANT_ID;
+  });
+
+  it("routes second completion through Provara when tool calls are used", async () => {
+    delete process.env.OPENAI_API_KEY;
+    process.env.PROVARA_URL = "https://api.provara.xyz";
+    process.env.PROVARA_API_KEY = "pk-test";
+
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          choices: [{
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-1",
+                function: { name: "count_cis", arguments: JSON.stringify({ class: "Server" }) },
+              }],
+            },
+          }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          choices: [{ message: { content: "Provara tool result" } }],
+        }),
+      });
+    global.fetch = mockFetch;
+
+    const fastify = mockFastify([[
+      { get: (k: string) => k === "total" ? { toNumber: () => 5 } : undefined },
+    ]]);
+
+    const result = await chat([{ role: "user", content: "How many servers?" }], fastify);
+    expect(result).toBe("Provara tool result");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    delete process.env.PROVARA_URL;
+    delete process.env.PROVARA_API_KEY;
+  });
+
   it("throws when Provara returns an error", async () => {
     delete process.env.OPENAI_API_KEY;
     process.env.PROVARA_URL = "https://api.provara.xyz";

@@ -33,6 +33,7 @@ Specora is an open-source, AI-native ITSM platform. This document provides conte
 | `OPENAI_API_KEY` | API | OpenAI API key for chat (fallback if Provara not set) |
 | `PROVARA_URL` | API | Provara API endpoint for model routing |
 | `PROVARA_API_KEY` | API | Provara API key |
+| `PROVARA_TENANT_ID` | API | Provara tenant ID for multi-tenant mode (optional) |
 | `PATHLIGHT_URL` | Worker | Pathlight trace collector URL (optional) |
 | `UPLOAD_DIR` | API | Local directory for uploaded discovery files (default: `./uploads`) |
 
