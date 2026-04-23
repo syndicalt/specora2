@@ -26,7 +26,9 @@ async function callProvara(
   if (config.tenantId) {
     headers["X-Tenant-ID"] = config.tenantId;
   }
-  const response = await fetch(`${config.url}/v1/chat/completions`, {
+  // Normalize URL: accept either https://host/v1 or https://host
+  const baseUrl = config.url.replace(/\/?v1\/?$/, "");
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: "POST",
     headers,
     body: JSON.stringify({
