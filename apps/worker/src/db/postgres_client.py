@@ -35,4 +35,40 @@ class PostgresClient:
                 status, job_id
             )
 
+    async def create_discovery_job(self, source_id, file_path):
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "INSERT INTO discovery_jobs (source_id, file_path, status) VALUES ($1, $2, 'pending') RETURNING id",
+                source_id, file_path
+            )
+
+    async def get_pending_discovery_jobs(self, limit=10):
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, source_id, file_path FROM discovery_jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT $1",
+                limit
+            )
+            return [dict(row) for row in rows]
+
+    async def mark_discovery_job_status(self, job_id, status, stats=None):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discovery_jobs SET status = $1, stats = $2, updated_at = NOW() WHERE id = $3",
+                status, stats, job_id
+            )
+
+    async def get_reconciliation_rules(self):
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT ci_class, match_keys, conflict_strategy FROM reconciliation_rules ORDER BY priority DESC"
+            )
+            return [dict(row) for row in rows]
+
+    async def log_reconciliation(self, discovery_job_id, ci_id, action, old_values=None, new_values=None):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO reconciliation_logs (discovery_job_id, ci_id, action, old_values, new_values) VALUES ($1, $2, $3, $4, $5)",
+                discovery_job_id, ci_id, action, old_values, new_values
+            )
+
 postgres_client = PostgresClient()

@@ -281,3 +281,115 @@ describe("Mutation.ingestCMDB", () => {
     ).rejects.toThrow("Failed to queue ingestion job");
   });
 });
+
+function mockPg(rows: any[] = []) {
+  return {
+    query: vi.fn().mockResolvedValue({ rows }),
+  };
+}
+
+function mockContextWithPg(session: any, pg: any, worker = {}) {
+  return {
+    neo4j: { session: () => session },
+    pg,
+    user: { id: "usr-1", email: "alice@specora.dev" },
+    worker,
+  };
+}
+
+describe("Query.discoverySources", () => {
+  it("returns discovery sources from postgres", async () => {
+    const pg = mockPg([{ id: "src-1", name: "AWS", type: "cloud", config: {}, createdAt: "2024-01-01" }]);
+    const result = await resolvers.Query.discoverySources(null, {}, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("AWS");
+  });
+});
+
+describe("Query.discoveryJobs", () => {
+  it("returns discovery jobs from postgres", async () => {
+    const pg = mockPg([{ id: "job-1", status: "pending" }]);
+    const result = await resolvers.Query.discoveryJobs(null, {}, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe("Query.discoveryJob", () => {
+  it("returns a single discovery job by id", async () => {
+    const pg = mockPg([{ id: "job-1", status: "completed" }]);
+    const result = await resolvers.Query.discoveryJob(null, { id: "job-1" }, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result.status).toBe("completed");
+  });
+
+  it("returns null when not found", async () => {
+    const pg = mockPg([]);
+    const result = await resolvers.Query.discoveryJob(null, { id: "missing" }, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result).toBeNull();
+  });
+});
+
+describe("Mutation.createDiscoverySource", () => {
+  it("creates a discovery source", async () => {
+    const pg = mockPg([{ id: "src-1", name: "CSV", type: "file", config: "{}", createdAt: "2024-01-01" }]);
+    const result = await resolvers.Mutation.createDiscoverySource(null, { name: "CSV", type: "file" }, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result.name).toBe("CSV");
+    expect(pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO discovery_sources"),
+      expect.anything()
+    );
+  });
+});
+
+describe("Mutation.deleteDiscoverySource", () => {
+  it("deletes a discovery source", async () => {
+    const pg = mockPg([]);
+    const result = await resolvers.Mutation.deleteDiscoverySource(null, { id: "src-1" }, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result).toBe(true);
+  });
+});
+
+describe("ConfigurationItem.dataQualityScore", () => {
+  it("returns the score when present", () => {
+    expect(resolvers.ConfigurationItem.dataQualityScore({ dataQualityScore: 0.85 }, {}, {})).toBe(0.85);
+  });
+
+  it("returns null when absent", () => {
+    expect(resolvers.ConfigurationItem.dataQualityScore({}, {}, {})).toBeNull();
+  });
+});
+
+describe("ConfigurationItem.lastDiscoveredAt", () => {
+  it("returns the timestamp when present", () => {
+    expect(resolvers.ConfigurationItem.lastDiscoveredAt({ lastDiscoveredAt: "2024-01-01" }, {}, {})).toBe("2024-01-01");
+  });
+
+  it("returns null when absent", () => {
+    expect(resolvers.ConfigurationItem.lastDiscoveredAt({}, {}, {})).toBeNull();
+  });
+});
+
+describe("ConfigurationItem.health", () => {
+  it("returns health scores for a CI", async () => {
+    const session = mockNeo4jSession([{ get: (k: string) => k === "relCount" ? { toNumber: () => 2 } : null }]);
+    const result = await resolvers.ConfigurationItem.health(
+      { id: "ci-1", name: "Web", class: "Server", lastDiscoveredAt: "2024-01-01" },
+      {},
+      mockContextWithPg(session, mockPg())
+    );
+    expect(result.freshness).toBe(1.0);
+    expect(result.completeness).toBe(1.0);
+    expect(result.relationshipValidity).toBe(1.0);
+    expect(result.overall).toBe(1.0);
+  });
+
+  it("returns lower freshness when not discovered", async () => {
+    const session = mockNeo4jSession([{ get: (k: string) => k === "relCount" ? { toNumber: () => 0 } : null }]);
+    const result = await resolvers.ConfigurationItem.health(
+      { id: "ci-1", name: "Web", class: "Server" },
+      {},
+      mockContextWithPg(session, mockPg())
+    );
+    expect(result.freshness).toBe(0.0);
+    expect(result.relationshipValidity).toBe(0.5);
+  });
+});

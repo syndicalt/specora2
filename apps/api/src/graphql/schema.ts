@@ -11,6 +11,9 @@ const typeDefs = `
     environment: String
     attributes: JSON
     relationships: [Relationship!]!
+    dataQualityScore: Float
+    lastDiscoveredAt: String
+    health: CSDMV5HealthScore
   }
 
   type Relationship {
@@ -36,6 +39,31 @@ const typeDefs = `
   type IngestionJob {
     jobId: ID!
     status: String!
+  }
+
+  type DiscoverySource {
+    id: ID!
+    name: String!
+    type: String!
+    config: JSON
+    createdAt: String!
+  }
+
+  type DiscoveryJob {
+    id: ID!
+    sourceId: ID
+    filePath: String
+    status: String!
+    stats: JSON
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  type CSDMV5HealthScore {
+    freshness: Float
+    completeness: Float
+    relationshipValidity: Float
+    overall: Float
   }
 
   input CIFilterInput {
@@ -70,6 +98,9 @@ const typeDefs = `
     ci(id: ID!): ConfigurationItem
     cis(filter: CIFilterInput): [ConfigurationItem!]!
     serviceMap(rootId: ID!): ServiceMap!
+    discoverySources: [DiscoverySource!]!
+    discoveryJobs: [DiscoveryJob!]!
+    discoveryJob(id: ID!): DiscoveryJob
   }
 
   type Mutation {
@@ -78,6 +109,8 @@ const typeDefs = `
     deleteCI(id: ID!): Boolean!
     createRelationship(input: CreateRelationshipInput!): Relationship!
     ingestCMDB(payload: JSON): IngestionJob!
+    createDiscoverySource(name: String!, type: String!, config: JSON): DiscoverySource!
+    deleteDiscoverySource(id: ID!): Boolean!
   }
 `;
 

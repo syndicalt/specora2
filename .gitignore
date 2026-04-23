@@ -34,3 +34,4 @@ venv/
 coverage/
 htmlcov/
 .coverage
+apps/api/uploads/

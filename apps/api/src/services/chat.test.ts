@@ -40,10 +40,12 @@ describe("chat", () => {
     process.env.OPENAI_API_KEY = "sk-test";
   });
 
-  it("returns message when OpenAI key is missing", async () => {
+  it("returns message when no AI provider is configured", async () => {
     delete process.env.OPENAI_API_KEY;
+    delete process.env.PROVARA_URL;
+    delete process.env.PROVARA_API_KEY;
     const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
-    expect(result).toContain("OpenAI API key is not configured");
+    expect(result).toContain("AI chat is not configured");
   });
 
   it("calls OpenAI and returns direct response", async () => {
@@ -373,5 +375,52 @@ describe("chat", () => {
 
     const result = await chat([{ role: "user", content: "Test" }], mockFastify());
     expect(result).toBe("Unknown tool handled");
+  });
+
+  it("routes through Provara when configured", async () => {
+    delete process.env.OPENAI_API_KEY;
+    process.env.PROVARA_URL = "https://api.provara.xyz";
+    process.env.PROVARA_API_KEY = "pk-test";
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: "Provara says hello" } }],
+      }),
+    });
+    global.fetch = mockFetch;
+
+    const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
+    expect(result).toBe("Provara says hello");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.provara.xyz/v1/chat/completions",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer pk-test",
+        }),
+      })
+    );
+
+    delete process.env.PROVARA_URL;
+    delete process.env.PROVARA_API_KEY;
+  });
+
+  it("throws when Provara returns an error", async () => {
+    delete process.env.OPENAI_API_KEY;
+    process.env.PROVARA_URL = "https://api.provara.xyz";
+    process.env.PROVARA_API_KEY = "pk-test";
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: () => Promise.resolve("Internal error"),
+    });
+    global.fetch = mockFetch;
+
+    await expect(chat([{ role: "user", content: "Hi" }], mockFastify())).rejects.toThrow("Provara error 500");
+
+    delete process.env.PROVARA_URL;
+    delete process.env.PROVARA_API_KEY;
   });
 });

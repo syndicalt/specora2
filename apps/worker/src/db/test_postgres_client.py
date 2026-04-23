@@ -77,3 +77,61 @@ async def test_mark_job_status(client):
 
     await client.mark_job_status(1, "completed")
     conn.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_discovery_job(client):
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value="dj-1")
+    client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
+
+    job_id = await client.create_discovery_job("src-1", "/tmp/file.csv")
+    assert job_id == "dj-1"
+    conn.fetchval.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_pending_discovery_jobs(client):
+    conn = AsyncMock()
+    row = MagicMock()
+    row.items.return_value = [("id", "dj-1"), ("source_id", "src-1"), ("file_path", "/tmp/file.csv")]
+    conn.fetch = AsyncMock(return_value=[row])
+    client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
+
+    jobs = await client.get_pending_discovery_jobs(limit=3)
+    assert len(jobs) == 1
+    conn.fetch.assert_awaited_once_with(
+        "SELECT id, source_id, file_path FROM discovery_jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT $1",
+        3
+    )
+
+
+@pytest.mark.asyncio
+async def test_mark_discovery_job_status(client):
+    conn = AsyncMock()
+    client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
+
+    await client.mark_discovery_job_status("dj-1", "completed", {"created": 5})
+    conn.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_reconciliation_rules(client):
+    conn = AsyncMock()
+    row = MagicMock()
+    row.items.return_value = [("ci_class", "Server"), ("match_keys", ["hostname"])]
+    conn.fetch = AsyncMock(return_value=[row])
+    client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
+
+    rules = await client.get_reconciliation_rules()
+    assert len(rules) == 1
+    conn.fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_log_reconciliation(client):
+    conn = AsyncMock()
+    client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
+
+    await client.log_reconciliation("dj-1", "ci-1", "created", None, {"name": "Web"})
+    conn.execute.assert_awaited_once()

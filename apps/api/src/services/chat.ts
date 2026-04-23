@@ -7,6 +7,39 @@ function getOpenAI(): OpenAI | null {
   return new OpenAI({ apiKey: key });
 }
 
+function getProvaraConfig(): { url: string; key: string } | null {
+  const url = process.env.PROVARA_URL;
+  const key = process.env.PROVARA_API_KEY;
+  if (!url || !key) return null;
+  return { url, key };
+}
+
+async function callProvara(
+  messages: { role: string; content: string }[],
+  tools: OpenAI.Chat.ChatCompletionTool[]
+): Promise<OpenAI.Chat.ChatCompletion> {
+  const config = getProvaraConfig()!;
+  const response = await fetch(`${config.url}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${config.key}`,
+    },
+    body: JSON.stringify({
+      model: "provara-router",
+      messages,
+      tools,
+      tool_choice: "auto",
+      temperature: 0.3,
+    }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Provara error ${response.status}: ${text}`);
+  }
+  return (await response.json()) as OpenAI.Chat.ChatCompletion;
+}
+
 const SYSTEM_PROMPT = `You are Specora Assistant, an AI expert in IT Service Management and the CSDMv5 data model.
 You help users explore their CMDB (Configuration Management Database), understand service dependencies, and navigate IT infrastructure.
 
@@ -202,20 +235,29 @@ export async function chat(
   fastify: FastifyInstance
 ): Promise<string> {
   const openai = getOpenAI();
-  if (!openai) {
-    return "OpenAI API key is not configured. Set the OPENAI_API_KEY environment variable to enable AI chat.";
+  const provara = getProvaraConfig();
+
+  if (!provara && !openai) {
+    return "AI chat is not configured. Set OPENAI_API_KEY or PROVARA_URL + PROVARA_API_KEY.";
   }
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...messages.map((m) => ({ role: m.role as any, content: m.content })),
-    ],
-    tools: TOOLS,
-    tool_choice: "auto",
-    temperature: 0.3,
-  });
+  const apiMessages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    ...messages.map((m) => ({ role: m.role as any, content: m.content })),
+  ];
+
+  let completion: OpenAI.Chat.ChatCompletion;
+  if (provara) {
+    completion = await callProvara(apiMessages, TOOLS);
+  } else {
+    completion = await openai!.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: apiMessages,
+      tools: TOOLS,
+      tool_choice: "auto",
+      temperature: 0.3,
+    });
+  }
 
   const message = completion.choices[0].message;
 

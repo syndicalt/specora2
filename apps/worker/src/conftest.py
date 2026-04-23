@@ -1,6 +1,6 @@
 import sys
 import types
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 # Prevent heavy imports from loading real implementations during tests
 sys.modules["grpc"] = MagicMock()
@@ -8,6 +8,12 @@ sys.modules["grpc.aio"] = MagicMock()
 sys.modules["neo4j"] = MagicMock()
 sys.modules["neo4j.GraphDatabase"] = MagicMock()
 sys.modules["asyncpg"] = MagicMock()
+
+pathlight_mock = MagicMock()
+pathlight_instance_mock = MagicMock()
+pathlight_instance_mock.close = AsyncMock()
+pathlight_mock.AsyncPathlight = MagicMock(return_value=pathlight_instance_mock)
+sys.modules["pathlight"] = pathlight_mock
 
 # Set up proto modules as real module objects so imports resolve consistently
 proto = types.ModuleType("src.proto")

@@ -6,10 +6,12 @@ import rateLimit from "@fastify/rate-limit";
 import { createYoga } from "graphql-yoga";
 import { schema } from "./graphql/schema";
 import { neo4jPlugin } from "./plugins/neo4j";
+import { postgresPlugin } from "./plugins/postgres";
 import { authPlugin } from "./plugins/jwt";
 import { workerClient } from "./grpc/client";
 import { chatRoutes } from "./routes/chat";
 import { authRoutes } from "./routes/auth";
+import { discoveryRoutes } from "./routes/discovery";
 
 const fastify = Fastify({ logger: { transport: { target: "pino-pretty" } } });
 
@@ -22,9 +24,11 @@ async function main() {
   });
   await fastify.register(jwt, { secret: process.env.JWT_SECRET || "change-me" });
   await fastify.register(neo4jPlugin);
+  await fastify.register(postgresPlugin);
   await fastify.register(authPlugin);
   await fastify.register(chatRoutes);
   await fastify.register(authRoutes);
+  await fastify.register(discoveryRoutes);
 
   fastify.get("/health", async () => ({ status: "ok" }));
 
@@ -36,7 +40,7 @@ async function main() {
         const token = (request.headers as any).authorization?.replace("Bearer ", "");
         if (token) user = await fastify.jwt.verify(token);
       } catch {}
-      return { neo4j: fastify.neo4j, user, worker: workerClient };
+      return { neo4j: fastify.neo4j, pg: fastify.pg, user, worker: workerClient };
     },
   });
 

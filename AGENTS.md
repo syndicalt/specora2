@@ -30,6 +30,11 @@ Specora is an open-source, AI-native ITSM platform. This document provides conte
 | `WORKER_GRPC_HOST` | API | gRPC target (e.g., `worker:50051`) |
 | `GRPC_PORT` | Worker | Port for gRPC server |
 | `NEXT_PUBLIC_API_URL` | Web | GraphQL endpoint URL |
+| `OPENAI_API_KEY` | API | OpenAI API key for chat (fallback if Provara not set) |
+| `PROVARA_URL` | API | Provara API endpoint for model routing |
+| `PROVARA_API_KEY` | API | Provara API key |
+| `PATHLIGHT_URL` | Worker | Pathlight trace collector URL (optional) |
+| `UPLOAD_DIR` | API | Local directory for uploaded discovery files (default: `./uploads`) |
 
 ## Common Commands
 - `pnpm install` — Install all dependencies.

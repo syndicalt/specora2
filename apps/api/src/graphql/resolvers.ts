@@ -88,6 +88,21 @@ export const resolvers = {
         await session.close();
       }
     },
+    async discoverySources(_parent: any, _args: any, context: any) {
+      const result = await context.pg.query("SELECT id, name, type, config, created_at as createdAt FROM discovery_sources ORDER BY created_at DESC");
+      return result.rows;
+    },
+    async discoveryJobs(_parent: any, _args: any, context: any) {
+      const result = await context.pg.query("SELECT id, source_id as sourceId, file_path as filePath, status, stats, created_at as createdAt, updated_at as updatedAt FROM discovery_jobs ORDER BY created_at DESC");
+      return result.rows;
+    },
+    async discoveryJob(_parent: any, args: { id: string }, context: any) {
+      const result = await context.pg.query(
+        "SELECT id, source_id as sourceId, file_path as filePath, status, stats, created_at as createdAt, updated_at as updatedAt FROM discovery_jobs WHERE id = $1",
+        [args.id]
+      );
+      return result.rows[0] || null;
+    },
   },
   ConfigurationItem: {
     async relationships(parent: any, _args: any, context: any) {
@@ -108,6 +123,40 @@ export const resolvers = {
             attributes: rel.properties || {},
           };
         });
+      } finally {
+        await session.close();
+      }
+    },
+    dataQualityScore(parent: any) {
+      return parent.dataQualityScore ?? null;
+    },
+    lastDiscoveredAt(parent: any) {
+      return parent.lastDiscoveredAt ?? null;
+    },
+    async health(parent: any, _args: any, context: any) {
+      const session = context.neo4j.session();
+      try {
+        const required = ["name", "class"];
+        const populated = required.filter((f) => parent[f]).length;
+        const completeness = populated / required.length;
+
+        const relResult = await session.run(
+          `MATCH (n:ConfigurationItem {id: $id})-[r]-(target:ConfigurationItem)
+           RETURN count(r) as relCount`,
+          { id: parent.id }
+        );
+        const relCount = relResult.records[0]?.get("relCount")?.toNumber() || 0;
+        const relationshipValidity = relCount > 0 ? 1.0 : 0.5;
+
+        const freshness = parent.lastDiscoveredAt ? 1.0 : 0.0;
+        const overall = (freshness + completeness + relationshipValidity) / 3;
+
+        return {
+          freshness,
+          completeness,
+          relationshipValidity,
+          overall,
+        };
       } finally {
         await session.close();
       }
@@ -224,6 +273,17 @@ export const resolvers = {
         console.error("gRPC ingestCMDB failed:", err.message);
         throw new GraphQLError("Failed to queue ingestion job: " + err.message);
       }
+    },
+    async createDiscoverySource(_parent: any, args: { name: string; type: string; config?: any }, context: any) {
+      const result = await context.pg.query(
+        "INSERT INTO discovery_sources (name, type, config) VALUES ($1, $2, $3) RETURNING id, name, type, config, created_at as createdAt",
+        [args.name, args.type, JSON.stringify(args.config || {})]
+      );
+      return result.rows[0];
+    },
+    async deleteDiscoverySource(_parent: any, args: { id: string }, context: any) {
+      await context.pg.query("DELETE FROM discovery_sources WHERE id = $1", [args.id]);
+      return true;
     },
   },
 };
