@@ -73,7 +73,19 @@ async def reconcile_and_persist(job_id: str, items: list[dict], rules: list[dict
             rule = rule_by_class.get(ci["class"])
             try:
                 existing_id = None
-                if rule and rule.get("match_keys"):
+
+                # 1. Always try to match by explicit id first
+                if ci.get("id"):
+                    result = session.run(
+                        "MATCH (n:ConfigurationItem {id: $id}) RETURN n.id AS id LIMIT 1",
+                        {"id": ci["id"]},
+                    )
+                    record = result.single()
+                    if record:
+                        existing_id = record["id"]
+
+                # 2. Fallback to reconciliation rule match_keys
+                if not existing_id and rule and rule.get("match_keys"):
                     conditions = []
                     params = {}
                     for idx, key in enumerate(rule["match_keys"]):

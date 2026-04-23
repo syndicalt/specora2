@@ -1,0 +1,13 @@
+id,name,class,environment,os,cpu,memory_gb,datacenter,owner
+srv-001,web-01.prod.internal,Server,production,Linux,8,32,us-east-1,team-platform
+srv-002,web-02.prod.internal,Server,production,Linux,8,32,us-east-1,team-platform
+srv-003,app-01.prod.internal,Server,production,Linux,16,64,us-east-1,team-app
+srv-004,app-02.prod.internal,Server,production,Linux,16,64,us-east-1,team-app
+srv-005,db-primary.prod.internal,Server,production,Linux,32,128,us-east-1,team-data
+srv-006,db-replica.prod.internal,Server,production,Linux,32,128,us-east-1,team-data
+srv-007,cache-01.prod.internal,Server,production,Linux,4,16,us-east-1,team-platform
+srv-008,web-01.staging.internal,Server,staging,Linux,4,16,us-east-1,team-platform
+srv-009,app-01.staging.internal,Server,staging,Linux,4,16,us-east-1,team-app
+srv-010,db-primary.staging.internal,Server,staging,Linux,8,32,us-east-1,team-data
+srv-011,bastion-01.prod.internal,Server,production,Linux,2,8,us-east-1,team-sre
+srv-012,monitor-01.prod.internal,Server,production,Linux,4,16,us-east-1,team-sre

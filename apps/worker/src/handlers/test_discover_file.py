@@ -132,8 +132,19 @@ async def test_reconcile_and_persist_create(mock_driver, mock_session, mock_post
 
 @pytest.mark.asyncio
 async def test_reconcile_and_persist_update(mock_driver, mock_session, mock_postgres):
-    # Simulate existing CI found by name
+    # Simulate existing CI found by id
     mock_session.run.return_value.single.return_value = {"id": "existing-1"}
+    items = [{"id": "ci-1", "name": "Web", "class": "Server", "environment": "prod"}]
+    stats = await reconcile_and_persist("job-1", items, [{"ci_class": "Server", "match_keys": ["name"]}])
+    assert stats["created"] == 0
+    assert stats["updated"] == 1
+    mock_postgres["log"].assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_and_persist_update_by_rule(mock_driver, mock_session, mock_postgres):
+    # Simulate no id match, but rule match_keys finds existing CI
+    mock_session.run.return_value.single.side_effect = [None, {"id": "rule-match-1"}]
     items = [{"id": "ci-1", "name": "Web", "class": "Server", "environment": "prod"}]
     stats = await reconcile_and_persist("job-1", items, [{"ci_class": "Server", "match_keys": ["name"]}])
     assert stats["created"] == 0

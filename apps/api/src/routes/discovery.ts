@@ -1,11 +1,11 @@
 import { FastifyInstance } from "fastify";
 import { mkdirSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { randomUUID } from "crypto";
 import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
 
-const UPLOAD_DIR = process.env.UPLOAD_DIR || "./uploads";
+const UPLOAD_DIR = resolve(process.env.UPLOAD_DIR || "./uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
 export async function discoveryRoutes(fastify: FastifyInstance) {

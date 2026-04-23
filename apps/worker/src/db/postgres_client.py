@@ -1,9 +1,10 @@
 import os
+import json
 import asyncpg
 
 class PostgresClient:
     def __init__(self):
-        self.dsn = os.getenv("DATABASE_URL", "postgresql://specora:specora@localhost/specora")
+        self.dsn = os.getenv("DATABASE_URL", "postgresql://specora:specora123@localhost/specora")
         self.pool = None
 
     async def connect(self):
@@ -53,8 +54,8 @@ class PostgresClient:
     async def mark_discovery_job_status(self, job_id, status, stats=None):
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE discovery_jobs SET status = $1, stats = $2, updated_at = NOW() WHERE id = $3",
-                status, stats, job_id
+                "UPDATE discovery_jobs SET status = $1, stats = $2::jsonb, updated_at = NOW() WHERE id = $3",
+                status, json.dumps(stats) if stats else None, job_id
             )
 
     async def get_reconciliation_rules(self):
@@ -67,8 +68,10 @@ class PostgresClient:
     async def log_reconciliation(self, discovery_job_id, ci_id, action, old_values=None, new_values=None):
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO reconciliation_logs (discovery_job_id, ci_id, action, old_values, new_values) VALUES ($1, $2, $3, $4, $5)",
-                discovery_job_id, ci_id, action, old_values, new_values
+                "INSERT INTO reconciliation_logs (discovery_job_id, ci_id, action, old_values, new_values) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)",
+                discovery_job_id, ci_id, action,
+                json.dumps(old_values) if old_values else None,
+                json.dumps(new_values) if new_values else None
             )
 
 postgres_client = PostgresClient()
