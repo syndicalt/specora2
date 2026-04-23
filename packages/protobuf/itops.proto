@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package itops;
+
+service WorkerService {
+  rpc IngestCMDB (IngestCMDBRequest) returns (IngestCMDBResponse);
+  rpc RunGraphMaintenance (GraphMaintenanceRequest) returns (GraphMaintenanceResponse);
+}
+
+message IngestCMDBRequest {
+  string job_id = 1;
+  string source = 2;
+  bytes payload = 3;
+}
+
+message IngestCMDBResponse {
+  string job_id = 1;
+  string status = 2;
+  string message = 3;
+}
+
+message GraphMaintenanceRequest {
+  string task = 1;
+}
+
+message GraphMaintenanceResponse {
+  string status = 1;
+}

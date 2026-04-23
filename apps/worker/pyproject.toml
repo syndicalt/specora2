@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "specora-worker"
+version = "0.0.1"
+requires-python = ">=3.12"
+dependencies = [
+    "grpcio==1.62.0",
+    "grpcio-tools==1.62.0",
+    "neo4j==5.18.0",
+    "asyncpg==0.29.0",
+    "python-dotenv==1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=7.0.0",
+]
+
+[tool.coverage.run]
+omit = [
+    "src/proto/*",
+    "src/**/test_*.py",
+    "src/conftest.py",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["src"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=100"

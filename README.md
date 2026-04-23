@@ -1,3 +1,110 @@
+# Specora
+
+**AI-Native ITSM Platform**
+
+Specora is an open-source, AI-first ITSM platform built to eventually displace legacy suites like ServiceNow. It treats AI agents and graph relationships as first-class citizens, with a conversational-first interface and a graph-native implementation of the CSDMv5 data model.
+
+## Phase 1: The Kernel
+
+Phase 1 establishes the graph-native CSDMv5 data layer, the API, the foundational GUI, and the event-processing worker.
+
+## Technology Stack
+
+| Layer | Technology |
+|-------|------------|
+| **Monorepo** | pnpm workspaces + Turborepo |
+| **API** | TypeScript, Fastify, GraphQL Yoga, neo4j-driver, grpc-js |
+| **Web GUI** | Next.js 14 (App Router), React Flow, TanStack Query |
+| **Worker** | Python 3.12, asyncio, grpcio, neo4j Python driver |
+| **Graph DB** | Neo4j Community Edition |
+| **Queue / Ops DB** | PostgreSQL 16 |
+| **Inter-service** | gRPC + Protobuf |
+| **Auth** | JWT (stateless) |
+| **Local Dev** | Docker Compose |
+| **Production** | Railway (Docker-based) |
+
+## Directory Structure
+
+```
+specora2/
+├── apps/
+│   ├── api/                    # Fastify API Server
+│   ├── web/                    # Next.js Frontend
+│   └── worker/                 # Python gRPC Worker
+├── packages/
+│   ├── core/                   # Shared TS types, Zod schemas
+│   ├── db/                     # Neo4j schema, migrations, seeders
+│   ├── protobuf/               # .proto definitions + scripts
+│   ├── tsconfig/               # Shared TS configs
+│   └── eslint-config/          # Shared lint rules
+├── docker-compose.yml
+├── turbo.json
+└── pnpm-workspace.yaml
+```
+
+## CSDMv5 Graph Schema (Phase 1 Subset)
+
+### Node Labels
+- `ConfigurationItem` (base)
+- `BusinessService`
+- `ApplicationService`
+- `TechnicalService`
+- `Server`
+- `Database`
+- `Application`
+- `NetworkGear`
+- `User`
+- `Group`
+- `Location`
+
+### Relationship Types
+- `PART_OF`
+- `DEPENDS_ON`
+- `HOSTED_ON`
+- `MANAGED_BY`
+- `OWNED_BY`
+- `LOCATED_AT`
+
+## Development
+
+### Prerequisites
+- Node.js >= 20
+- pnpm >= 8
+- Python 3.12
+- Docker & Docker Compose
+
+### Local Setup
+
+```bash
+# Install dependencies
+pnpm install
+
+# Start infrastructure (Neo4j + Postgres)
+docker-compose up -d neo4j postgres
+
+# Seed Neo4j schema and sample data
+pnpm --filter @specora/db seed
+
+# Start all apps in dev mode
+pnpm dev
+```
+
+The API will be available at `http://localhost:4000/graphql` and the web UI at `http://localhost:3000`.
+
+### Proto Generation
+
+```bash
+pnpm proto:generate
+```
+
+## Keyboard Shortcuts
+
+- `Ctrl+K` / `Cmd+K` — Open Specora Assistant chat overlay from anywhere in the UI.
+
+## License
+
+AGPL-3.0
+
 # Karpathy-Inspired Claude Code Guidelines
 
 > Check out my new project [Multica](https://github.com/multica-ai/multica) — an open-source platform for running and managing coding agents with reusable skills.
@@ -169,3 +276,4 @@ The goal is reducing costly mistakes on non-trivial work, not slowing down simpl
 ## License
 
 MIT
+

@@ -1,0 +1,12 @@
+{
+  "name": "@specora/protobuf",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "scripts": {
+    "generate": "bash ./generate.sh"
+  },
+  "devDependencies": {
+    "@specora/tsconfig": "workspace:*"
+  }
+}

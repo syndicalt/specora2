@@ -1,0 +1,250 @@
+import OpenAI from "openai";
+import { FastifyInstance } from "fastify";
+
+function getOpenAI(): OpenAI | null {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return null;
+  return new OpenAI({ apiKey: key });
+}
+
+const SYSTEM_PROMPT = `You are Specora Assistant, an AI expert in IT Service Management and the CSDMv5 data model.
+You help users explore their CMDB (Configuration Management Database), understand service dependencies, and navigate IT infrastructure.
+
+When you need data, use the provided tools. Be concise and technical but approachable.
+Always base your answers on actual CMDB data — never hallucinate CI names or relationships.
+
+Available CI classes: BusinessService, ApplicationService, TechnicalService, Server, Database, Application, NetworkGear, User, Group, Location.
+Relationship types: PART_OF, DEPENDS_ON, HOSTED_ON, MANAGED_BY, OWNED_BY, LOCATED_AT.`;
+
+const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "search_cis",
+      description: "Search for Configuration Items (CIs) in the CMDB by name, class, or environment.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Substring to match against CI names" },
+          class: { type: "string", description: "CI class to filter by (e.g., Server, Database, BusinessService)" },
+          environment: { type: "string", description: "Environment to filter by (e.g., Production, Staging)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_ci_details",
+      description: "Get detailed information about a specific CI including its relationships.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The unique ID of the CI" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_service_map",
+      description: "Get the dependency graph (service map) for a CI. Shows what it depends on and what depends on it.",
+      parameters: {
+        type: "object",
+        properties: {
+          rootId: { type: "string", description: "The ID of the root CI to map" },
+        },
+        required: ["rootId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "count_cis",
+      description: "Count Configuration Items by class, environment, or other criteria.",
+      parameters: {
+        type: "object",
+        properties: {
+          class: { type: "string", description: "CI class to count" },
+          environment: { type: "string", description: "Environment to count" },
+        },
+      },
+    },
+  },
+];
+
+async function executeTool(
+  name: string,
+  args: any,
+  fastify: FastifyInstance
+): Promise<any> {
+  const session = fastify.neo4j.session();
+  try {
+    switch (name) {
+      case "search_cis": {
+        let query = "MATCH (n:ConfigurationItem)";
+        const params: any = {};
+        const conditions: string[] = [];
+        if (args.name) {
+          conditions.push("n.name CONTAINS $name");
+          params.name = args.name;
+        }
+        if (args.class) {
+          conditions.push("n.class = $class");
+          params.class = args.class;
+        }
+        if (args.environment) {
+          conditions.push("n.environment = $environment");
+          params.environment = args.environment;
+        }
+        if (conditions.length) query += " WHERE " + conditions.join(" AND ");
+        query += " RETURN n LIMIT 20";
+        const result = await session.run(query, params);
+        return result.records.map((r: any) => {
+          const props = r.get("n").properties;
+          return {
+            id: props.id,
+            name: props.name,
+            class: props.class,
+            environment: props.environment,
+          };
+        });
+      }
+      case "get_ci_details": {
+        const result = await session.run(
+          `MATCH (n:ConfigurationItem {id: $id}) RETURN n`,
+          { id: args.id }
+        );
+        if (!result.records.length) return null;
+        const props = result.records[0].get("n").properties;
+        const relResult = await session.run(
+          `MATCH (n:ConfigurationItem {id: $id})-[r]-(target:ConfigurationItem)
+           RETURN r, target`,
+          { id: args.id }
+        );
+        const relationships = relResult.records.map((r: any) => {
+          const rel = r.get("r");
+          const target = r.get("target").properties;
+          return {
+            type: rel.type,
+            direction: rel.start === props.id ? "outgoing" : "incoming",
+            target: { id: target.id, name: target.name, class: target.class },
+          };
+        });
+        return {
+          id: props.id,
+          name: props.name,
+          class: props.class,
+          environment: props.environment,
+          relationships,
+        };
+      }
+      case "get_service_map": {
+        const result = await session.run(
+          `MATCH path = (root:ConfigurationItem {id: $rootId})-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT*1..3]-(related:ConfigurationItem)
+           UNWIND relationships(path) as rel
+           RETURN root, related, rel, startNode(rel) as src, endNode(rel) as tgt
+           LIMIT 50`,
+          { rootId: args.rootId }
+        );
+        const nodesMap = new Map();
+        const edges: any[] = [];
+        for (const record of result.records) {
+          const root = record.get("root").properties;
+          const related = record.get("related").properties;
+          const rel = record.get("rel");
+          const src = record.get("src").properties;
+          const tgt = record.get("tgt").properties;
+          nodesMap.set(root.id, { id: root.id, name: root.name, class: root.class });
+          nodesMap.set(related.id, { id: related.id, name: related.name, class: related.class });
+          edges.push({
+            type: rel.type,
+            sourceId: src.id,
+            targetId: tgt.id,
+          });
+        }
+        return {
+          rootId: args.rootId,
+          nodes: Array.from(nodesMap.values()),
+          edges,
+        };
+      }
+      case "count_cis": {
+        let query = "MATCH (n:ConfigurationItem)";
+        const params: any = {};
+        const conditions: string[] = [];
+        if (args.class) {
+          conditions.push("n.class = $class");
+          params.class = args.class;
+        }
+        if (args.environment) {
+          conditions.push("n.environment = $environment");
+          params.environment = args.environment;
+        }
+        if (conditions.length) query += " WHERE " + conditions.join(" AND ");
+        query += " RETURN count(n) as total";
+        const result = await session.run(query, params);
+        return { total: result.records[0].get("total").toNumber() };
+      }
+      default:
+        return { error: `Unknown tool: ${name}` };
+    }
+  } finally {
+    await session.close();
+  }
+}
+
+export async function chat(
+  messages: { role: "user" | "assistant"; content: string }[],
+  fastify: FastifyInstance
+): Promise<string> {
+  const openai = getOpenAI();
+  if (!openai) {
+    return "OpenAI API key is not configured. Set the OPENAI_API_KEY environment variable to enable AI chat.";
+  }
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...messages.map((m) => ({ role: m.role as any, content: m.content })),
+    ],
+    tools: TOOLS,
+    tool_choice: "auto",
+    temperature: 0.3,
+  });
+
+  const message = completion.choices[0].message;
+
+  if (message.tool_calls && message.tool_calls.length > 0) {
+    const toolResults = [];
+    for (const toolCall of message.tool_calls) {
+      const args = JSON.parse(toolCall.function.arguments);
+      fastify.log.info({ tool: toolCall.function.name, args }, "AI tool call");
+      const result = await executeTool(toolCall.function.name, args, fastify);
+      toolResults.push({
+        tool_call_id: toolCall.id,
+        role: "tool" as const,
+        content: JSON.stringify(result),
+      });
+    }
+
+    const secondCompletion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        ...messages.map((m) => ({ role: m.role as any, content: m.content })),
+        { role: "assistant", content: message.content || "", tool_calls: message.tool_calls },
+        ...toolResults,
+      ],
+      temperature: 0.3,
+    });
+
+    return secondCompletion.choices[0].message.content || "I processed the data but have no response.";
+  }
+
+  return message.content || "I don't have a response for that.";
+}
