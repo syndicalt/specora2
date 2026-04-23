@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { GraphExplorer } from "@/components/GraphExplorer";
+import { AppShell } from "@/shell/AppShell";
 import { ChatOverlay } from "@/components/ChatOverlay";
 import { getToken } from "@/lib/auth";
 
@@ -13,9 +13,9 @@ export default function HomePage() {
   }, []);
 
   return (
-    <main className="h-screen w-screen relative overflow-hidden">
-      <GraphExplorer />
+    <>
+      <AppShell />
       <ChatOverlay />
-    </main>
+    </>
   );
 }
