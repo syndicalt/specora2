@@ -9,7 +9,7 @@ const UPLOAD_DIR = resolve(process.env.UPLOAD_DIR || "./uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
 export async function discoveryRoutes(fastify: FastifyInstance) {
-  fastify.post("/discovery/upload", async (request, reply) => {
+  fastify.post("/discovery/upload", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const data = await request.file();
     if (!data) {
       return reply.status(400).send({ error: "No file uploaded" });
@@ -28,7 +28,7 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     return { jobId, fileName, status: "pending" };
   });
 
-  fastify.get("/discovery/jobs/:id", async (request, reply) => {
+  fastify.get("/discovery/jobs/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const result = await fastify.pg.query(
       "SELECT id, file_path, status, stats, created_at, updated_at FROM discovery_jobs WHERE id = $1",

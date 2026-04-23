@@ -10,6 +10,7 @@ describe("discoveryRoutes", () => {
     app.decorate("pg", {
       query: vi.fn().mockResolvedValue({ rows: [{ id: "dj-1" }] }),
     });
+    app.decorate("authenticate", async () => {});
     await app.register(discoveryRoutes);
     return app;
   }

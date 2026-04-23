@@ -35,8 +35,9 @@ describe("authPlugin", () => {
     await app.register(authPlugin);
 
     const request = { jwtVerify: vi.fn().mockRejectedValue(error) } as any;
-    const reply = { send: vi.fn() } as any;
+    const reply = { code: vi.fn().mockReturnThis(), send: vi.fn() } as any;
     await app.authenticate(request, reply);
-    expect(reply.send).toHaveBeenCalledWith(error);
+    expect(reply.code).toHaveBeenCalledWith(401);
+    expect(reply.send).toHaveBeenCalledWith({ error: "Unauthorized" });
   });
 });

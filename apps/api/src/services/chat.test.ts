@@ -45,7 +45,7 @@ describe("chat", () => {
     delete process.env.PROVARA_URL;
     delete process.env.PROVARA_API_KEY;
     const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
-    expect(result).toContain("AI chat is not configured");
+    expect(result.content).toContain("AI chat is not configured");
   });
 
   it("calls OpenAI and returns direct response", async () => {
@@ -53,7 +53,7 @@ describe("chat", () => {
       choices: [{ message: { content: "Direct response" } }],
     });
     const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
-    expect(result).toBe("Direct response");
+    expect(result.content).toBe("Direct response");
   });
 
   it("returns fallback when direct response is empty", async () => {
@@ -61,7 +61,7 @@ describe("chat", () => {
       choices: [{ message: { content: "" } }],
     });
     const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
-    expect(result).toBe("I don't have a response for that.");
+    expect(result.content).toBe("I don't have a response for that.");
   });
 
   it("returns fallback when tool response is empty", async () => {
@@ -86,7 +86,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "Count" }], fastify);
-    expect(result).toBe("I processed the data but have no response.");
+    expect(result.content).toBe("I processed the data but have no response.");
   });
 
   it("executes search_cis tool with name filter", async () => {
@@ -111,7 +111,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "Find servers" }], fastify);
-    expect(result).toBe("Found 1 CI");
+    expect(result.content).toBe("Found 1 CI");
   });
 
   it("executes search_cis tool with no filters", async () => {
@@ -136,7 +136,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "Find all" }], fastify);
-    expect(result).toBe("Found all");
+    expect(result.content).toBe("Found all");
   });
 
   it("executes search_cis tool with class and environment filters", async () => {
@@ -161,7 +161,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "Find DBs" }], fastify);
-    expect(result).toBe("Found DBs");
+    expect(result.content).toBe("Found DBs");
   });
 
   it("executes get_ci_details tool with outgoing relationship", async () => {
@@ -191,7 +191,7 @@ describe("chat", () => {
     ]);
 
     const result = await chat([{ role: "user", content: "Tell me about bs-1" }], fastify);
-    expect(result).toBe("CI details");
+    expect(result.content).toBe("CI details");
   });
 
   it("executes get_ci_details tool with incoming relationship", async () => {
@@ -221,7 +221,7 @@ describe("chat", () => {
     ]);
 
     const result = await chat([{ role: "user", content: "Tell me about as-1" }], fastify);
-    expect(result).toBe("CI incoming");
+    expect(result.content).toBe("CI incoming");
   });
 
   it("returns null for missing CI in get_ci_details", async () => {
@@ -244,7 +244,7 @@ describe("chat", () => {
     const fastify = mockFastify([[]]);
 
     const result = await chat([{ role: "user", content: "Find missing" }], fastify);
-    expect(result).toBe("Not found");
+    expect(result.content).toBe("Not found");
   });
 
   it("executes count_cis tool with class filter", async () => {
@@ -269,7 +269,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "How many servers?" }], fastify);
-    expect(result).toBe("You have 5 servers");
+    expect(result.content).toBe("You have 5 servers");
   });
 
   it("executes count_cis tool with environment filter", async () => {
@@ -294,7 +294,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "How many production?" }], fastify);
-    expect(result).toBe("You have 8 production CIs");
+    expect(result.content).toBe("You have 8 production CIs");
   });
 
   it("executes count_cis tool with no filters", async () => {
@@ -319,7 +319,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "How many total?" }], fastify);
-    expect(result).toBe("You have 100 CIs");
+    expect(result.content).toBe("You have 100 CIs");
   });
 
   it("executes get_service_map tool", async () => {
@@ -353,7 +353,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "Map bs-1" }], fastify);
-    expect(result).toBe("Service map");
+    expect(result.content).toBe("Service map");
   });
 
   it("handles unknown tool gracefully", async () => {
@@ -374,7 +374,7 @@ describe("chat", () => {
       });
 
     const result = await chat([{ role: "user", content: "Test" }], mockFastify());
-    expect(result).toBe("Unknown tool handled");
+    expect(result.content).toBe("Unknown tool handled");
   });
 
   it("routes through Provara when configured", async () => {
@@ -391,7 +391,7 @@ describe("chat", () => {
     global.fetch = mockFetch;
 
     const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
-    expect(result).toBe("Provara says hello");
+    expect(result.content).toBe("Provara says hello");
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.provara.xyz/v1/chat/completions",
       expect.objectContaining({
@@ -421,7 +421,7 @@ describe("chat", () => {
     global.fetch = mockFetch;
 
     const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
-    expect(result).toBe("Hello tenant");
+    expect(result.content).toBe("Hello tenant");
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.provara.xyz/v1/chat/completions",
       expect.objectContaining({
@@ -471,7 +471,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "How many servers?" }], fastify);
-    expect(result).toBe("Provara tool result");
+    expect(result.content).toBe("Provara tool result");
     expect(mockFetch).toHaveBeenCalledTimes(2);
 
     delete process.env.PROVARA_URL;
@@ -494,5 +494,149 @@ describe("chat", () => {
 
     delete process.env.PROVARA_URL;
     delete process.env.PROVARA_API_KEY;
+  });
+
+  it("executes find_dependency_path tool", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-1",
+              function: { name: "find_dependency_path", arguments: JSON.stringify({ fromId: "bs-1", toId: "db-1" }) },
+            }],
+          },
+        }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "Path found" } }],
+      });
+
+    const fastify = mockFastify([[
+      {
+        get: (k: string) => {
+          if (k === "pathNodes") return [{ properties: { id: "bs-1", name: "Portal", class: "BusinessService" } }, { properties: { id: "db-1", name: "Postgres", class: "Database" } }];
+          if (k === "pathRels") return [{ type: "DEPENDS_ON", start: { properties: { id: "bs-1" } }, end: { properties: { id: "db-1" } } }];
+          return undefined;
+        },
+      },
+    ]]);
+
+    const result = await chat([{ role: "user", content: "Path from bs-1 to db-1" }], fastify);
+    expect(result.content).toBe("Path found");
+  });
+
+  it("executes find_orphaned_cis tool", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-1",
+              function: { name: "find_orphaned_cis", arguments: "{}" },
+            }],
+          },
+        }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "Found orphans" } }],
+      });
+
+    const fastify = mockFastify([[
+      { get: (k: string) => k === "n" ? { properties: { id: "orph-1", name: "Lost Server", class: "Server", environment: "Prod" } } : undefined },
+    ]]);
+
+    const result = await chat([{ role: "user", content: "Find orphans" }], fastify);
+    expect(result.content).toBe("Found orphans");
+  });
+
+  it("includes uiContext in system prompt when provided", async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "Got context" } }],
+    });
+    const result = await chat([{ role: "user", content: "Hi" }], mockFastify(), undefined, "Active app: service-map");
+    expect(result.content).toBe("Got context");
+  });
+
+  it("handles tool execution error gracefully", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-1",
+              function: { name: "get_service_map", arguments: JSON.stringify({ rootId: "bs-1" }) },
+            }],
+          },
+        }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "Handled error" } }],
+      });
+
+    const session = mockNeo4jSession([]);
+    session.run = vi.fn().mockRejectedValue(new Error("Neo4j failure"));
+    const fastify = {
+      neo4j: { session: vi.fn().mockReturnValue(session) },
+      log: { info: vi.fn(), error: vi.fn() },
+    } as any;
+
+    const result = await chat([{ role: "user", content: "Map" }], fastify);
+    expect(result.content).toBe("Handled error");
+    expect(result.toolCalls?.[0].result.error).toBe("Neo4j failure");
+  });
+
+  it("find_dependency_path returns empty when no path exists", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-1",
+              function: { name: "find_dependency_path", arguments: JSON.stringify({ fromId: "a", toId: "b" }) },
+            }],
+          },
+        }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "No path" } }],
+      });
+
+    const fastify = mockFastify([[]]);
+    const result = await chat([{ role: "user", content: "Path?" }], fastify);
+    expect(result.content).toBe("No path");
+  });
+
+  it("throws when second completion fails with a trace", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-1",
+              function: { name: "count_cis", arguments: "{}" },
+            }],
+          },
+        }],
+      });
+    mockCreate.mockRejectedValueOnce(new Error("Second call failed"));
+
+    const traceMock = {
+      span: vi.fn().mockReturnValue({
+        end: vi.fn().mockResolvedValue(undefined),
+      }),
+      end: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const fastify = mockFastify([[
+      { get: (k: string) => k === "total" ? { toNumber: () => 0 } : undefined },
+    ]]);
+
+    await expect(chat([{ role: "user", content: "Count" }], fastify, traceMock as any)).rejects.toThrow("Second call failed");
   });
 });

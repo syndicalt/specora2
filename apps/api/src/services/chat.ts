@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { FastifyInstance } from "fastify";
+import type { Trace } from "@pathlight/sdk";
 
 function getOpenAI(): OpenAI | null {
   const key = process.env.OPENAI_API_KEY;
@@ -15,18 +16,17 @@ function getProvaraConfig(): { url: string; key: string; tenantId: string | null
 }
 
 async function callProvara(
-  messages: { role: string; content: string }[],
+  messages: { role: string; content: string; tool_calls?: any; tool_call_id?: string }[],
   tools: OpenAI.Chat.ChatCompletionTool[]
 ): Promise<OpenAI.Chat.ChatCompletion> {
   const config = getProvaraConfig()!;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "Authorization": `Bearer ${config.key}`,
+    Authorization: `Bearer ${config.key}`,
   };
   if (config.tenantId) {
     headers["X-Tenant-ID"] = config.tenantId;
   }
-  // Normalize URL: accept either https://host/v1 or https://host
   const baseUrl = config.url.replace(/\/?v1\/?$/, "");
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: "POST",
@@ -46,14 +46,22 @@ async function callProvara(
   return (await response.json()) as OpenAI.Chat.ChatCompletion;
 }
 
-const SYSTEM_PROMPT = `You are Specora Assistant, an AI expert in IT Service Management and the CSDMv5 data model.
+function buildSystemPrompt(uiContext?: string): string {
+  let prompt = `You are Specora Assistant, an AI expert in IT Service Management and the CSDMv5 data model.
 You help users explore their CMDB (Configuration Management Database), understand service dependencies, and navigate IT infrastructure.
 
-When you need data, use the provided tools. Be concise and technical but approachable.
-Always base your answers on actual CMDB data — never hallucinate CI names or relationships.
+IMPORTANT: You do NOT have any knowledge of the actual CMDB contents. You MUST use the provided tools to answer every question about infrastructure, CIs, servers, databases, services, dependencies, or the service map. Never guess or make up CI names, IDs, or counts. Always call a tool first.
+
+When you receive a tool result, answer concisely with the actual data. If helpful, include an action directive at the end like: [[action|open-service-map|rootId=bs-1|Open Service Map]]
 
 Available CI classes: BusinessService, ApplicationService, TechnicalService, Server, Database, Application, NetworkGear, User, Group, Location.
 Relationship types: PART_OF, DEPENDS_ON, HOSTED_ON, MANAGED_BY, OWNED_BY, LOCATED_AT.`;
+
+  if (uiContext) {
+    prompt += `\n\nCURRENT UI CONTEXT:\n${uiContext}`;
+  }
+  return prompt;
+}
 
 const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
@@ -110,6 +118,32 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
           class: { type: "string", description: "CI class to count" },
           environment: { type: "string", description: "Environment to count" },
         },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_dependency_path",
+      description: "Find the shortest dependency path between two CIs in the CMDB.",
+      parameters: {
+        type: "object",
+        properties: {
+          fromId: { type: "string", description: "The ID of the starting CI" },
+          toId: { type: "string", description: "The ID of the target CI" },
+        },
+        required: ["fromId", "toId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_orphaned_cis",
+      description: "Find CIs that have no relationships (orphaned nodes).",
+      parameters: {
+        type: "object",
+        properties: {},
       },
     },
   },
@@ -228,6 +262,43 @@ async function executeTool(
         const result = await session.run(query, params);
         return { total: result.records[0].get("total").toNumber() };
       }
+      case "find_dependency_path": {
+        const result = await session.run(
+          `MATCH path = shortestPath((a:ConfigurationItem {id: $fromId})-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY*1..10]-(b:ConfigurationItem {id: $toId}))
+           UNWIND nodes(path) as node
+           WITH collect(DISTINCT node) as pathNodes, path
+           UNWIND relationships(path) as rel
+           RETURN pathNodes, collect(DISTINCT rel) as pathRels`,
+          { fromId: args.fromId, toId: args.toId }
+        );
+        if (!result.records.length) {
+          return { nodes: [], edges: [], found: false };
+        }
+        const record = result.records[0];
+        const pathNodes = record.get("pathNodes");
+        const pathRels = record.get("pathRels");
+        const nodes = pathNodes.map((n: any) => {
+          const props = n.properties;
+          return { id: props.id, name: props.name, class: props.class };
+        });
+        const edges = pathRels.map((rel: any) => ({
+          type: rel.type,
+          sourceId: rel.start.properties.id,
+          targetId: rel.end.properties.id,
+        }));
+        return { nodes, edges, found: true };
+      }
+      case "find_orphaned_cis": {
+        const result = await session.run(
+          `MATCH (n:ConfigurationItem)
+           WHERE NOT (n)-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT]-()
+           RETURN n LIMIT 50`
+        );
+        return result.records.map((r: any) => {
+          const props = r.get("n").properties;
+          return { id: props.id, name: props.name, class: props.class, environment: props.environment };
+        });
+      }
       default:
         return { error: `Unknown tool: ${name}` };
     }
@@ -236,73 +307,131 @@ async function executeTool(
   }
 }
 
+export interface ChatResult {
+  content: string;
+  toolCalls?: { call: OpenAI.Chat.ChatCompletionMessageToolCall; result: any }[];
+}
+
+const MAX_HISTORY_MESSAGES = 20;
+
 export async function chat(
-  messages: { role: "user" | "assistant"; content: string }[],
-  fastify: FastifyInstance
-): Promise<string> {
+  messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[],
+  fastify: FastifyInstance,
+  trace?: Trace,
+  uiContext?: string
+): Promise<ChatResult> {
   const openai = getOpenAI();
   const provara = getProvaraConfig();
 
   if (!provara && !openai) {
-    return "AI chat is not configured. Set OPENAI_API_KEY or PROVARA_URL + PROVARA_API_KEY.";
+    return { content: "AI chat is not configured. Set OPENAI_API_KEY or PROVARA_URL + PROVARA_API_KEY." };
   }
 
-  const apiMessages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    ...messages.map((m) => ({ role: m.role as any, content: m.content })),
-  ];
+  // Apply context window limit
+  const recentMessages = messages.slice(-MAX_HISTORY_MESSAGES);
 
-  let completion: OpenAI.Chat.ChatCompletion;
   const usedProvara = !!provara;
-  if (provara) {
-    completion = await callProvara(apiMessages, TOOLS);
-  } else {
-    completion = await openai!.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: apiMessages,
-      tools: TOOLS,
-      tool_choice: "auto",
-      temperature: 0.3,
-    });
-  }
 
-  const message = completion.choices[0].message;
+  const MAX_TOOL_ROUNDS = 3;
+  let currentMessages: any[] = [
+    { role: "system" as const, content: buildSystemPrompt(uiContext) },
+    ...recentMessages.map((m) => ({
+      role: m.role as any,
+      content: m.content,
+      ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+      ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+    })),
+  ];
+  const allCallMetas: { call: OpenAI.Chat.ChatCompletionMessageToolCall; result: any }[] = [];
 
-  if (message.tool_calls && message.tool_calls.length > 0) {
-    const toolResults = [];
-    for (const toolCall of message.tool_calls) {
-      const args = JSON.parse(toolCall.function.arguments);
-      fastify.log.info({ tool: toolCall.function.name, args }, "AI tool call");
-      const result = await executeTool(toolCall.function.name, args, fastify);
-      toolResults.push({
-        tool_call_id: toolCall.id,
-        role: "tool" as const,
-        content: JSON.stringify(result),
-      });
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const completion = await callLlm(currentMessages, fastify, usedProvara, openai, provara, trace, round);
+    const message = completion.choices[0].message;
+
+    if (!message.tool_calls || message.tool_calls.length === 0) {
+      return {
+        content: message.content || "I don't have a response for that.",
+        toolCalls: allCallMetas.length > 0 ? allCallMetas : undefined,
+      };
     }
 
-    const secondMessages = [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...messages.map((m) => ({ role: m.role as any, content: m.content })),
-      { role: "assistant", content: message.content || "", tool_calls: message.tool_calls },
+    // Execute tools
+    const toolResults: any[] = [];
+    for (const toolCall of message.tool_calls) {
+      const args = JSON.parse(toolCall.function.arguments);
+      fastify.log.info({ tool: toolCall.function.name, args, round }, "AI tool call");
+
+      const toolSpan = trace?.span(`tool.execute.${toolCall.function.name}`, "tool", {
+        toolName: toolCall.function.name,
+        toolArgs: args,
+      });
+
+      let result: any;
+      try {
+        result = await executeTool(toolCall.function.name, args, fastify);
+        await toolSpan?.end({ status: "completed", toolResult: result });
+      } catch (err: any) {
+        await toolSpan?.end({ status: "failed", error: err.message });
+        result = { error: err.message };
+      }
+
+      toolResults.push({
+        tool_call_id: toolCall.id,
+        role: "tool",
+        content: JSON.stringify(result),
+      });
+      allCallMetas.push({ call: toolCall, result });
+    }
+
+    // Add assistant message with tool_calls + tool results for next round
+    currentMessages = [
+      ...currentMessages,
+      { role: "assistant", content: message.content || null, tool_calls: message.tool_calls },
       ...toolResults,
     ];
+  }
 
-    let secondCompletion: OpenAI.Chat.ChatCompletion;
+  // If we hit the max rounds, force a final response without tools
+  const finalMessages = [
+    ...currentMessages,
+    { role: "user", content: "Please provide a final answer based on the tool results above." },
+  ];
+  const finalCompletion = await callLlm(finalMessages, fastify, usedProvara, openai, provara, trace, MAX_TOOL_ROUNDS, false);
+  return {
+    content: finalCompletion.choices[0].message.content || "I processed the data but have no response.",
+    toolCalls: allCallMetas,
+  };
+}
+
+async function callLlm(
+  messages: any[],
+  fastify: FastifyInstance,
+  usedProvara: boolean,
+  openai: OpenAI | null,
+  provara: any,
+  trace?: Trace,
+  round?: number,
+  includeTools = true
+): Promise<OpenAI.Chat.ChatCompletion> {
+  const span = trace?.span(`llm.chat${round !== undefined ? `.r${round}` : ""}`, "llm", {
+    input: { messageCount: messages.length },
+  });
+  try {
+    let completion: OpenAI.Chat.ChatCompletion;
     if (usedProvara) {
-      secondCompletion = await callProvara(secondMessages, TOOLS);
+      completion = await callProvara(messages, includeTools ? TOOLS : []);
     } else {
-      secondCompletion = await openai!.chat.completions.create({
+      completion = await openai!.chat.completions.create({
         model: "gpt-4o-mini",
-        messages: secondMessages,
-        tools: TOOLS,
-        tool_choice: "auto",
+        messages,
+        ...(includeTools ? { tools: TOOLS, tool_choice: "auto" } : {}),
         temperature: 0.3,
       });
     }
-
-    return secondCompletion.choices[0].message.content || "I processed the data but have no response.";
+    await span?.end({ status: "completed", output: { toolCalls: completion.choices[0].message.tool_calls?.length ?? 0 } });
+    return completion;
+  } catch (err: any) {
+    await span?.end({ status: "failed", error: err.message });
+    throw err;
   }
-
-  return message.content || "I don't have a response for that.";
 }

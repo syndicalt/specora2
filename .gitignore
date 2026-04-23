@@ -35,3 +35,5 @@ coverage/
 htmlcov/
 .coverage
 apps/api/uploads/
+.gstack/
+session-*.md

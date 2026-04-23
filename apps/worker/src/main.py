@@ -70,10 +70,6 @@ async def process_discovery_jobs(pathlight=None):
 async def serve():
     await postgres_client.connect()
     server = grpc_aio.server()
-    itops_pb2_grpc.add_WorkerServiceServicer_to_server(WorkerServiceServicer(), server)
-    server.add_insecure_port(f"[::]:{GRPC_PORT}")
-    await server.start()
-    print(f"Worker gRPC server started on port {GRPC_PORT}")
 
     pathlight = None
     pathlight_url = os.getenv("PATHLIGHT_URL")
@@ -81,6 +77,13 @@ async def serve():
         from pathlight import AsyncPathlight
         pathlight = AsyncPathlight(base_url=pathlight_url)
         print(f"Pathlight tracing enabled: {pathlight_url}")
+
+    itops_pb2_grpc.add_WorkerServiceServicer_to_server(
+        WorkerServiceServicer(pathlight=pathlight), server
+    )
+    server.add_insecure_port(f"[::]:{GRPC_PORT}")
+    await server.start()
+    print(f"Worker gRPC server started on port {GRPC_PORT}")
 
     # Start background job processors
     job_task = asyncio.create_task(process_jobs(pathlight))

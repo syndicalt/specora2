@@ -1,21 +1,17 @@
 "use client";
 
 import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/shell/AppShell";
-import { ChatOverlay } from "@/components/ChatOverlay";
 import { getToken } from "@/lib/auth";
 
 export default function HomePage() {
+  const router = useRouter();
   useEffect(() => {
     if (!getToken()) {
-      window.location.href = "/login";
+      router.push("/login");
     }
-  }, []);
+  }, [router]);
 
-  return (
-    <>
-      <AppShell />
-      <ChatOverlay />
-    </>
-  );
+  return <AppShell />;
 }

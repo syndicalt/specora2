@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { setToken } from "@/lib/auth";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
+import { API_BASE } from "@/lib/api";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");

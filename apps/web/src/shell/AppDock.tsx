@@ -3,7 +3,14 @@
 import { useState, useRef, useEffect } from "react";
 import { useShell } from "./AppContext";
 import type { RegistryEntry } from "@/sdk/types";
-import { LayoutGrid, LogOut, X } from "lucide-react";
+import { LayoutGrid, LogOut, X, Network, Database, Compass, Settings, type LucideIcon } from "lucide-react";
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  Network,
+  Database,
+  Compass,
+  Settings,
+};
 import { removeToken } from "@/lib/auth";
 
 export function UserProfileBadge() {
@@ -118,8 +125,8 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
       )}
 
       {/* Dock */}
-      <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50">
-        <div className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-900/70 backdrop-blur-2xl border border-white/10 rounded-[2rem] shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)]">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100]">
+        <div className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-800/95 backdrop-blur-2xl border border-white/15 rounded-[2rem] shadow-[0_12px_40px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.1)] min-w-[240px]">
           {/* All Apps */}
           <button
             onClick={() => dispatch({ type: "TOGGLE_LAUNCHER" })}
@@ -145,14 +152,15 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
                   onContextMenu={(e) => handleContextMenu(e, id)}
                   className={`group relative flex items-center justify-center w-11 h-11 rounded-2xl transition-all duration-200 ${
                     active
-                      ? "bg-white/10 text-white"
-                      : "text-gray-400 hover:text-white hover:bg-white/5"
+                      ? "bg-white/15 text-white"
+                      : "text-gray-400 hover:text-white hover:bg-white/10"
                   }`}
                   title={entry.name}
                 >
-                  <span className={`text-lg font-bold transition-transform duration-200 ${active ? "scale-110" : "group-hover:scale-110"}`}>
-                    {entry.icon[0]}
-                  </span>
+                  {(() => {
+                    const Icon = ICON_MAP[entry.icon] || Network;
+                    return <Icon className={`w-5 h-5 transition-transform duration-200 ${active ? "scale-110" : "group-hover:scale-110"}`} />;
+                  })()}
                   {/* Active indicator dot */}
                   {active && (
                     <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-400 rounded-full shadow-[0_0_6px_rgba(99,102,241,0.6)]" />
@@ -166,7 +174,7 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
             })}
           </div>
 
-          <div className="w-px h-7 bg-white/10 mx-1" />
+          <div className="w-px h-7 bg-white/10 mx-1 ml-auto" />
 
           {/* User profile */}
           <UserProfileBadge />

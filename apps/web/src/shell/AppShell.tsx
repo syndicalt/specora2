@@ -8,6 +8,7 @@ import { AppLauncher } from "./AppLauncher";
 import { seedBuiltInApps, getRegistry } from "@/sdk";
 import type { RegistryEntry, AppMessage } from "@/sdk/types";
 import { X } from "lucide-react";
+import { ChatOverlay } from "@/components/ChatOverlay";
 
 function createMessageBus() {
   const handlers = new Set<(msg: AppMessage) => void>();
@@ -110,6 +111,9 @@ export function AppShell() {
 
         {/* Bottom dock */}
         <AppDock registry={registry} />
+
+        {/* Global Chat */}
+        <ChatOverlay />
       </div>
     </ShellContext.Provider>
   );

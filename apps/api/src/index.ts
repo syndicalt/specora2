@@ -16,6 +16,12 @@ import { discoveryRoutes } from "./routes/discovery";
 
 const fastify = Fastify({ logger: { transport: { target: "pino-pretty" } } });
 
+declare module "fastify" {
+  interface FastifyInstance {
+    pathlight?: any;
+  }
+}
+
 async function main() {
   await fastify.register(cors, { origin: true });
   await fastify.register(rateLimit, {
@@ -28,6 +34,20 @@ async function main() {
   await fastify.register(postgresPlugin);
   await fastify.register(multipart);
   await fastify.register(authPlugin);
+
+  // Pathlight tracing (optional)
+  const pathlightUrl = process.env.PATHLIGHT_URL;
+  if (pathlightUrl) {
+    try {
+      const { Pathlight } = await import("@pathlight/sdk");
+      const pathlight = new Pathlight({ baseUrl: pathlightUrl });
+      fastify.decorate("pathlight", pathlight);
+      fastify.log.info(`Pathlight tracing enabled: ${pathlightUrl}`);
+    } catch (err: any) {
+      fastify.log.warn(`Failed to initialize Pathlight: ${err.message}`);
+    }
+  }
+
   await fastify.register(chatRoutes);
   await fastify.register(authRoutes);
   await fastify.register(discoveryRoutes);

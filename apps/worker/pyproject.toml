@@ -12,6 +12,7 @@ dependencies = [
     "neo4j==5.18.0",
     "asyncpg==0.29.0",
     "python-dotenv==1.0.0",
+    "pathlight>=0.2.0",
 ]
 
 [project.optional-dependencies]
