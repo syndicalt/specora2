@@ -9,7 +9,7 @@ declare module "fastify" {
 
 export const postgresPlugin = fp(async (fastify) => {
   const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || "postgresql://specora:specora@localhost:5432/specora",
+    connectionString: process.env.DATABASE_URL || "postgresql://specora:specora123@localhost:5432/specora",
   });
   const client = await pool.connect();
   fastify.decorate("pg", client);
