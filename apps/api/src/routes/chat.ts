@@ -130,7 +130,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
   });
 
   // Chat endpoint
-  fastify.post("/api/chat", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/api/chat", {
+    onRequest: [fastify.authenticate],
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (request, reply) => {
     const user = request.user as { id: string; email: string };
     const body = request.body as {
       messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[];
@@ -240,7 +243,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
   });
 
   // Chat streaming endpoint (SSE)
-  fastify.post("/api/chat/stream", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/api/chat/stream", {
+    onRequest: [fastify.authenticate],
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+  }, async (request, reply) => {
     const user = request.user as { id: string; email: string; role?: string };
     const body = request.body as {
       messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[];
@@ -267,6 +273,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
     let sessionId = body.sessionId;
     let trace: any;
+    let chatStreamCompleted = false;
+    let assistantSaved = false;
     try {
       let history: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[] = [];
 
@@ -324,6 +332,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
 
       const result = await chatStream(history, fastify, writeEvent, trace, body.uiContext, user);
+      chatStreamCompleted = true;
 
       // Save assistant message
       if (result.toolCalls && result.toolCalls.length > 0) {
@@ -343,6 +352,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       } else {
         await appendMessage(fastify.pg, sessionId, "assistant", result.content ?? "");
       }
+      assistantSaved = true;
 
       await trace?.end({ output: { contentLength: result.content?.length ?? 0 }, status: "completed" });
       writeEvent({ type: "done", content: result.content ?? "", sessionId });
@@ -354,6 +364,16 @@ export async function chatRoutes(fastify: FastifyInstance) {
         // client disconnected
       }
     } finally {
+      // T7: If the stream completed but we didn't save the assistant message
+      // (client disconnected mid-save), append a synthetic message so the
+      // session remains valid for the next turn.
+      if (chatStreamCompleted && !assistantSaved && sessionId) {
+        try {
+          await appendMessage(fastify.pg, sessionId, "assistant", "[interrupted]");
+        } catch (e: any) {
+          fastify.log.warn({ err: e.message, sessionId }, "Failed to write abort finalizer");
+        }
+      }
       try {
         reply.raw.end();
       } catch {

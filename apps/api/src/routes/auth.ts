@@ -1,8 +1,22 @@
 import { FastifyInstance } from "fastify";
 import bcrypt from "bcryptjs";
 
+const JWT_EXPIRES_IN = "24h";
+
+function buildTokenPayload(user: { id: string; email: string; role: string }) {
+  return { id: user.id, email: user.email, role: user.role, jti: crypto.randomUUID() };
+}
+
 export async function authRoutes(fastify: FastifyInstance) {
-  fastify.post("/api/login", async (request, reply) => {
+  fastify.post("/api/login", {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: "1 minute",
+        keyGenerator: (req: any) => req.ip,
+      },
+    },
+  }, async (request, reply) => {
     const body = request.body as { email?: string; password?: string };
     if (!body.email || !body.password) {
       return reply.status(400).send({ error: "email and password required" });
@@ -22,7 +36,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
 
-    const token = await fastify.jwt.sign({ id: user.id, email: user.email, role: user.role });
+    const token = await fastify.jwt.sign(buildTokenPayload(user), { expiresIn: JWT_EXPIRES_IN });
     return { token, user: { id: user.id, name: user.name, email: user.email, role: user.role } };
   });
 
@@ -57,8 +71,14 @@ export async function authRoutes(fastify: FastifyInstance) {
       await session.close();
     }
 
-    const token = await fastify.jwt.sign({ id, email: body.email, role: "operator" });
+    const token = await fastify.jwt.sign(buildTokenPayload({ id, email: body.email, role: "operator" }), { expiresIn: JWT_EXPIRES_IN });
     return { token, user: { id, name: body.name, email: body.email, role: "operator" } };
+  });
+
+  fastify.post("/api/auth/refresh", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const user = request.user as { id: string; email: string; role: string };
+    const fresh = await fastify.jwt.sign(buildTokenPayload(user), { expiresIn: JWT_EXPIRES_IN });
+    return { token: fresh };
   });
 
   fastify.post("/api/ws-ticket", { onRequest: [fastify.authenticate] }, async (request, _reply) => {

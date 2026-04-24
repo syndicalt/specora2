@@ -3,8 +3,6 @@ import { FastifyInstance } from "fastify";
 import type { Trace } from "@pathlight/sdk";
 import { executeTool as executeAppTool, getToolsForSession } from "@specora/sdk";
 import { SessionTrace } from "./pathlightSession";
-// Import to trigger tool registration
-import "./appTools";
 
 function getOpenAI(): OpenAI | null {
   const key = process.env.OPENAI_API_KEY;

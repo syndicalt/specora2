@@ -20,6 +20,8 @@ import { jobQueueRoutes } from "./routes/jobQueue";
 import { adminRoutes } from "./routes/admin";
 import { initializeAuditLog } from "./services/auditLog";
 import { websocketRoutes } from "./services/websocket";
+// Explicit app tool registration (side-effect import — must run before chatRoutes)
+import "./services/appTools";
 
 const fastify = Fastify({ logger: { transport: { target: "pino-pretty" } } });
 
@@ -34,7 +36,7 @@ async function main() {
   await fastify.register(rateLimit, {
     max: 100,
     timeWindow: "1 minute",
-    skipOnError: true,
+    skipOnError: false,
   });
   await fastify.register(jwt, { secret: process.env.JWT_SECRET || "change-me" });
   await fastify.register(neo4jPlugin);
