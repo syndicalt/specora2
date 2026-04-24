@@ -28,6 +28,7 @@ services:
       - ./packages/db/migrations/005_seed_users.sql:/docker-entrypoint-initdb.d/005_seed_users.sql
       - ./packages/db/migrations/006_marketplace.sql:/docker-entrypoint-initdb.d/006_marketplace.sql
       - ./packages/db/migrations/007_marketplace_seed.sql:/docker-entrypoint-initdb.d/007_marketplace_seed.sql
+      - ./packages/db/migrations/008_saved_views.sql:/docker-entrypoint-initdb.d/008_saved_views.sql
 
   api:
     build:

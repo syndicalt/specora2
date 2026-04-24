@@ -36,6 +36,11 @@ const typeDefs = `
     edges: [ServiceMapEdge!]!
   }
 
+  type DependencyPath {
+    nodes: [ConfigurationItem!]!
+    edges: [ServiceMapEdge!]!
+  }
+
   type IngestionJob {
     jobId: ID!
     status: String!
@@ -82,6 +87,20 @@ const typeDefs = `
     createdAt: String!
   }
 
+  type SavedView {
+    id: ID!
+    name: String!
+    rootId: String!
+    classFilter: [String!]!
+    environmentFilter: [String!]!
+    relationshipFilter: [String!]!
+    cameraX: Float
+    cameraY: Float
+    cameraZoom: Float
+    createdAt: String!
+    updatedAt: String!
+  }
+
   type CSDMV5HealthScore {
     freshness: Float
     completeness: Float
@@ -123,13 +142,17 @@ const typeDefs = `
     ciCount(filter: CIFilterInput): Int!
     ciClasses: [String!]!
     ciEnvironments: [String!]!
-    serviceMap(rootId: ID!): ServiceMap!
+    serviceMap(rootId: ID!, classFilter: [String], environmentFilter: [String], relationshipFilter: [String]): ServiceMap!
+    neighbors(nodeId: ID!, types: [String], limit: Int): ServiceMap!
+    dependencyPath(fromId: ID!, toId: ID!, maxHops: Int): DependencyPath
     discoverySources: [DiscoverySource!]!
     discoveryJobs: [DiscoveryJob!]!
     discoveryJob(id: ID!): DiscoveryJob
     me: User
     marketplaceApps(status: String): [MarketplaceApp!]!
     marketplaceApp(id: ID!): MarketplaceApp
+    savedViews: [SavedView!]!
+    savedView(id: ID!): SavedView
   }
 
   type Mutation {
@@ -146,6 +169,9 @@ const typeDefs = `
     submitMarketplaceApp(id: ID!, name: String!, description: String, url: String!, icon: String, version: String, permissions: [String!], reactVersion: String, author: String!, authorUrl: String): MarketplaceApp!
     approveMarketplaceApp(id: ID!): MarketplaceApp!
     rejectMarketplaceApp(id: ID!): MarketplaceApp!
+    createSavedView(name: String!, rootId: String!, classFilter: [String!], environmentFilter: [String!], relationshipFilter: [String!], cameraX: Float, cameraY: Float, cameraZoom: Float): SavedView!
+    updateSavedView(id: ID!, name: String, rootId: String, classFilter: [String!], environmentFilter: [String!], relationshipFilter: [String!], cameraX: Float, cameraY: Float, cameraZoom: Float): SavedView!
+    deleteSavedView(id: ID!): Boolean!
   }
 `;
 

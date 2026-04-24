@@ -46,6 +46,21 @@ html, body, #__next {
   height: 14px !important;
 }
 
+/* Custom thin scrollbar for dark theme */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 999px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
 /* Node highlight animation — applied when navigating to a CI from another app */
 @keyframes node-highlight-pulse {
   0%, 100% {

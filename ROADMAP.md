@@ -25,13 +25,28 @@
 
 ---
 
-## Next Up
+## Released
 
-### v0.3 — Graph Power
-1. **Interactive Service Map** — Click nodes to expand/collapse, edge highlighting on hover
-2. **Path tracing** — "Show me the dependency path from X to Y"
-3. **Graph filtering** — Hide by class, environment, relationship type
-4. **Saved views** — Bookmark graph configurations per user
+### v0.3 — Graph Power (2026-04-24)
+- [x] **Graph Filtering** — Class/environment/relationship filter panel with custom dark-theme checkboxes, server-side Cypher filtering
+- [x] **Path Tracing** — Two-click source→target selection, `shortestPath()` query, gold highlight with dimmed non-path elements
+- [x] **Expand/Collapse** — "Expand" context menu fetches 1-hop neighbors via `neighbors` GraphQL query
+- [x] **Add Existing CI** — Search modal to pull any CMDB node into the current graph view
+- [x] **Edge Hover Highlighting** — Stroke width boost + glow drop-shadow on hover
+- [x] **Saved Views** — `saved_views` PostgreSQL table, GraphQL CRUD, Save/Load/Delete UI in Service Map toolbar
+- [x] **GraphQL Enhancements** — `neighbors`, `dependencyPath`, filter params on `serviceMap`
+
+### v0.1 — Foundation
+- [x] Fastify/GraphQL Yoga API with JWT auth
+- [x] Neo4j CSDMv5 schema with seeded data
+- [x] Next.js 14 App Router with dark-first Tailwind UI
+- [x] Python 3.12 asyncio gRPC worker for discovery
+- [x] Chat integration with Provara + OpenAI fallback
+- [x] File upload → worker ingest → Neo4j pipeline
+
+---
+
+## Next Up
 
 ### v0.4 — AI Layer
 1. **Natural language CI search** — "Find all production databases in us-east-1"

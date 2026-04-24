@@ -109,10 +109,9 @@ export const resolvers = {
         await session.close();
       }
     },
-    async serviceMap(_parent: any, args: { rootId: string }, context: any) {
+    async serviceMap(_parent: any, args: { rootId: string; classFilter?: string[]; environmentFilter?: string[]; relationshipFilter?: string[] }, context: any) {
       const session = context.neo4j.session();
       try {
-        // Always fetch the root node first (even if it has no relationships)
         const rootResult = await session.run(
           `MATCH (root:ConfigurationItem {id: $rootId}) RETURN root`,
           { rootId: args.rootId }
@@ -120,20 +119,40 @@ export const resolvers = {
         const rootRecord = rootResult.records[0];
         const rootNode = rootRecord ? parseNode(rootRecord.get("root").properties) : null;
 
-        // Fetch related nodes and edges (0..3 hops to include isolated nodes)
-        const result = await session.run(
-          `MATCH path = (root:ConfigurationItem {id: $rootId})-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT*0..3]-(related:ConfigurationItem)
-           UNWIND relationships(path) as rel
-           WITH DISTINCT rel, startNode(rel) as src, endNode(rel) as tgt
-           RETURN rel, src, tgt
-           LIMIT 50`,
-          { rootId: args.rootId }
-        );
+        const relTypes = args.relationshipFilter?.length
+          ? args.relationshipFilter.join("|")
+          : "PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT";
+
+        let query = `MATCH path = (root:ConfigurationItem {id: $rootId})-[:${relTypes}*0..3]-(related:ConfigurationItem)
+WHERE related <> root`;
+        if (args.classFilter?.length) {
+          query += ` AND related.class IN $classFilter`;
+        }
+        if (args.environmentFilter?.length) {
+          query += ` AND related.environment IN $environmentFilter`;
+        }
+        query += `
+UNWIND relationships(path) as rel
+WITH DISTINCT rel, startNode(rel) as src, endNode(rel) as tgt`;
+        if (args.relationshipFilter?.length) {
+          query += `
+WHERE type(rel) IN $relationshipFilter`;
+        }
+        query += `
+RETURN rel, src, tgt
+LIMIT 50`;
+
+        const params: any = { rootId: args.rootId };
+        if (args.classFilter?.length) params.classFilter = args.classFilter;
+        if (args.environmentFilter?.length) params.environmentFilter = args.environmentFilter;
+        if (args.relationshipFilter?.length) params.relationshipFilter = args.relationshipFilter;
+
+        const result = await session.run(query, params);
+
         const nodesMap = new Map();
         const edgeSet = new Set<string>();
         const edges: any[] = [];
 
-        // Ensure root node is always in the map
         if (rootNode) {
           nodesMap.set(rootNode.id, rootNode);
         }
@@ -164,20 +183,120 @@ export const resolvers = {
         await session.close();
       }
     },
+    async neighbors(_parent: any, args: { nodeId: string; types?: string[]; limit?: number }, context: any) {
+      const session = context.neo4j.session();
+      try {
+        const rootResult = await session.run(
+          `MATCH (root:ConfigurationItem {id: $nodeId}) RETURN root`,
+          { nodeId: args.nodeId }
+        );
+        const rootNode = rootResult.records[0] ? parseNode(rootResult.records[0].get("root").properties) : null;
+
+        const relTypes = args.types?.length ? args.types.join("|") : "PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT";
+        const limit = args.limit ?? 50;
+
+        const result = await session.run(
+          `MATCH path = (root:ConfigurationItem {id: $nodeId})-[:${relTypes}*1]-(related:ConfigurationItem)
+           UNWIND relationships(path) as rel
+           WITH DISTINCT rel, startNode(rel) as src, endNode(rel) as tgt
+           RETURN rel, src, tgt
+           LIMIT $limit`,
+          { nodeId: args.nodeId, limit: neo4j.int(limit) }
+        );
+
+        const nodesMap = new Map();
+        const edgeSet = new Set<string>();
+        const edges: any[] = [];
+
+        if (rootNode) {
+          nodesMap.set(rootNode.id, rootNode);
+        }
+
+        for (const record of result.records) {
+          const rel = record.get("rel");
+          const src = parseNode(record.get("src").properties);
+          const tgt = parseNode(record.get("tgt").properties);
+          nodesMap.set(src.id, src);
+          nodesMap.set(tgt.id, tgt);
+          const edgeKey = `${src.id}-${tgt.id}-${rel.type}`;
+          if (!edgeSet.has(edgeKey)) {
+            edgeSet.add(edgeKey);
+            edges.push({
+              id: edgeKey,
+              type: rel.type,
+              sourceId: src.id,
+              targetId: tgt.id,
+            });
+          }
+        }
+        return {
+          root: rootNode,
+          nodes: Array.from(nodesMap.values()),
+          edges,
+        };
+      } finally {
+        await session.close();
+      }
+    },
+    async dependencyPath(_parent: any, args: { fromId: string; toId: string; maxHops?: number }, context: any) {
+      const session = context.neo4j.session();
+      try {
+        const maxHops = args.maxHops ?? 10;
+        const result = await session.run(
+          `MATCH path = shortestPath(
+             (a:ConfigurationItem {id: $fromId})
+             -[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY*1..${maxHops}]-
+             (b:ConfigurationItem {id: $toId})
+           )
+           WITH path
+           WHERE path IS NOT NULL
+           UNWIND nodes(path) as node
+           WITH collect(DISTINCT node) as pathNodes, path
+           UNWIND relationships(path) as rel
+           WITH pathNodes, rel, startNode(rel) as src, endNode(rel) as tgt
+           RETURN pathNodes, collect({reltype: type(rel), sourceid: src.id, targetid: tgt.id}) as pathRels`,
+          { fromId: args.fromId, toId: args.toId }
+        );
+        if (!result.records.length) return null;
+
+        const record = result.records[0];
+        const pathNodes = record.get("pathNodes").map((n: any) => parseNode(n.properties));
+        const pathRels = record.get("pathRels");
+        const nodesMap = new Map(pathNodes.map((n: any) => [n.id, n]));
+        const edges = pathRels.map((rel: any) => ({
+          id: `${rel.sourceid}-${rel.targetid}-${rel.reltype}`,
+          type: rel.reltype,
+          sourceId: rel.sourceid,
+          targetId: rel.targetid,
+        }));
+
+        return {
+          nodes: Array.from(nodesMap.values()),
+          edges,
+        };
+      } catch (err) {
+        console.error("dependencyPath error:", err);
+        throw err;
+      } finally {
+        await session.close();
+      }
+    },
     async discoverySources(_parent: any, _args: any, context: any) {
-      const result = await context.pg.query("SELECT id, name, type, config, created_at as createdAt FROM discovery_sources ORDER BY created_at DESC");
-      return result.rows;
+      const result = await context.pg.query("SELECT id, name, type, config, created_at FROM discovery_sources ORDER BY created_at DESC");
+      return result.rows.map((row: any) => ({ id: row.id, name: row.name, type: row.type, config: row.config, createdAt: row.created_at }));
     },
     async discoveryJobs(_parent: any, _args: any, context: any) {
-      const result = await context.pg.query("SELECT id, source_id as sourceId, file_path as filePath, status, stats, created_at as createdAt, updated_at as updatedAt FROM discovery_jobs ORDER BY created_at DESC");
-      return result.rows;
+      const result = await context.pg.query("SELECT id, source_id, file_path, status, stats, created_at, updated_at FROM discovery_jobs ORDER BY created_at DESC");
+      return result.rows.map((row: any) => ({ id: row.id, sourceId: row.source_id, filePath: row.file_path, status: row.status, stats: row.stats, createdAt: row.created_at, updatedAt: row.updated_at }));
     },
     async discoveryJob(_parent: any, args: { id: string }, context: any) {
       const result = await context.pg.query(
-        "SELECT id, source_id as sourceId, file_path as filePath, status, stats, created_at as createdAt, updated_at as updatedAt FROM discovery_jobs WHERE id = $1",
+        "SELECT id, source_id, file_path, status, stats, created_at, updated_at FROM discovery_jobs WHERE id = $1",
         [args.id]
       );
-      return result.rows[0] || null;
+      if (!result.rows.length) return null;
+      const row = result.rows[0];
+      return { id: row.id, sourceId: row.source_id, filePath: row.file_path, status: row.status, stats: row.stats, createdAt: row.created_at, updatedAt: row.updated_at };
     },
     async me(_parent: any, _args: any, context: any) {
       if (!context.user?.id) return null;
@@ -196,17 +315,81 @@ export const resolvers = {
     async marketplaceApps(_parent: any, args: { status?: string }, context: any) {
       const status = args.status || "approved";
       const result = await context.pg.query(
-        "SELECT id, name, description, url, icon, version, permissions, react_version as reactVersion, author, author_url as authorUrl, status, created_at as createdAt FROM marketplace_apps WHERE status = $1 ORDER BY name",
+        "SELECT id, name, description, url, icon, version, permissions, react_version, author, author_url, status, created_at FROM marketplace_apps WHERE status = $1 ORDER BY name",
         [status]
       );
-      return result.rows;
+      return result.rows.map((row: any) => ({
+        id: row.id, name: row.name, description: row.description, url: row.url, icon: row.icon,
+        version: row.version, permissions: row.permissions, reactVersion: row.react_version,
+        author: row.author, authorUrl: row.author_url, status: row.status, createdAt: row.created_at,
+      }));
     },
     async marketplaceApp(_parent: any, args: { id: string }, context: any) {
       const result = await context.pg.query(
-        "SELECT id, name, description, url, icon, version, permissions, react_version as reactVersion, author, author_url as authorUrl, status, created_at as createdAt FROM marketplace_apps WHERE id = $1",
+        "SELECT id, name, description, url, icon, version, permissions, react_version, author, author_url, status, created_at FROM marketplace_apps WHERE id = $1",
         [args.id]
       );
-      return result.rows[0] || null;
+      if (!result.rows.length) return null;
+      const row = result.rows[0];
+      return {
+        id: row.id, name: row.name, description: row.description, url: row.url, icon: row.icon,
+        version: row.version, permissions: row.permissions, reactVersion: row.react_version,
+        author: row.author, authorUrl: row.author_url, status: row.status, createdAt: row.created_at,
+      };
+    },
+    async savedViews(_parent: any, _args: any, context: any) {
+      if (!context.user?.id) return [];
+      try {
+        const result = await context.pg.query(
+          `SELECT id, name, root_id, class_filter, environment_filter, relationship_filter, camera_x, camera_y, camera_zoom, created_at, updated_at
+           FROM saved_views WHERE user_id = $1 ORDER BY updated_at DESC`,
+          [context.user.id]
+        );
+        return result.rows.map((row: any) => ({
+          id: row.id,
+          name: row.name,
+          rootId: row.root_id,
+          classFilter: row.class_filter || [],
+          environmentFilter: row.environment_filter || [],
+          relationshipFilter: row.relationship_filter || [],
+          cameraX: row.camera_x,
+          cameraY: row.camera_y,
+          cameraZoom: row.camera_zoom,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }));
+      } catch (err) {
+        console.error("savedViews error:", err);
+        throw err;
+      }
+    },
+    async savedView(_parent: any, args: { id: string }, context: any) {
+      if (!context.user?.id) return null;
+      try {
+        const result = await context.pg.query(
+          `SELECT id, name, root_id, class_filter, environment_filter, relationship_filter, camera_x, camera_y, camera_zoom, created_at, updated_at
+           FROM saved_views WHERE id = $1 AND user_id = $2`,
+          [args.id, context.user.id]
+        );
+        if (!result.rows.length) return null;
+        const row = result.rows[0];
+        return {
+          id: row.id,
+          name: row.name,
+          rootId: row.root_id,
+          classFilter: row.class_filter || [],
+          environmentFilter: row.environment_filter || [],
+          relationshipFilter: row.relationship_filter || [],
+          cameraX: row.camera_x,
+          cameraY: row.camera_y,
+          cameraZoom: row.camera_zoom,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        };
+      } catch (err) {
+        console.error("savedView error:", err);
+        throw err;
+      }
     },
   },
   ConfigurationItem: {
@@ -531,6 +714,100 @@ export const resolvers = {
         throw new GraphQLError("App not found", { extensions: { code: "NOT_FOUND" } });
       }
       return result.rows[0];
+    },
+    async createSavedView(_parent: any, args: any, context: any) {
+      if (!context.user?.id) {
+        throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
+      }
+      try {
+        const result = await context.pg.query(
+          `INSERT INTO saved_views (user_id, name, root_id, class_filter, environment_filter, relationship_filter, camera_x, camera_y, camera_zoom)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING id, name, root_id, class_filter, environment_filter, relationship_filter, camera_x, camera_y, camera_zoom, created_at, updated_at`,
+          [
+            context.user.id, args.name, args.rootId,
+            JSON.stringify(args.classFilter || []),
+            JSON.stringify(args.environmentFilter || []),
+            JSON.stringify(args.relationshipFilter || []),
+            args.cameraX ?? null, args.cameraY ?? null, args.cameraZoom ?? null,
+          ]
+        );
+        const row = result.rows[0];
+        return {
+          id: row.id,
+          name: row.name,
+          rootId: row.root_id,
+          classFilter: row.class_filter || [],
+          environmentFilter: row.environment_filter || [],
+          relationshipFilter: row.relationship_filter || [],
+          cameraX: row.camera_x,
+          cameraY: row.camera_y,
+          cameraZoom: row.camera_zoom,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        };
+      } catch (err) {
+        console.error("createSavedView error:", err);
+        throw err;
+      }
+    },
+    async updateSavedView(_parent: any, args: any, context: any) {
+      if (!context.user?.id) {
+        throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
+      }
+      try {
+        const updates: string[] = [];
+        const values: any[] = [];
+        let idx = 1;
+        if (args.name !== undefined) { updates.push(`name = $${idx++}`); values.push(args.name); }
+        if (args.rootId !== undefined) { updates.push(`root_id = $${idx++}`); values.push(args.rootId); }
+        if (args.classFilter !== undefined) { updates.push(`class_filter = $${idx++}`); values.push(JSON.stringify(args.classFilter)); }
+        if (args.environmentFilter !== undefined) { updates.push(`environment_filter = $${idx++}`); values.push(JSON.stringify(args.environmentFilter)); }
+        if (args.relationshipFilter !== undefined) { updates.push(`relationship_filter = $${idx++}`); values.push(JSON.stringify(args.relationshipFilter)); }
+        if (args.cameraX !== undefined) { updates.push(`camera_x = $${idx++}`); values.push(args.cameraX); }
+        if (args.cameraY !== undefined) { updates.push(`camera_y = $${idx++}`); values.push(args.cameraY); }
+        if (args.cameraZoom !== undefined) { updates.push(`camera_zoom = $${idx++}`); values.push(args.cameraZoom); }
+        if (updates.length === 0) {
+          throw new GraphQLError("No fields to update", { extensions: { code: "BAD_USER_INPUT" } });
+        }
+        updates.push(`updated_at = NOW()`);
+        values.push(args.id, context.user.id);
+        const result = await context.pg.query(
+          `UPDATE saved_views SET ${updates.join(", ")} WHERE id = $${idx++} AND user_id = $${idx++}
+           RETURNING id, name, root_id, class_filter, environment_filter, relationship_filter, camera_x, camera_y, camera_zoom, created_at, updated_at`,
+          values
+        );
+        if (!result.rows.length) {
+          throw new GraphQLError("View not found", { extensions: { code: "NOT_FOUND" } });
+        }
+        const row = result.rows[0];
+        return {
+          id: row.id,
+          name: row.name,
+          rootId: row.root_id,
+          classFilter: row.class_filter || [],
+          environmentFilter: row.environment_filter || [],
+          relationshipFilter: row.relationship_filter || [],
+          cameraX: row.camera_x,
+          cameraY: row.camera_y,
+          cameraZoom: row.camera_zoom,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        };
+      } catch (err) {
+        console.error("updateSavedView error:", err);
+        throw err;
+      }
+    },
+    async deleteSavedView(_parent: any, args: { id: string }, context: any) {
+      if (!context.user?.id) {
+        throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
+      }
+      const result = await context.pg.query(
+        "DELETE FROM saved_views WHERE id = $1 AND user_id = $2 RETURNING id",
+        [args.id, context.user.id]
+      );
+      return result.rows.length > 0;
     },
   },
 };

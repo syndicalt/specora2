@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.0] — Graph Power
+
+### Added
+
+#### Service Map — Interactive Graph
+- **Graph filtering** — Collapsible panel with checkbox groups for class, environment, and relationship type. Filters applied server-side via Neo4j Cypher.
+- **Path tracing** — Two-click mode: click source node, click target node, shortest path highlights in gold with non-path elements dimmed to 30%.
+- **Expand/collapse** — "Expand" context menu action fetches 1-hop neighbors via `neighbors` GraphQL query and merges them into the React Flow state.
+- **Add Existing CI** — Right-click canvas → "Add Existing CI" opens search modal to pull any CMDB node into the current graph view.
+- **Edge hover highlighting** — Hovering an edge boosts stroke width and adds a glow drop-shadow.
+- **Custom React Flow node** — `ServiceMapNode` with top/bottom `Handle` components for proper edge attachment.
+
+#### GraphQL API
+- **`neighbors(nodeId, types, limit)`** — 1-hop adjacency query for incremental graph expansion.
+- **`dependencyPath(fromId, toId, maxHops)`** — `shortestPath()` query between two CIs using structural relationship types.
+- **Filter params on `serviceMap`** — `classFilter`, `environmentFilter`, `relationshipFilter` for server-side graph filtering.
+
+#### Saved Views
+- **`saved_views` PostgreSQL table** — Per-user bookmarks storing root CI, active filters, and camera position.
+- **GraphQL CRUD** — `savedViews`, `createSavedView`, `updateSavedView`, `deleteSavedView` with user-scoped authorization.
+- **Service Map UI** — "Save View" / "Load View" buttons in the toolbar with dropdown listing, delete action.
+
+### Fixed
+- **PostgreSQL column alias case sensitivity** — All resolvers now use explicit field mapping (`row.react_version` → `reactVersion`) instead of relying on `AS` aliases, which PostgreSQL lowercases.
+- **Cypher query whitespace** — `serviceMap` filter query builder uses explicit string concatenation to avoid blank-line syntax errors.
+
+---
+
 ## [0.2.0] — App Ecosystem
 
 ### Added
