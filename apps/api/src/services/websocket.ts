@@ -83,7 +83,11 @@ export async function websocketRoutes(fastify: FastifyInstance) {
     connections.add(client);
     fastify.log.info({ userId, connections: connections.size }, "WebSocket client connected");
 
-    // Heartbeat: server sends ping every 30s, expects pong within 10s
+    // Heartbeat: server sends protocol-level ping every 30s, expects pong within 10s
+    connection.socket.on("pong", () => {
+      client.lastPong = Date.now();
+    });
+
     const pingInterval = setInterval(() => {
       if (Date.now() - client.lastPong > 40000) {
         fastify.log.warn({ userId }, "WebSocket client heartbeat timeout");
@@ -91,7 +95,7 @@ export async function websocketRoutes(fastify: FastifyInstance) {
         return;
       }
       try {
-        connection.socket.send(JSON.stringify({ type: "ping" }));
+        connection.socket.ping();
       } catch {
         clearInterval(pingInterval);
         connections.delete(client);
@@ -107,8 +111,6 @@ export async function websocketRoutes(fastify: FastifyInstance) {
         } else if (msg.action === "unsubscribe" && Array.isArray(msg.types)) {
           for (const t of msg.types) client.subscriptions.delete(t);
           connection.socket.send(JSON.stringify({ type: "unsubscribed", types: msg.types }));
-        } else if (msg.action === "pong") {
-          client.lastPong = Date.now();
         }
       } catch {
         // ignore malformed messages

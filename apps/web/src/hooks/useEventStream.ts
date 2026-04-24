@@ -72,10 +72,6 @@ export function useEventStream(): EventStream {
         if (!mountedRef.current) return;
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === "ping") {
-            ws.send(JSON.stringify({ action: "pong" }));
-            return;
-          }
           if (msg.type && msg.payload) {
             const handlers = handlersRef.current.get(msg.type);
             if (handlers) {

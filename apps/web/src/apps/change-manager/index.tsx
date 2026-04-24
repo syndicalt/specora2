@@ -131,22 +131,19 @@ export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
         if (prev.some((r) => r.id === data.id)) return prev;
         return [data, ...prev];
       });
-      // Build impact graph data
+      // Build impact graph data using real Neo4j relationships
       const nodes = (data.affectedCis || []).map((ci: any) => ({
         id: ci.ciId,
         name: ci.name || ci.ciId,
         class: "CI",
         role: ci.role === "primary" ? "primary" : ci.role === "affected" ? "affected" : "dependency",
       }));
-      // For edges, we'd need relationship data from Neo4j. For now, create a simple star topology from primary.
-      const primary = nodes.find((n: any) => n.role === "primary");
-      const edges = primary
-        ? nodes.filter((n: any) => n.id !== primary.id).map((n: any) => ({
-            sourceId: primary.id,
-            targetId: n.id,
-            type: "DEPENDS_ON",
-          }))
-        : [];
+      // Use real edges from Neo4j if available; otherwise show nodes without fabricated edges
+      const edges = (data.edges || []).map((e: any) => ({
+        sourceId: e.sourceId,
+        targetId: e.targetId,
+        type: e.type,
+      }));
       setImpactData({ nodes, edges });
     } catch (err: any) {
       setMessage({ type: "error", text: err.message || "Failed to load RFC details" });

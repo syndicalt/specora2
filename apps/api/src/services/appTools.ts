@@ -322,9 +322,10 @@ registerTool<FastifyInstance>("change-manager", {
     [rfcId]
   );
 
-  // Look up CI names from Neo4j
+  // Look up CI names and real relationships from Neo4j
   const session = fastify.neo4j.session();
   let ciNames: Record<string, string> = {};
+  let realEdges: { sourceId: string; targetId: string; type: string }[] = [];
   try {
     const ciIds = cisResult.rows.map((r: any) => r.ci_id);
     if (ciIds.length > 0) {
@@ -335,6 +336,19 @@ registerTool<FastifyInstance>("change-manager", {
       for (const record of neoResult.records) {
         ciNames[record.get("id")] = record.get("name");
       }
+
+      // Fetch real relationships between affected CIs (both directions)
+      const relResult = await session.run(
+        `MATCH (a:ConfigurationItem)-[r]->(b:ConfigurationItem)
+         WHERE a.id IN $ids AND b.id IN $ids
+         RETURN a.id as sourceId, b.id as targetId, type(r) as type`,
+        { ids: ciIds }
+      );
+      realEdges = relResult.records.map((r: any) => ({
+        sourceId: r.get("sourceId"),
+        targetId: r.get("targetId"),
+        type: r.get("type"),
+      }));
     }
   } finally {
     await session.close();
@@ -345,6 +359,7 @@ registerTool<FastifyInstance>("change-manager", {
     plannedStartAt: rfc.planned_start_at || rfc.scheduled_at,
     plannedEndAt: rfc.planned_end_at,
     affectedCis: cisResult.rows.map((r: any) => ({ ciId: r.ci_id, role: r.role, name: ciNames[r.ci_id] || r.ci_id })),
+    edges: realEdges,
     approvers: approversResult.rows,
     comments: commentsResult.rows,
   };
