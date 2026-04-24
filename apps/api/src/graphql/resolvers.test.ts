@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import neo4j from "neo4j-driver";
 import { resolvers } from "./resolvers";
 
-function mockNeo4jSession(records: any[] = []) {
+function mockNeo4jSession(records: any[] = [], secondRecords?: any[]) {
+  const allRecords = secondRecords !== undefined ? [records, secondRecords] : [records];
+  let callIndex = 0;
   return {
-    run: vi.fn().mockResolvedValue({ records }),
+    run: vi.fn().mockImplementation(() => {
+      const result = { records: allRecords[callIndex] ?? [] };
+      callIndex++;
+      return Promise.resolve(result);
+    }),
     close: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -11,17 +18,19 @@ function mockNeo4jSession(records: any[] = []) {
 function mockContext(session: any, worker = {}) {
   return {
     neo4j: { session: () => session },
-    user: { id: "usr-1", email: "alice@specora.dev" },
+    user: { id: "550e8400-e29b-41d4-a716-446655440001", email: "alice@specora.dev" },
     worker,
   };
 }
+
+
 
 function makeNode(props: any) {
   return { properties: { attributes: "{}", ...props } };
 }
 
 function makeRecord(node: any, rel?: any, target?: any) {
-  const getters: any = { n: node, src: node, tgt: target || node };
+  const getters: any = { n: node, root: node, src: node, tgt: target || node };
   if (rel) getters.rel = rel;
   return {
     get: (key: string) => getters[key],
@@ -85,7 +94,10 @@ describe("Query.cis", () => {
     ]);
     const result = await resolvers.Query.cis(null, {}, mockContext(session));
     expect(result).toHaveLength(2);
-    expect(session.run).toHaveBeenCalledWith(expect.stringContaining("LIMIT 100"), {});
+    expect(session.run).toHaveBeenCalledWith(
+      expect.stringContaining("LIMIT $limit"),
+      expect.objectContaining({ limit: expect.objectContaining({ low: 100, high: 0 }) })
+    );
   });
 
   it("filters by class, environment, and name", async () => {
@@ -104,9 +116,11 @@ describe("Query.serviceMap", () => {
     const root = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
     const related = makeNode({ id: "as-1", name: "API", class: "ApplicationService" });
     const rel = { type: "DEPENDS_ON", start: "bs-1", end: "as-1" };
-    const session = mockNeo4jSession([
-      makeRecord(root, rel, related),
-    ]);
+    // First query returns root node, second query returns path records
+    const session = mockNeo4jSession(
+      [makeRecord(root)],
+      [makeRecord(root, rel, related)]
+    );
     const result = await resolvers.Query.serviceMap(null, { rootId: "bs-1" }, mockContext(session));
     expect(result.nodes).toHaveLength(2);
     expect(result.edges).toHaveLength(1);
@@ -117,10 +131,10 @@ describe("Query.serviceMap", () => {
     const root = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
     const related = makeNode({ id: "as-1", name: "API", class: "ApplicationService" });
     const rel = { type: "DEPENDS_ON", start: "bs-1", end: "as-1" };
-    const session = mockNeo4jSession([
-      makeRecord(root, rel, related),
-      makeRecord(root, rel, related),
-    ]);
+    const session = mockNeo4jSession(
+      [makeRecord(root)],
+      [makeRecord(root, rel, related), makeRecord(root, rel, related)]
+    );
     const result = await resolvers.Query.serviceMap(null, { rootId: "bs-1" }, mockContext(session));
     expect(result.edges).toHaveLength(1);
   });
@@ -284,7 +298,7 @@ describe("Mutation.ingestCMDB", () => {
 
 function mockPg(rows: any[] = []) {
   return {
-    query: vi.fn().mockResolvedValue({ rows }),
+    query: vi.fn().mockResolvedValue({ rows, rowCount: rows.length }),
   };
 }
 
@@ -292,7 +306,7 @@ function mockContextWithPg(session: any, pg: any, worker = {}) {
   return {
     neo4j: { session: () => session },
     pg,
-    user: { id: "usr-1", email: "alice@specora.dev" },
+    user: { id: "550e8400-e29b-41d4-a716-446655440001", email: "alice@specora.dev" },
     worker,
   };
 }
@@ -391,5 +405,119 @@ describe("ConfigurationItem.health", () => {
     );
     expect(result.freshness).toBe(0.0);
     expect(result.relationshipValidity).toBe(0.5);
+  });
+});
+
+describe("Mutation.deleteRelationship", () => {
+  it("deletes an existing relationship", async () => {
+    const session = mockNeo4jSession([{ get: (k: string) => k === "deleted" ? { toNumber: () => 1 } : null }]);
+    const result = await resolvers.Mutation.deleteRelationship(
+      null,
+      { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON" },
+      mockContext(session)
+    );
+    expect(result).toBe(true);
+    expect(session.run).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE r"),
+      expect.objectContaining({ sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001" })
+    );
+  });
+
+  it("returns false when relationship not found", async () => {
+    const session = mockNeo4jSession([{ get: (k: string) => k === "deleted" ? { toNumber: () => 0 } : null }]);
+    const result = await resolvers.Mutation.deleteRelationship(
+      null,
+      { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON" },
+      mockContext(session)
+    );
+    expect(result).toBe(false);
+  });
+});
+
+describe("Mutation.updateRelationship", () => {
+  it("updates relationship type when newType is different", async () => {
+    const rel = { start: "550e8400-e29b-41d4-a716-446655440000", end: "550e8400-e29b-41d4-a716-446655440001", type: "HOSTED_ON", properties: {} };
+    const session = mockNeo4jSession([{
+      get: (k: string) => {
+        if (k === "r2") return rel;
+        if (k === "target") return makeNode({ id: "550e8400-e29b-41d4-a716-446655440001", name: "Web-01", class: "Server" });
+        return null;
+      },
+    }]);
+    const result = await resolvers.Mutation.updateRelationship(
+      null,
+      { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", newType: "HOSTED_ON" },
+      mockContext(session)
+    );
+    expect(result.type).toBe("HOSTED_ON");
+    expect(session.run).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE r"),
+      expect.anything()
+    );
+  });
+
+  it("updates attributes when type unchanged", async () => {
+    const rel = { start: "550e8400-e29b-41d4-a716-446655440000", end: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", properties: { priority: "high" } };
+    const session = mockNeo4jSession([{
+      get: (k: string) => {
+        if (k === "r") return rel;
+        if (k === "target") return makeNode({ id: "550e8400-e29b-41d4-a716-446655440001", name: "Web-01", class: "Server" });
+        return null;
+      },
+    }]);
+    const result = await resolvers.Mutation.updateRelationship(
+      null,
+      { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", attributes: { priority: "high" } },
+      mockContext(session)
+    );
+    expect(result.type).toBe("DEPENDS_ON");
+    expect(session.run).toHaveBeenCalledWith(
+      expect.stringContaining("SET r.attributes"),
+      expect.anything()
+    );
+  });
+
+  it("throws when relationship not found", async () => {
+    const session = mockNeo4jSession([]);
+    await expect(
+      resolvers.Mutation.updateRelationship(
+        null,
+        { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON" },
+        mockContext(session)
+      )
+    ).rejects.toThrow("Relationship not found");
+  });
+});
+
+describe("Query.me", () => {
+  it("returns user when authenticated", async () => {
+    const pg = mockPg([{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice", email: "alice@specora.dev", preferences: { theme: "dark" } }]);
+    const result = await resolvers.Query.me(null, {}, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result.id).toBe("550e8400-e29b-41d4-a716-446655440001");
+    expect(result.name).toBe("Alice");
+    expect(result.preferences).toEqual({ theme: "dark" });
+  });
+
+  it("returns null when not authenticated", async () => {
+    const result = await resolvers.Query.me(null, {}, { neo4j: { session: () => mockNeo4jSession() }, pg: mockPg(), user: null });
+    expect(result).toBeNull();
+  });
+});
+
+describe("Mutation.updatePreferences", () => {
+  it("updates user preferences", async () => {
+    const pg = mockPg([{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice", email: "alice@specora.dev", preferences: { dock: { order: ["service-map"] } } }]);
+    const result = await resolvers.Mutation.updatePreferences(null, { preferences: { dock: { order: ["service-map"] } } }, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result.preferences).toEqual({ dock: { order: ["service-map"] } });
+    expect(pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE users SET preferences"),
+      [JSON.stringify({ dock: { order: ["service-map"] } }), "550e8400-e29b-41d4-a716-446655440001"]
+    );
+  });
+
+  it("throws when not authenticated", async () => {
+    await expect(
+      resolvers.Mutation.updatePreferences(null, { preferences: {} }, { neo4j: { session: () => mockNeo4jSession() }, pg: mockPg(), user: null })
+    ).rejects.toThrow("Unauthorized");
   });
 });

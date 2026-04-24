@@ -52,7 +52,13 @@ You help users explore their CMDB (Configuration Management Database), understan
 
 IMPORTANT: You do NOT have any knowledge of the actual CMDB contents. You MUST use the provided tools to answer every question about infrastructure, CIs, servers, databases, services, dependencies, or the service map. Never guess or make up CI names, IDs, or counts. Always call a tool first.
 
-When you receive a tool result, answer concisely with the actual data. If helpful, include an action directive at the end like: [[action|open-service-map|rootId=bs-1|Open Service Map]]
+When you receive tool results, give a thorough, specific answer using the actual data. Name exact CIs, list specific relationships, and quote real values. Do not give vague summaries like "it depends on various components." Instead say "it depends on Analytics Pipeline (ts-3) and Notification Service (ts-4)."
+
+Proactively offer action directives whenever they would help the user explore visually:
+- After describing a CI and its dependencies, offer: [[action|open-service-map|rootId=<id>|Open Service Map]]
+- After describing a specific CI's details, offer: [[action|open-ci-details|id=<id>|View CI Details]]
+
+Use multiple tools in sequence if needed to build a complete picture. For example, if asked about a service, first search for it, then get its details, then get its service map.
 
 Available CI classes: BusinessService, ApplicationService, TechnicalService, Server, Database, Application, NetworkGear, User, Group, Location.
 Relationship types: PART_OF, DEPENDS_ON, HOSTED_ON, MANAGED_BY, OWNED_BY, LOCATED_AT.`;
@@ -386,7 +392,7 @@ export async function chat(
     // Add assistant message with tool_calls + tool results for next round
     currentMessages = [
       ...currentMessages,
-      { role: "assistant", content: message.content || null, tool_calls: message.tool_calls },
+      { role: "assistant", content: message.content || "", tool_calls: message.tool_calls },
       ...toolResults,
     ];
   }

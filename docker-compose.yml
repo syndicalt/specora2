@@ -24,6 +24,10 @@ services:
       - ./packages/db/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
       - ./packages/db/migrations/002_discovery.sql:/docker-entrypoint-initdb.d/002_discovery.sql
       - ./packages/db/migrations/003_chat.sql:/docker-entrypoint-initdb.d/003_chat.sql
+      - ./packages/db/migrations/004_users.sql:/docker-entrypoint-initdb.d/004_users.sql
+      - ./packages/db/migrations/005_seed_users.sql:/docker-entrypoint-initdb.d/005_seed_users.sql
+      - ./packages/db/migrations/006_marketplace.sql:/docker-entrypoint-initdb.d/006_marketplace.sql
+      - ./packages/db/migrations/007_marketplace_seed.sql:/docker-entrypoint-initdb.d/007_marketplace_seed.sql
 
   api:
     build:

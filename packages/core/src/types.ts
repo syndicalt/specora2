@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const ConfigurationItemSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   name: z.string().min(1),
   class: z.string().min(1),
   environment: z.string().optional(),
@@ -11,17 +11,17 @@ export const ConfigurationItemSchema = z.object({
 export type ConfigurationItem = z.infer<typeof ConfigurationItemSchema>;
 
 export const RelationshipSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   type: z.string().min(1),
-  sourceId: z.string().uuid(),
-  targetId: z.string().uuid(),
+  sourceId: z.string().min(1),
+  targetId: z.string().min(1),
   attributes: z.record(z.any()).optional(),
 });
 
 export type Relationship = z.infer<typeof RelationshipSchema>;
 
 export const CreateCIInputSchema = ConfigurationItemSchema.omit({ id: true }).extend({
-  id: z.string().uuid().optional(),
+  id: z.string().min(1).optional(),
 });
 
 export type CreateCIInput = z.infer<typeof CreateCIInputSchema>;
@@ -31,10 +31,28 @@ export const UpdateCIInputSchema = ConfigurationItemSchema.partial().omit({ id: 
 export type UpdateCIInput = z.infer<typeof UpdateCIInputSchema>;
 
 export const CreateRelationshipInputSchema = z.object({
-  sourceId: z.string().uuid(),
-  targetId: z.string().uuid(),
+  sourceId: z.string().min(1),
+  targetId: z.string().min(1),
   type: z.enum(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]),
   attributes: z.record(z.any()).optional(),
 });
 
 export type CreateRelationshipInput = z.infer<typeof CreateRelationshipInputSchema>;
+
+export const DeleteRelationshipInputSchema = z.object({
+  sourceId: z.string().min(1),
+  targetId: z.string().min(1),
+  type: z.enum(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]),
+});
+
+export type DeleteRelationshipInput = z.infer<typeof DeleteRelationshipInputSchema>;
+
+export const UpdateRelationshipInputSchema = z.object({
+  sourceId: z.string().min(1),
+  targetId: z.string().min(1),
+  type: z.enum(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]),
+  newType: z.enum(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]).optional(),
+  attributes: z.record(z.any()).optional(),
+});
+
+export type UpdateRelationshipInput = z.infer<typeof UpdateRelationshipInputSchema>;

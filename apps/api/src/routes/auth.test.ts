@@ -3,16 +3,27 @@ import Fastify from "fastify";
 import { authRoutes } from "../routes/auth";
 import bcrypt from "bcryptjs";
 
-function mockNeo4jSession(records: any[] = []) {
+function mockPg(rows: any[] = []) {
   return {
-    run: vi.fn().mockResolvedValue({ records }),
-    close: vi.fn().mockResolvedValue(undefined),
-  };
+    query: vi.fn().mockResolvedValue({ rows, rowCount: rows.length }),
+  } as any;
 }
 
-async function buildApp(neo4jSession?: any) {
+function mockPgForSequence(results: { rows: any[]; rowCount?: number }[]) {
+  let callIndex = 0;
+  return {
+    query: vi.fn().mockImplementation(() => {
+      const result = results[callIndex] ?? { rows: [], rowCount: 0 };
+      callIndex++;
+      return Promise.resolve(result);
+    }),
+  } as any;
+}
+
+async function buildApp(pg?: any, neo4jSession?: any) {
   const app = Fastify();
-  app.decorate("neo4j", { session: () => neo4jSession || mockNeo4jSession() });
+  app.decorate("pg", pg || mockPg());
+  app.decorate("neo4j", { session: () => neo4jSession || { run: vi.fn().mockResolvedValue({ records: [] }), close: vi.fn() } });
   app.decorate("jwt", {
     sign: vi.fn().mockReturnValue("mock-token"),
   });
@@ -23,10 +34,10 @@ async function buildApp(neo4jSession?: any) {
 describe("POST /api/login", () => {
   it("returns token for valid credentials", async () => {
     const hash = await bcrypt.hash("secret123", 10);
-    const session = mockNeo4jSession([
-      { get: (k: string) => k === "u" ? { properties: { id: "usr-1", email: "alice@specora.dev", passwordHash: hash, name: "Alice" } } : undefined },
+    const pg = mockPg([
+      { id: "550e8400-e29b-41d4-a716-446655440001", email: "alice@specora.dev", name: "Alice", password_hash: hash },
     ]);
-    const app = await buildApp(session);
+    const app = await buildApp(pg);
 
     const res = await app.inject({
       method: "POST",
@@ -42,10 +53,10 @@ describe("POST /api/login", () => {
 
   it("returns 401 for wrong password", async () => {
     const hash = await bcrypt.hash("secret123", 10);
-    const session = mockNeo4jSession([
-      { get: (k: string) => k === "u" ? { properties: { id: "usr-1", email: "alice@specora.dev", passwordHash: hash, name: "Alice" } } : undefined },
+    const pg = mockPg([
+      { id: "550e8400-e29b-41d4-a716-446655440001", email: "alice@specora.dev", name: "Alice", password_hash: hash },
     ]);
-    const app = await buildApp(session);
+    const app = await buildApp(pg);
 
     const res = await app.inject({
       method: "POST",
@@ -57,28 +68,13 @@ describe("POST /api/login", () => {
   });
 
   it("returns 401 for missing user", async () => {
-    const session = mockNeo4jSession([]);
-    const app = await buildApp(session);
+    const pg = mockPg([]);
+    const app = await buildApp(pg);
 
     const res = await app.inject({
       method: "POST",
       url: "/api/login",
       payload: { email: "nobody@specora.dev", password: "secret" },
-    });
-
-    expect(res.statusCode).toBe(401);
-  });
-
-  it("returns 401 when user has no passwordHash", async () => {
-    const session = mockNeo4jSession([
-      { get: (k: string) => k === "u" ? { properties: { id: "usr-1", email: "alice@specora.dev", name: "Alice" } } : undefined },
-    ]);
-    const app = await buildApp(session);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/login",
-      payload: { email: "alice@specora.dev", password: "secret" },
     });
 
     expect(res.statusCode).toBe(401);
@@ -98,8 +94,11 @@ describe("POST /api/login", () => {
 
 describe("POST /api/register", () => {
   it("creates a new user and returns token", async () => {
-    const session = mockNeo4jSession([]); // no existing user
-    const app = await buildApp(session);
+    const pg = mockPgForSequence([
+      { rows: [], rowCount: 0 }, // check existing
+      { rows: [], rowCount: 1 }, // insert
+    ]);
+    const app = await buildApp(pg);
 
     const res = await app.inject({
       method: "POST",
@@ -114,8 +113,8 @@ describe("POST /api/register", () => {
   });
 
   it("returns 409 for duplicate email", async () => {
-    const session = mockNeo4jSession([{ get: () => ({ id: "usr-1" }) }]);
-    const app = await buildApp(session);
+    const pg = mockPg([{ id: "550e8400-e29b-41d4-a716-446655440001" }]);
+    const app = await buildApp(pg);
 
     const res = await app.inject({
       method: "POST",

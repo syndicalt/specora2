@@ -1,21 +1,15 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useShell } from "./AppContext";
 import type { RegistryEntry } from "@/sdk/types";
-import { LayoutGrid, LogOut, X, Network, Database, Compass, Settings, type LucideIcon } from "lucide-react";
-
-const ICON_MAP: Record<string, LucideIcon> = {
-  Network,
-  Database,
-  Compass,
-  Settings,
-};
+import { APP_ICONS, LogOut, X, MessageSquare, PinOff, Pin } from "@/lib/icons";
 import { removeToken } from "@/lib/auth";
 
 export function UserProfileBadge() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const { dispatch } = useShell();
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -32,6 +26,11 @@ export function UserProfileBadge() {
     window.location.href = "/login";
   };
 
+  const openSettings = () => {
+    setOpen(false);
+    dispatch({ type: "OPEN_APP", id: "settings", installKey: "settings", mode: "window", permissions: ["read:profile"] });
+  };
+
   return (
     <div ref={ref} className="relative">
       <button
@@ -42,14 +41,21 @@ export function UserProfileBadge() {
       </button>
 
       {open && (
-        <div className="absolute bottom-full right-0 mb-2 w-44 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl overflow-hidden z-50">
-          <div className="px-3 py-2 border-b border-gray-800">
+        <div className="absolute bottom-full right-0 mb-2 w-48 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl overflow-hidden z-[60]">
+          <div className="px-3 py-2.5 border-b border-gray-800">
             <p className="text-xs text-gray-500">Signed in as</p>
             <p className="text-sm font-medium text-gray-200">User</p>
           </div>
           <button
+            onClick={openSettings}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+          >
+            <APP_ICONS.Settings className="w-4 h-4 text-gray-500" />
+            Settings
+          </button>
+          <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors"
           >
             <LogOut className="w-4 h-4" />
             Logout
@@ -63,6 +69,8 @@ export function UserProfileBadge() {
 export function AppDock({ registry }: { registry: RegistryEntry[] }) {
   const { state, dispatch } = useShell();
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; appId: string } | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
 
   const handleDockClick = (id: string) => {
     const instance = state.instances.find((i) => i.id === id);
@@ -75,7 +83,7 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
     } else {
       const entry = registry.find((r) => r.id === id);
       if (entry) {
-        dispatch({ type: "OPEN_APP", id: entry.id, installKey: entry.installKey, mode: entry.defaultMode });
+        dispatch({ type: "OPEN_APP", id: entry.id, installKey: entry.installKey, mode: entry.defaultMode, permissions: entry.permissions });
       }
     }
   };
@@ -94,90 +102,224 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
     return state.instances.some((i) => i.id === id);
   };
 
+  const handleDragStart = (e: React.DragEvent, id: string) => {
+    setDraggingId(id);
+    e.dataTransfer.effectAllowed = "move";
+    // Required for Firefox
+    e.dataTransfer.setData("text/plain", id);
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverIndex(index);
+  };
+
+  const handleDrop = (e: React.DragEvent, toIndex: number) => {
+    e.preventDefault();
+    const id = e.dataTransfer.getData("text/plain") || draggingId;
+    if (!id) {
+      setDragOverIndex(null);
+      setDraggingId(null);
+      return;
+    }
+    const fromIndex = state.dockedIds.indexOf(id);
+    if (fromIndex !== -1 && fromIndex !== toIndex) {
+      dispatch({ type: "REORDER_DOCK", fromIndex, toIndex });
+    }
+    setDragOverIndex(null);
+    setDraggingId(null);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const isPinned = (id: string) => state.dockedIds.includes(id);
+
+  // Running apps that are not pinned — show in dock after pinned section
+  const uniqueRunningUnpinned = useMemo(() => {
+    const ids = state.instances
+      .filter((i) => !state.dockedIds.includes(i.id))
+      .map((i) => i.id);
+    return [...new Set(ids)];
+  }, [state.instances, state.dockedIds]);
+
   return (
     <>
       {/* Context menu */}
       {contextMenu && (
         <div
-          className="fixed z-[70] bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl overflow-hidden py-1"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed z-[60] bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl overflow-hidden py-1"
+          style={{ left: contextMenu.x, top: contextMenu.y, transform: "translateY(calc(-100% - 8px))" }}
         >
-          <button
-            onClick={() => {
-              dispatch({ type: "UNPIN_FROM_DOCK", id: contextMenu.appId });
-              const instance = state.instances.find((i) => i.id === contextMenu.appId);
-              if (instance) {
-                dispatch({ type: "CLOSE_APP", instanceId: instance.instanceId });
-              }
-              setContextMenu(null);
-            }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
-          >
-            <X className="w-4 h-4" />
-            Close
-          </button>
+          {isOpen(contextMenu.appId) && (
+            <button
+              onClick={() => {
+                const instance = state.instances.find((i) => i.id === contextMenu.appId);
+                if (instance) {
+                  dispatch({ type: "CLOSE_APP", instanceId: instance.instanceId });
+                }
+                setContextMenu(null);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+            >
+              <X className="w-4 h-4" />
+              Close
+            </button>
+          )}
+          {isPinned(contextMenu.appId) ? (
+            <button
+              onClick={() => {
+                dispatch({ type: "UNPIN_FROM_DOCK", id: contextMenu.appId });
+                setContextMenu(null);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+            >
+              <PinOff className="w-4 h-4" />
+              Unpin from Dock
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                dispatch({ type: "PIN_TO_DOCK", id: contextMenu.appId });
+                setContextMenu(null);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+            >
+              <Pin className="w-4 h-4" />
+              Pin to Dock
+            </button>
+          )}
         </div>
       )}
 
       {/* Click outside to close context menu */}
       {contextMenu && (
-        <div className="fixed inset-0 z-[65]" onClick={() => setContextMenu(null)} />
+        <div className="fixed inset-0 z-[55]" onClick={() => setContextMenu(null)} />
       )}
 
       {/* Dock */}
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100]">
-        <div className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-800/95 backdrop-blur-2xl border border-white/15 rounded-[2rem] shadow-[0_12px_40px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.1)] min-w-[240px]">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
+        <div className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-800/95 backdrop-blur-2xl border border-white/15 rounded-[2rem] shadow-[0_12px_40px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.1)] min-w-[280px]">
           {/* All Apps */}
           <button
             onClick={() => dispatch({ type: "TOGGLE_LAUNCHER" })}
             className="flex items-center justify-center w-11 h-11 rounded-2xl text-gray-400 hover:text-white hover:bg-white/10 transition-all duration-200"
             title="All Apps"
           >
-            <LayoutGrid className="w-5 h-5" />
+            <APP_ICONS.LayoutGrid className="w-5 h-5" />
           </button>
 
           <div className="w-px h-7 bg-white/10 mx-1" />
 
-          {/* Docked apps */}
+          {/* Pinned apps */}
           <div className="flex items-center gap-1">
-            {state.dockedIds.map((id) => {
+            {state.dockedIds.map((id, index) => {
               const entry = registry.find((r) => r.id === id);
               if (!entry) return null;
               const active = isActive(id);
               const open = isOpen(id);
+              const Icon = APP_ICONS[entry.icon] || APP_ICONS.Network;
+              const isDragging = draggingId === id;
+              const isDropTarget = dragOverIndex === index;
+
               return (
-                <button
-                  key={id}
-                  onClick={() => handleDockClick(id)}
-                  onContextMenu={(e) => handleContextMenu(e, id)}
-                  className={`group relative flex items-center justify-center w-11 h-11 rounded-2xl transition-all duration-200 ${
-                    active
-                      ? "bg-white/15 text-white"
-                      : "text-gray-400 hover:text-white hover:bg-white/10"
-                  }`}
-                  title={entry.name}
-                >
-                  {(() => {
-                    const Icon = ICON_MAP[entry.icon] || Network;
-                    return <Icon className={`w-5 h-5 transition-transform duration-200 ${active ? "scale-110" : "group-hover:scale-110"}`} />;
-                  })()}
-                  {/* Active indicator dot */}
-                  {active && (
-                    <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-400 rounded-full shadow-[0_0_6px_rgba(99,102,241,0.6)]" />
+                <div key={`pinned-${id}`} className="relative flex items-center">
+                  {/* Drop indicator */}
+                  {isDropTarget && (
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 w-1 h-8 bg-indigo-400 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.6)]" />
                   )}
-                  {/* Open but dormant indicator */}
-                  {!active && open && (
-                    <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-gray-500 rounded-full" />
-                  )}
-                </button>
+                  <button
+                    draggable
+                    onClick={() => handleDockClick(id)}
+                    onContextMenu={(e) => handleContextMenu(e, id)}
+                    onDragStart={(e) => handleDragStart(e, id)}
+                    onDragOver={(e) => handleDragOver(e, index)}
+                    onDrop={(e) => handleDrop(e, index)}
+                    onDragLeave={handleDragLeave}
+                    onDragEnd={() => { setDraggingId(null); setDragOverIndex(null); }}
+                    className={`group relative flex items-center justify-center w-11 h-11 rounded-2xl transition-all duration-200 ${
+                      active
+                        ? "bg-white/15 text-white"
+                        : "text-gray-400 hover:text-white hover:bg-white/10"
+                    } ${isDragging ? "opacity-40 scale-95" : ""}`}
+                    title={entry.name}
+                  >
+                    <Icon className={`w-5 h-5 transition-transform duration-200 ${active ? "scale-110" : "group-hover:scale-110"}`} />
+                    {/* Active indicator dot */}
+                    {active && (
+                      <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-400 rounded-full shadow-[0_0_6px_rgba(99,102,241,0.6)]" />
+                    )}
+                    {/* Open but dormant indicator */}
+                    {!active && open && (
+                      <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-gray-500 rounded-full" />
+                    )}
+                  </button>
+                </div>
               );
             })}
           </div>
 
+          {/* Running unpinned apps */}
+          {uniqueRunningUnpinned.length > 0 && (
+            <>
+              <div className="w-px h-7 bg-white/10 mx-1" />
+              <div className="flex items-center gap-1">
+                {uniqueRunningUnpinned.map((id) => {
+                  const entry = registry.find((r) => r.id === id);
+                  if (!entry) return null;
+                  const active = isActive(id);
+                  const Icon = APP_ICONS[entry.icon] || APP_ICONS.Network;
+
+                  return (
+                    <button
+                      key={`running-${id}`}
+                      onClick={() => handleDockClick(id)}
+                      onContextMenu={(e) => handleContextMenu(e, id)}
+                      className={`group relative flex items-center justify-center w-11 h-11 rounded-2xl transition-all duration-200 ${
+                        active
+                          ? "bg-white/15 text-white"
+                          : "text-gray-400 hover:text-white hover:bg-white/10"
+                      }`}
+                      title={entry.name}
+                    >
+                      <Icon className={`w-5 h-5 transition-transform duration-200 ${active ? "scale-110" : "group-hover:scale-110"}`} />
+                      {/* Active indicator dot */}
+                      {active && (
+                        <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-400 rounded-full shadow-[0_0_6px_rgba(99,102,241,0.6)]" />
+                      )}
+                      {/* Dormant indicator */}
+                      {!active && (
+                        <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-gray-500 rounded-full" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
           <div className="w-px h-7 bg-white/10 mx-1 ml-auto" />
 
-          {/* User profile */}
-          <UserProfileBadge />
+          {/* Profile section: Chat + User */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => dispatch({ type: "TOGGLE_RIGHT_PANEL" })}
+              className={`group relative flex items-center justify-center w-11 h-11 rounded-2xl transition-all duration-200 ${
+                state.rightPanelOpen
+                  ? "bg-white/15 text-white"
+                  : "text-gray-400 hover:text-white hover:bg-white/10"
+              }`}
+              title="Chat"
+            >
+              <MessageSquare className={`w-5 h-5 transition-transform duration-200 ${state.rightPanelOpen ? "scale-110" : "group-hover:scale-110"}`} />
+              {state.rightPanelOpen && (
+                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-400 rounded-full shadow-[0_0_6px_rgba(99,102,241,0.6)]" />
+              )}
+            </button>
+            <UserProfileBadge />
+          </div>
         </div>
       </div>
     </>

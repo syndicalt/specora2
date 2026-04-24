@@ -59,6 +59,29 @@ const typeDefs = `
     updatedAt: String!
   }
 
+  type User {
+    id: ID!
+    name: String!
+    email: String!
+    preferences: JSON
+    role: String!
+  }
+
+  type MarketplaceApp {
+    id: ID!
+    name: String!
+    description: String
+    url: String!
+    icon: String!
+    version: String!
+    permissions: [String!]!
+    reactVersion: String!
+    author: String!
+    authorUrl: String
+    status: String!
+    createdAt: String!
+  }
+
   type CSDMV5HealthScore {
     freshness: Float
     completeness: Float
@@ -96,11 +119,17 @@ const typeDefs = `
 
   type Query {
     ci(id: ID!): ConfigurationItem
-    cis(filter: CIFilterInput): [ConfigurationItem!]!
+    cis(filter: CIFilterInput, limit: Int, offset: Int): [ConfigurationItem!]!
+    ciCount(filter: CIFilterInput): Int!
+    ciClasses: [String!]!
+    ciEnvironments: [String!]!
     serviceMap(rootId: ID!): ServiceMap!
     discoverySources: [DiscoverySource!]!
     discoveryJobs: [DiscoveryJob!]!
     discoveryJob(id: ID!): DiscoveryJob
+    me: User
+    marketplaceApps(status: String): [MarketplaceApp!]!
+    marketplaceApp(id: ID!): MarketplaceApp
   }
 
   type Mutation {
@@ -108,9 +137,15 @@ const typeDefs = `
     updateCI(id: ID!, input: UpdateCIInput!): ConfigurationItem!
     deleteCI(id: ID!): Boolean!
     createRelationship(input: CreateRelationshipInput!): Relationship!
+    deleteRelationship(sourceId: ID!, targetId: ID!, type: String!): Boolean!
+    updateRelationship(sourceId: ID!, targetId: ID!, type: String!, newType: String, attributes: JSON): Relationship!
     ingestCMDB(payload: JSON): IngestionJob!
     createDiscoverySource(name: String!, type: String!, config: JSON): DiscoverySource!
     deleteDiscoverySource(id: ID!): Boolean!
+    updatePreferences(preferences: JSON!): User!
+    submitMarketplaceApp(id: ID!, name: String!, description: String, url: String!, icon: String, version: String, permissions: [String!], reactVersion: String, author: String!, authorUrl: String): MarketplaceApp!
+    approveMarketplaceApp(id: ID!): MarketplaceApp!
+    rejectMarketplaceApp(id: ID!): MarketplaceApp!
   }
 `;
 

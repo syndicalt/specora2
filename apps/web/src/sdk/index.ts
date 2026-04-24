@@ -49,40 +49,110 @@ export async function installApp(manifest: AppManifest): Promise<RegistryEntry> 
   });
 }
 
-export async function uninstallApp(id: string): Promise<void> {
+export async function uninstallApp(id: string, clearData: boolean = false): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     const store = tx.objectStore(STORE_NAME);
-    const req = store.delete(id);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    const getReq = store.get(id);
+    getReq.onsuccess = () => {
+      const entry = getReq.result as RegistryEntry | undefined;
+      if (entry?.clearDataOnUninstall && clearData) {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key?.startsWith(`specora_app_${id}_`)) keysToRemove.push(key);
+        }
+        keysToRemove.forEach((k) => localStorage.removeItem(k));
+      }
+      const delReq = store.delete(id);
+      delReq.onsuccess = () => resolve();
+      delReq.onerror = () => reject(delReq.error);
+    };
+    getReq.onerror = () => reject(getReq.error);
     tx.oncomplete = () => db.close();
   });
 }
 
 export async function seedBuiltInApps(): Promise<void> {
   const existing = await getRegistry();
-  if (existing.length > 0) return;
+  const existingIds = new Set(existing.map((e) => e.id));
 
   const builtIns: RegistryEntry[] = [
     {
       id: "service-map",
       name: "Service Map",
+      description: "Visualize service dependencies with interactive graph layouts.",
       icon: "Network",
       version: "1.0.0",
       permissions: ["read:cmdb", "read:relationships"],
       defaultMode: "canvas",
       installKey: "builtin_service-map",
       source: "built-in",
+      publisher: "Specora",
+      installedAt: Date.now(),
+    },
+    {
+      id: "cmdb-explorer",
+      name: "CMDB Explorer",
+      description: "Search, filter, and inspect Configuration Items in your CMDB.",
+      icon: "Database",
+      version: "1.0.0",
+      permissions: ["read:cmdb"],
+      defaultMode: "canvas",
+      installKey: "builtin_cmdb-explorer",
+      source: "built-in",
+      publisher: "Specora",
+      installedAt: Date.now(),
+    },
+    {
+      id: "settings",
+      name: "Settings",
+      description: "Manage profile, theme, and platform preferences.",
+      icon: "Settings",
+      version: "1.0.0",
+      permissions: ["read:profile"],
+      defaultMode: "window",
+      installKey: "builtin_settings",
+      source: "built-in",
+      publisher: "Specora",
+      installedAt: Date.now(),
+    },
+    {
+      id: "discovery",
+      name: "Discovery",
+      description: "Upload and ingest infrastructure data into the graph.",
+      icon: "Upload",
+      version: "1.0.0",
+      permissions: ["read:discovery", "write:discovery"],
+      defaultMode: "canvas",
+      installKey: "builtin_discovery",
+      source: "built-in",
+      publisher: "Specora",
+      installedAt: Date.now(),
+    },
+    {
+      id: "arc",
+      name: "Specora Arc",
+      description: "Discover and manage apps in the Specora ecosystem.",
+      icon: "Compass",
+      version: "1.0.0",
+      permissions: ["read:profile"],
+      defaultMode: "window",
+      installKey: "builtin_arc",
+      source: "built-in",
+      publisher: "Specora",
       installedAt: Date.now(),
     },
   ];
 
+  const missing = builtIns.filter((b) => !existingIds.has(b.id));
+  if (missing.length === 0) return;
+
   const db = await openDB();
   const tx = db.transaction(STORE_NAME, "readwrite");
   const store = tx.objectStore(STORE_NAME);
-  for (const app of builtIns) {
+  for (const app of missing) {
     store.put(app);
   }
   return new Promise((resolve, reject) => {

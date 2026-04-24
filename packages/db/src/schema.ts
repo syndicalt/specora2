@@ -51,22 +51,28 @@ MERGE (grp4:Group:ConfigurationItem {id: 'grp-4'})
 MERGE (grp5:Group:ConfigurationItem {id: 'grp-5'})
   SET grp5.name = 'Product Engineering', grp5.class = 'Group'
 
-// ===== USERS =====
+// ===== USERS (bridge to Postgres users table via userId) =====
 MERGE (usr1:User:ConfigurationItem {id: 'usr-1'})
   SET usr1.name = 'Alice Chen', usr1.class = 'User', usr1.email = 'alice@specora.dev',
-      usr1.passwordHash = '$2b$10$UcP3YzFw1vKY32IG7Iov1./u9zaYsZShLVNbM81gAqiQvz7QRXjqO'
+      usr1.userId = '550e8400-e29b-41d4-a716-446655440001'
 MERGE (usr2:User:ConfigurationItem {id: 'usr-2'})
-  SET usr2.name = 'Bob Martinez', usr2.class = 'User', usr2.email = 'bob@specora.dev'
+  SET usr2.name = 'Bob Martinez', usr2.class = 'User', usr2.email = 'bob@specora.dev',
+      usr2.userId = '550e8400-e29b-41d4-a716-446655440002'
 MERGE (usr3:User:ConfigurationItem {id: 'usr-3'})
-  SET usr3.name = 'Carol Wu', usr3.class = 'User', usr3.email = 'carol@specora.dev'
+  SET usr3.name = 'Carol Wu', usr3.class = 'User', usr3.email = 'carol@specora.dev',
+      usr3.userId = '550e8400-e29b-41d4-a716-446655440003'
 MERGE (usr4:User:ConfigurationItem {id: 'usr-4'})
-  SET usr4.name = 'David Park', usr4.class = 'User', usr4.email = 'david@specora.dev'
+  SET usr4.name = 'David Park', usr4.class = 'User', usr4.email = 'david@specora.dev',
+      usr4.userId = '550e8400-e29b-41d4-a716-446655440004'
 MERGE (usr5:User:ConfigurationItem {id: 'usr-5'})
-  SET usr5.name = 'Eva Schmidt', usr5.class = 'User', usr5.email = 'eva@specora.dev'
+  SET usr5.name = 'Eva Schmidt', usr5.class = 'User', usr5.email = 'eva@specora.dev',
+      usr5.userId = '550e8400-e29b-41d4-a716-446655440005'
 MERGE (usr6:User:ConfigurationItem {id: 'usr-6'})
-  SET usr6.name = 'Frank Okafor', usr6.class = 'User', usr6.email = 'frank@specora.dev'
+  SET usr6.name = 'Frank Okafor', usr6.class = 'User', usr6.email = 'frank@specora.dev',
+      usr6.userId = '550e8400-e29b-41d4-a716-446655440006'
 MERGE (usr7:User:ConfigurationItem {id: 'usr-7'})
-  SET usr7.name = 'Grace Li', usr7.class = 'User', usr7.email = 'grace@specora.dev'
+  SET usr7.name = 'Grace Li', usr7.class = 'User', usr7.email = 'grace@specora.dev',
+      usr7.userId = '550e8400-e29b-41d4-a716-446655440007'
 
 // ===== BUSINESS SERVICES =====
 MERGE (bs1:BusinessService:ConfigurationItem {id: 'bs-1'})
@@ -328,4 +334,110 @@ MERGE (usr4)-[:PART_OF]->(grp5)
 MERGE (usr5)-[:PART_OF]->(grp5)
 MERGE (usr6)-[:PART_OF]->(grp3)
 MERGE (usr7)-[:PART_OF]->(grp4)
+`;
+
+export const SEED_SYNTHETIC_NODES_CYPHER = `
+WITH range(1, 300) AS serverRange
+UNWIND serverRange AS i
+MERGE (s:Server:ConfigurationItem {id: 'syn-srv-' + i})
+  SET s.name = 'srv-' + i,
+      s.class = 'Server',
+      s.environment = CASE WHEN i % 5 = 0 THEN 'Staging' WHEN i % 7 = 0 THEN 'Development' ELSE 'Production' END
+;
+
+WITH range(1, 200) AS dbRange
+UNWIND dbRange AS i
+MERGE (db:Database:ConfigurationItem {id: 'syn-db-' + i})
+  SET db.name = 'db-' + i,
+      db.class = 'Database',
+      db.environment = CASE WHEN i % 5 = 0 THEN 'Staging' WHEN i % 7 = 0 THEN 'Development' ELSE 'Production' END
+;
+
+WITH range(1, 150) AS appRange
+UNWIND appRange AS i
+MERGE (a:Application:ConfigurationItem {id: 'syn-app-' + i})
+  SET a.name = 'app-' + i,
+      a.class = 'Application',
+      a.environment = CASE WHEN i % 5 = 0 THEN 'Staging' WHEN i % 7 = 0 THEN 'Development' ELSE 'Production' END
+;
+
+WITH range(1, 100) AS bsRange
+UNWIND bsRange AS i
+MERGE (bs:BusinessService:ConfigurationItem {id: 'syn-bs-' + i})
+  SET bs.name = 'Business Service ' + i,
+      bs.class = 'BusinessService',
+      bs.environment = CASE WHEN i % 5 = 0 THEN 'Staging' WHEN i % 7 = 0 THEN 'Development' ELSE 'Production' END
+;
+
+WITH range(1, 100) AS asRange
+UNWIND asRange AS i
+MERGE (asvc:ApplicationService:ConfigurationItem {id: 'syn-as-' + i})
+  SET asvc.name = 'App Service ' + i,
+      asvc.class = 'ApplicationService',
+      asvc.environment = CASE WHEN i % 5 = 0 THEN 'Staging' WHEN i % 7 = 0 THEN 'Development' ELSE 'Production' END
+;
+
+WITH range(1, 80) AS netRange
+UNWIND netRange AS i
+MERGE (n:NetworkGear:ConfigurationItem {id: 'syn-net-' + i})
+  SET n.name = 'net-' + i,
+      n.class = 'NetworkGear',
+      n.environment = CASE WHEN i % 5 = 0 THEN 'Staging' WHEN i % 7 = 0 THEN 'Development' ELSE 'Production' END
+`;
+
+export const SEED_SYNTHETIC_RELS_CYPHER = `
+WITH range(1, 300) AS r1
+UNWIND r1 AS i
+MATCH (s:Server {id: 'syn-srv-' + i})
+MATCH (l:Location {id: CASE i % 4 WHEN 0 THEN 'loc-1' WHEN 1 THEN 'loc-2' WHEN 2 THEN 'loc-3' ELSE 'loc-4' END})
+MERGE (s)-[:LOCATED_AT]->(l)
+;
+
+WITH range(1, 200) AS r2
+UNWIND r2 AS i
+MATCH (db:Database {id: 'syn-db-' + i})
+MATCH (s:Server {id: 'syn-srv-' + ((i % 300) + 1)})
+MERGE (db)-[:HOSTED_ON]->(s)
+;
+
+WITH range(1, 150) AS r3
+UNWIND r3 AS i
+MATCH (a:Application {id: 'syn-app-' + i})
+MATCH (s:Server {id: 'syn-srv-' + (((i + 50) % 300) + 1)})
+MERGE (a)-[:HOSTED_ON]->(s)
+;
+
+WITH range(1, 100) AS r4
+UNWIND r4 AS i
+MATCH (asvc:ApplicationService {id: 'syn-as-' + i})
+MATCH (db:Database {id: 'syn-db-' + ((i % 200) + 1)})
+MERGE (asvc)-[:DEPENDS_ON]->(db)
+;
+
+WITH range(1, 100) AS r5
+UNWIND r5 AS i
+MATCH (bs:BusinessService {id: 'syn-bs-' + i})
+MATCH (asvc:ApplicationService {id: 'syn-as-' + ((i % 100) + 1)})
+MERGE (bs)-[:DEPENDS_ON]->(asvc)
+;
+
+WITH range(1, 79) AS r6
+UNWIND r6 AS i
+MATCH (n1:NetworkGear {id: 'syn-net-' + i})
+MATCH (n2:NetworkGear {id: 'syn-net-' + (i + 1)})
+MERGE (n1)-[:DEPENDS_ON]->(n2)
+;
+
+WITH range(1, 300) AS r7
+UNWIND r7 AS i
+MATCH (s:Server {id: 'syn-srv-' + i})
+MATCH (n:NetworkGear {id: 'syn-net-' + ((i % 80) + 1)})
+MERGE (s)-[:DEPENDS_ON]->(n)
+;
+
+WITH range(1, 100) AS r8
+UNWIND r8 AS i
+MATCH (asvc:ApplicationService {id: 'syn-as-' + i})
+MATCH (ts:TechnicalService {id: CASE i % 4 WHEN 0 THEN 'ts-1' WHEN 1 THEN 'ts-2' WHEN 2 THEN 'ts-3' ELSE 'ts-4' END})
+MERGE (asvc)-[:HOSTED_ON]->(ts)
 `;

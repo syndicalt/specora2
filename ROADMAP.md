@@ -1,59 +1,31 @@
 # Specora Roadmap
 
-## Completed
+## Released
 
-### App Shell Platform
-- [x] **AppShell** — Root orchestrator with IndexedDB registry initialization
-- [x] **AppContext** — Shell state reducer (OPEN_APP, ACTIVATE_APP, MINIMIZE_APP, CLOSE_APP, PIN/UNPIN_DOCK, TOGGLE_LAUNCHER, notifications)
-- [x] **AppDock** — Bottom-centered floating macOS-style pill with active/dormant indicators
-- [x] **UserProfileBadge** — Gradient avatar with logout dropdown
-- [x] **AppLauncher** — "All Apps" modal with install/uninstall
-- [x] **CanvasArea / DormantApps / WindowLayer** — Multi-mode rendering (canvas vs window, dormancy preserves React state)
-- [x] **App-to-app messaging bus** — React Context-based pub/sub for cross-app communication
-- [x] **SDK** — IndexedDB registry with `installApp`, `uninstallApp`, `getRegistry`, `seedBuiltInApps`
+### v0.2 — App Ecosystem (2026-04-23)
+- [x] **App Shell Platform** — IndexedDB registry, app-to-app messaging bus, multi-mode rendering (canvas/window), dormancy, dock v2 with drag-reorder
+- [x] **Specora Arc** — Two-tier app marketplace:
+  - **Specora Native** — Built-in apps signed by Specora (Service Map, CMDB Explorer, Discovery, Settings, Arc)
+  - **Arc Applications** — External marketplace apps with install/uninstall, admin review queue, permission-filtered ShellAPI, dynamic ESM loader with iframe fallback
+- [x] **Window Mode v2** — Draggable, resizable, position/size persisted to localStorage, click-to-front z-index stacking
+- [x] **Settings** — Theme toggle, API endpoint config, profile management, danger zone
+- [x] **Discovery Dashboard** — Jobs/sources tabs, ingestion status, file browser
+- [x] **CMDB Explorer** — Search, filters, paginated table, detail panel with cross-app navigation
+- [x] **Service Map** — Dynamic root CI selector, React Flow graph, dagre layout, relationship CRUD
+- [x] **Right-side Chat Panel** — Resizable workspace panel, dock toggle, `Ctrl+/` shortcut
+- [x] **Marketplace Backend** — PostgreSQL schema, GraphQL CRUD with admin role enforcement
 
-### Service Map (First Built-in App)
-- [x] Dynamic root CI selector with search autocomplete (debounced GraphQL)
-- [x] Floating centered search pill with CI name left, search right
-- [x] Dark glassmorphism styling matching platform theme
-- [x] React Flow graph visualization with CSDMv5 nodes and edges
-
-### Discovery Pipeline
-- [x] File upload → worker ingest → Neo4j persist with idempotency
-- [x] Fixed multipart registration, absolute paths, JSONB serialization, constraint handling
-- [x] `servers.csv` sample data ingestion verified (12 servers)
-
-### Chat Integration
-- [x] Provara integration with URL normalization (strips trailing `/v1`)
-- [x] Tenant header support, second-completion routing
-- [x] Global Ctrl+K overlay (not a docked app)
-
-### Auth
-- [x] JWT login/register with bcrypt
-- [x] Seeded demo user (`alice@specora.dev` / `secret123`)
-
-### Tests
-- [x] API: 79 tests passing
-- [x] Web: 3 tests passing
-- [x] DB: 19 tests passing
-- [x] Core: 18 tests passing
-
----
-
-## In Progress
-- [ ] **Dock width** — Currently `min-w-[240px]`; will scale dynamically with more apps
-- [ ] **Window mode** — Fixed centered panels; needs drag/resize for v2
-- [ ] **More built-in apps** — CMDB Explorer, Discovery, Settings placeholders
+### v0.1 — Foundation
+- [x] Fastify/GraphQL Yoga API with JWT auth
+- [x] Neo4j CSDMv5 schema with seeded data
+- [x] Next.js 14 App Router with dark-first Tailwind UI
+- [x] Python 3.12 asyncio gRPC worker for discovery
+- [x] Chat integration with Provara + OpenAI fallback
+- [x] File upload → worker ingest → Neo4j pipeline
 
 ---
 
 ## Next Up
-
-### v0.2 — App Ecosystem
-1. **CMDB Explorer** — List/search all CIs with filtering by class, environment, owner
-2. **Discovery Dashboard** — Upload history, ingestion status, file browser
-3. **Settings** — Theme toggle, API endpoint config, profile management
-4. **App Marketplace** — External app installation via URL or npm package
 
 ### v0.3 — Graph Power
 1. **Interactive Service Map** — Click nodes to expand/collapse, edge highlighting on hover
@@ -86,6 +58,7 @@
 ## Decisions Log
 - **IndexedDB over backend registry** — Client-side discovery, zero-config installs, works offline
 - **Dormant apps in `display: none`** — Preserves React state without DOM overhead
-- **Chat as global overlay** — Always available via Ctrl+K, never competes for dock space
+- **Chat as right-side panel (not overlay)** — First-class workspace utility, parallel with canvas
 - **Tailwind arbitrary values avoided** — Use standard utilities to prevent JIT generation misses
 - **Provara URL normalization** — Strip trailing `/v1` before appending API path for flexibility
+- **CMDB Explorer is built-in** — Core platform feature, not marketplace add-on

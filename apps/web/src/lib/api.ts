@@ -8,4 +8,5 @@ export const graphqlClient = new GraphQLClient(endpoint, {
     const token = typeof window !== "undefined" ? localStorage.getItem("specora_token") : null;
     return token ? { Authorization: `Bearer ${token}` } : { Authorization: "" };
   },
+  fetch: (url, init) => fetch(url, { ...init, cache: "no-store" }),
 });

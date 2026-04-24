@@ -1,15 +1,20 @@
 "use client";
 
+import { useMemo } from "react";
 import { useShell } from "./AppContext";
 import type { RegistryEntry } from "@/sdk/types";
 import { X } from "lucide-react";
+import { APP_ICONS } from "@/lib/icons";
 
 export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
   const { state, dispatch } = useShell();
 
   if (!state.launcherOpen) return null;
 
-  const openAppIds = new Set(state.instances.map((i) => i.id));
+  const openAppIds = useMemo(
+    () => new Set(state.instances.map((i) => i.id)),
+    [state.instances]
+  );
 
   const handleOpen = (entry: RegistryEntry) => {
     dispatch({
@@ -17,11 +22,12 @@ export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
       id: entry.id,
       installKey: entry.installKey,
       mode: entry.defaultMode,
+      permissions: entry.permissions,
     });
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => dispatch({ type: "CLOSE_LAUNCHER" })}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => dispatch({ type: "CLOSE_LAUNCHER" })}>
       <div
         className="w-full max-w-2xl bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-6"
         onClick={(e) => e.stopPropagation()}
@@ -45,6 +51,8 @@ export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
           <div className="grid grid-cols-4 gap-4">
             {registry.map((entry) => {
               const isOpen = openAppIds.has(entry.id);
+              const Icon = APP_ICONS[entry.icon] || APP_ICONS.Network;
+
               return (
                 <button
                   key={entry.id}
@@ -52,7 +60,7 @@ export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
                   className="flex flex-col items-center gap-2 p-4 rounded-xl bg-gray-800/50 hover:bg-gray-800 border border-transparent hover:border-gray-600 transition-colors group"
                 >
                   <div className="w-12 h-12 flex items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400 group-hover:bg-indigo-500/20 transition-colors">
-                    <span className="text-xl font-bold">{entry.icon[0]}</span>
+                    <Icon className="w-6 h-6" />
                   </div>
                   <div className="text-center">
                     <p className="text-sm font-medium text-gray-200">{entry.name}</p>

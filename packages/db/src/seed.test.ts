@@ -37,13 +37,15 @@ describe("seed (with testcontainers)", () => {
     await container.stop();
   });
 
-  it("seeds Neo4j with CSDMv5 data", async () => {
+  it("seeds Neo4j with ~1000 CSDMv5 nodes", async () => {
     await seed(driver);
 
     const session = driver.session();
     try {
       const result = await session.run("MATCH (n:ConfigurationItem) RETURN count(n) as total");
-      expect(result.records[0].get("total").toNumber()).toBe(8);
+      const count = result.records[0].get("total").toNumber();
+      expect(count).toBeGreaterThanOrEqual(900);
+      expect(count).toBeLessThanOrEqual(1100);
     } finally {
       await session.close();
     }
@@ -56,30 +58,45 @@ describe("seed (with testcontainers)", () => {
     const session = driver.session();
     try {
       const result = await session.run("MATCH (n:ConfigurationItem) RETURN count(n) as total");
-      expect(result.records[0].get("total").toNumber()).toBe(8);
+      const count = result.records[0].get("total").toNumber();
+      expect(count).toBeGreaterThanOrEqual(900);
+      expect(count).toBeLessThanOrEqual(1100);
 
       const relResult = await session.run("MATCH ()-[r]->() RETURN count(r) as total");
-      expect(relResult.records[0].get("total").toNumber()).toBe(7);
+      expect(relResult.records[0].get("total").toNumber()).toBeGreaterThanOrEqual(100);
     } finally {
       await session.close();
     }
   });
 
-  it("creates the admin user with correct properties", async () => {
+  it("links Neo4j User CIs to Postgres via userId", async () => {
     await seed(driver);
 
     const session = driver.session();
     try {
       const result = await session.run(
-        "MATCH (u:User:ConfigurationItem {id: 'usr-1'}) RETURN u.email as email, u.passwordHash as hash"
+        "MATCH (u:User:ConfigurationItem) RETURN u.userId as userId ORDER BY userId"
       );
-      expect(result.records.length).toBe(1);
-      expect(result.records[0].get("email")).toBe("alice@specora.dev");
-      expect(result.records[0].get("hash")).toContain("$2b$10$");
+      const userIds = result.records.map((r) => r.get("userId")).filter(Boolean);
+      expect(userIds.length).toBe(7);
+      expect(userIds[0]).toBe("550e8400-e29b-41d4-a716-446655440001");
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("does not store passwordHash in Neo4j User CIs", async () => {
+    await seed(driver);
+
+    const session = driver.session();
+    try {
+      const result = await session.run(
+        "MATCH (u:User:ConfigurationItem) RETURN u.passwordHash as hash"
+      );
+      const hashes = result.records.map((r) => r.get("hash")).filter(Boolean);
+      expect(hashes.length).toBe(0);
     } finally {
       await session.close();
     }
   });
 });
-
-

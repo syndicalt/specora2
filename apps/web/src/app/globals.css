@@ -46,4 +46,21 @@ html, body, #__next {
   height: 14px !important;
 }
 
+/* Node highlight animation — applied when navigating to a CI from another app */
+@keyframes node-highlight-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.6);
+    border-color: #fbbf24;
+  }
+  50% {
+    box-shadow: 0 0 0 12px rgba(251, 191, 36, 0);
+    border-color: #fcd34d;
+  }
+}
+
+.node-highlight {
+  animation: node-highlight-pulse 1.5s ease-in-out 2;
+  border: 2px solid #fbbf24 !important;
+}
+
 

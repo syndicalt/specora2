@@ -44,6 +44,13 @@ Specora is an open-source, AI-native ITSM platform. This document provides conte
 - `pnpm proto:generate` — Regenerate gRPC stubs from `.proto` files.
 - `docker-compose up -d neo4j postgres` — Start local infrastructure.
 
+## App Ecosystem (Specora Arc)
+- Built-in apps live in `apps/web/src/apps/<id>/` and are registered in `BUILT_IN_COMPONENTS` (`AppContainers.tsx`) and `seedBuiltInApps` (`sdk/index.ts`).
+- External apps are loaded dynamically via ESM `import(/* webpackIgnore: true */ url)` with an iframe sandbox fallback on failure.
+- The `ShellAPI` passed to every app is permission-filtered based on the app's declared `permissions` array.
+- The marketplace backend uses the `marketplace_apps` PostgreSQL table (migrations `006`/`007`).
+- Admin users can approve/reject submitted apps via the "Review" tab in the Arc app.
+
 ## Important Notes
 - The UI is conversational-first. **Ctrl+K** opens the chat overlay from anywhere.
 - Relationship types in Neo4j are validated against an allowlist in the API resolver.

@@ -68,17 +68,17 @@ describe("CSDM_REL_TYPES", () => {
 
 describe("SEED_DATA_CYPHER", () => {
   it("contains MERGE statements for nodes", () => {
-    expect(SEED_DATA_CYPHER).toContain("MERGE (bs:BusinessService");
-    expect(SEED_DATA_CYPHER).toContain("MERGE (usr:User");
+    expect(SEED_DATA_CYPHER).toContain("MERGE (bs1:BusinessService");
+    expect(SEED_DATA_CYPHER).toContain("MERGE (usr1:User");
   });
 
   it("contains MERGE statements for relationships", () => {
-    expect(SEED_DATA_CYPHER).toContain("MERGE (bs)-[:DEPENDS_ON]->(as)");
-    expect(SEED_DATA_CYPHER).toContain("MERGE (srv)-[:LOCATED_AT]->(loc)");
+    expect(SEED_DATA_CYPHER).toContain("MERGE (bs1)-[:DEPENDS_ON]->(as1)");
+    expect(SEED_DATA_CYPHER).toContain("MERGE (srv1)-[:LOCATED_AT]->(loc1)");
   });
 
-  it("includes the seeded admin user with password hash", () => {
+  it("includes the seeded admin user with userId bridge", () => {
     expect(SEED_DATA_CYPHER).toContain("alice@specora.dev");
-    expect(SEED_DATA_CYPHER).toContain("passwordHash");
+    expect(SEED_DATA_CYPHER).toContain("userId");
   });
 });

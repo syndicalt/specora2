@@ -59,7 +59,8 @@ async function main() {
     context: async ({ request }) => {
       let user = null;
       try {
-        const token = (request.headers as any).authorization?.replace("Bearer ", "");
+        const auth = request.headers.get("authorization");
+        const token = auth?.replace("Bearer ", "");
         if (token) user = await fastify.jwt.verify(token);
       } catch {}
       return { neo4j: fastify.neo4j, pg: fastify.pg, user, worker: workerClient };
