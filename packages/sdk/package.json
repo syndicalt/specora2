@@ -1,0 +1,15 @@
+{
+  "name": "@specora/sdk",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "lint": "eslint src/"
+  },
+  "devDependencies": {
+    "@specora/eslint-config": "workspace:*",
+    "@specora/tsconfig": "workspace:*",
+    "typescript": "^5.4.5"
+  }
+}

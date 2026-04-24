@@ -5,11 +5,16 @@ import { useShell } from "./AppContext";
 import type { RegistryEntry } from "@/sdk/types";
 import { X } from "lucide-react";
 import { APP_ICONS } from "@/lib/icons";
+import { getUserRole } from "@/lib/auth";
+import { filterRegistryByRole } from "./AppContainers";
 
 export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
   const { state, dispatch } = useShell();
 
   if (!state.launcherOpen) return null;
+
+  const role = useMemo(() => getUserRole(), []);
+  const visibleRegistry = filterRegistryByRole(registry, role);
 
   const openAppIds = useMemo(
     () => new Set(state.instances.map((i) => i.id)),
@@ -42,14 +47,14 @@ export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
           </button>
         </div>
 
-        {registry.length === 0 ? (
+        {visibleRegistry.length === 0 ? (
           <div className="text-center py-12 text-gray-500">
-            <p>No apps installed</p>
-            <p className="text-sm mt-1">Apps can be installed via the Specora SDK</p>
+            <p>No apps available</p>
+            <p className="text-sm mt-1">Contact your administrator for access</p>
           </div>
         ) : (
           <div className="grid grid-cols-4 gap-4">
-            {registry.map((entry) => {
+            {visibleRegistry.map((entry) => {
               const isOpen = openAppIds.has(entry.id);
               const Icon = APP_ICONS[entry.icon] || APP_ICONS.Network;
 

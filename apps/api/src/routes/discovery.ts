@@ -4,6 +4,7 @@ import { join, resolve } from "path";
 import { randomUUID } from "crypto";
 import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
+import { enqueueJob } from "../services/jobQueue";
 
 const UPLOAD_DIR = resolve(process.env.UPLOAD_DIR || "./uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -23,9 +24,12 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
       "INSERT INTO discovery_jobs (file_path, status) VALUES ($1, 'pending') RETURNING id",
       [filePath]
     );
-    const jobId = result.rows[0].id;
+    const discoveryJobId = result.rows[0].id;
 
-    return { jobId, fileName, status: "pending" };
+    // Also enqueue in the unified job queue for worker processing
+    await enqueueJob(fastify, "discovery", { filePath, discoveryJobId }, 0);
+
+    return { jobId: discoveryJobId, fileName, status: "pending" };
   });
 
   fastify.get("/discovery/jobs/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {

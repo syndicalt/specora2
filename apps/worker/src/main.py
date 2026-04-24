@@ -26,6 +26,13 @@ async def process_jobs(pathlight=None):
                 try:
                     if job_type == "ingest_cmdb":
                         status = await handle_ingest_cmdb(payload)
+                    elif job_type == "discovery":
+                        file_path = payload.get("filePath") or payload.get("file_path")
+                        discovery_job_id = payload.get("discoveryJobId")
+                        if file_path:
+                            stats = await handle_discover_file(discovery_job_id, file_path)
+                            await postgres_client.mark_discovery_job_status(discovery_job_id, "completed", stats)
+                        status = "completed"
                     else:
                         print(f"Unknown job type: {job_type}")
                         status = "failed"

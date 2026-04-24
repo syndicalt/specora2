@@ -108,6 +108,18 @@ const typeDefs = `
     overall: Float
   }
 
+  type AuditLogEntry {
+    id: ID!
+    actorId: ID
+    action: String!
+    entityType: String!
+    entityId: String!
+    oldValues: JSON
+    newValues: JSON
+    metadata: JSON
+    createdAt: String!
+  }
+
   input CIFilterInput {
     class: String
     environment: String
@@ -153,6 +165,8 @@ const typeDefs = `
     marketplaceApp(id: ID!): MarketplaceApp
     savedViews: [SavedView!]!
     savedView(id: ID!): SavedView
+    auditLog(entityType: String, entityId: String, limit: Int, offset: Int): [AuditLogEntry!]!
+    auditLogForCI(ciId: ID!, limit: Int): [AuditLogEntry!]!
   }
 
   type Mutation {

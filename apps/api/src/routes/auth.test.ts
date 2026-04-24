@@ -27,6 +27,7 @@ async function buildApp(pg?: any, neo4jSession?: any) {
   app.decorate("jwt", {
     sign: vi.fn().mockReturnValue("mock-token"),
   });
+  app.decorate("authenticate", vi.fn());
   await app.register(authRoutes);
   return app;
 }

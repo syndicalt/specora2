@@ -6,6 +6,11 @@ import {
   Compass,
   LayoutGrid,
   MessageSquare,
+  GitPullRequest,
+  Radar,
+  HeartPulse,
+  ScrollText,
+  Shield,
   LogOut,
   X,
   Pin,
@@ -21,6 +26,11 @@ export const APP_ICONS: Record<string, LucideIcon> = {
   Compass,
   LayoutGrid,
   MessageSquare,
+  GitPullRequest,
+  Radar,
+  HeartPulse,
+  ScrollText,
+  Shield,
 };
 
 export { LogOut, X, Pin, PinOff, MessageSquare };

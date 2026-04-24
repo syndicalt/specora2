@@ -29,6 +29,9 @@ importers:
       '@fastify/rate-limit':
         specifier: ^9.1.0
         version: 9.1.0
+      '@fastify/websocket':
+        specifier: ^8.2.0
+        version: 8.3.1
       '@graphql-tools/schema':
         specifier: ^10.0.3
         version: 10.0.32(graphql@16.13.2)
@@ -47,6 +50,9 @@ importers:
       '@specora/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@specora/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
@@ -70,7 +76,7 @@ importers:
         version: 5.28.3
       openai:
         specifier: ^4.38.0
-        version: 4.104.0
+        version: 4.104.0(ws@8.20.0)
       pg:
         specifier: ^8.20.0
         version: 8.20.0
@@ -90,6 +96,9 @@ importers:
       '@types/node':
         specifier: ^20.12.0
         version: 20.19.39
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       '@vitest/coverage-v8':
         specifier: ^4.1.5
         version: 4.1.5(vitest@4.1.5)
@@ -102,6 +111,9 @@ importers:
       vitest:
         specifier: ^4.1.5
         version: 4.1.5(@types/node@20.19.39)(@vitest/coverage-v8@4.1.5)(jsdom@29.0.2)(vite@8.0.9)
+      ws:
+        specifier: ^8.20.0
+        version: 8.20.0
 
   apps/web:
     dependencies:
@@ -255,6 +267,18 @@ importers:
       '@specora/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+
+  packages/sdk:
+    devDependencies:
+      '@specora/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@specora/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
 
   packages/tsconfig: {}
 
@@ -812,6 +836,16 @@ packages:
       '@lukeed/ms': 2.0.2
       fastify-plugin: 4.5.1
       toad-cache: 3.7.0
+    dev: false
+
+  /@fastify/websocket@8.3.1:
+    resolution: {integrity: sha512-hsQYHHJme/kvP3ZS4v/WMUznPBVeeQHHwAoMy1LiN6m/HuPfbdXq1MBJ4Nt8qX1YI+eVbog4MnOsU7MTozkwYA==}
+    dependencies:
+      fastify-plugin: 4.5.1
+      ws: 8.20.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
     dev: false
 
   /@graphql-tools/executor@1.5.2(graphql@16.13.2):
@@ -1833,6 +1867,12 @@ packages:
   /@types/unist@3.0.3:
     resolution: {integrity: sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q==}
     dev: false
+
+  /@types/ws@8.18.1:
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+    dependencies:
+      '@types/node': 20.19.39
+    dev: true
 
   /@typescript-eslint/eslint-plugin@7.18.0(@typescript-eslint/parser@7.18.0)(eslint@8.57.1)(typescript@5.9.3):
     resolution: {integrity: sha512-94EQTWZ40mzBc42ATNIBimBEDltSJ9RQHCC8vc/PDbxi4k8dVwUAv4o98dk50M1zB+JGFxp43FP7f8+FP8R6Sw==}
@@ -4795,7 +4835,7 @@ packages:
     dependencies:
       wrappy: 1.0.2
 
-  /openai@4.104.0:
+  /openai@4.104.0(ws@8.20.0):
     resolution: {integrity: sha512-p99EFNsA/yX6UhVO93f5kJsDRLAg+CTA2RBqdHK4RtK8u5IJw32Hyb2dTGKbnnFmnuoBv5r7Z2CURI9sGZpSuA==}
     hasBin: true
     peerDependencies:
@@ -4814,6 +4854,7 @@ packages:
       form-data-encoder: 1.7.2
       formdata-node: 4.4.1
       node-fetch: 2.7.0
+      ws: 8.20.0
     transitivePeerDependencies:
       - encoding
     dev: false
@@ -6418,6 +6459,18 @@ packages:
 
   /wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
+
+  /ws@8.20.0:
+    resolution: {integrity: sha512-sAt8BhgNbzCtgGbt2OxmpuryO63ZoDk/sqaB/znQm94T4fCEsy/yV+7CdC1kJhOU9lboAEU7R3kquuycDoibVA==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
 
   /xml-name-validator@5.0.0:
     resolution: {integrity: sha512-EvGK8EJ3DhaHfbRlETOWAS5pO9MZITeauHKJyb8wyajUfQUenkIg2MvLDTZ4T/TgIcm3HU0TFBgWWboAZ30UHg==}

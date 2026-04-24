@@ -46,7 +46,7 @@ export default function SettingsApp() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+      <div className="flex-1 overflow-y-auto p-4 pb-24 space-y-6">
         {/* Profile */}
         <div className="space-y-3">
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-2">

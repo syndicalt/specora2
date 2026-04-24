@@ -13,6 +13,13 @@ import { workerClient } from "./grpc/client";
 import { chatRoutes } from "./routes/chat";
 import { authRoutes } from "./routes/auth";
 import { discoveryRoutes } from "./routes/discovery";
+import { eventBusRoutes, emit } from "./services/eventBus";
+import { appToolRoutes } from "./routes/appTools";
+import { healthRoutes } from "./routes/health";
+import { jobQueueRoutes } from "./routes/jobQueue";
+import { adminRoutes } from "./routes/admin";
+import { initializeAuditLog } from "./services/auditLog";
+import { websocketRoutes } from "./services/websocket";
 
 const fastify = Fastify({ logger: { transport: { target: "pino-pretty" } } });
 
@@ -48,9 +55,18 @@ async function main() {
     }
   }
 
+  await fastify.register(require("@fastify/websocket"));
+  await fastify.register(websocketRoutes);
   await fastify.register(chatRoutes);
   await fastify.register(authRoutes);
   await fastify.register(discoveryRoutes);
+  await fastify.register(eventBusRoutes);
+  await fastify.register(appToolRoutes);
+  await fastify.register(healthRoutes);
+  await fastify.register(jobQueueRoutes);
+  await fastify.register(adminRoutes);
+
+  initializeAuditLog(fastify);
 
   fastify.get("/health", async () => ({ status: "ok" }));
 
@@ -63,7 +79,7 @@ async function main() {
         const token = auth?.replace("Bearer ", "");
         if (token) user = await fastify.jwt.verify(token);
       } catch {}
-      return { neo4j: fastify.neo4j, pg: fastify.pg, user, worker: workerClient };
+      return { neo4j: fastify.neo4j, pg: fastify.pg, user, worker: workerClient, emit };
     },
   });
 

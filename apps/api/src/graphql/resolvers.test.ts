@@ -15,10 +15,12 @@ function mockNeo4jSession(records: any[] = [], secondRecords?: any[]) {
   };
 }
 
-function mockContext(session: any, worker = {}) {
+function mockContext(session: any, worker = {}, pg?: any) {
+  const defaultPg = pg || mockPg([{ _: 1 }]);
   return {
     neo4j: { session: () => session },
-    user: { id: "550e8400-e29b-41d4-a716-446655440001", email: "alice@specora.dev" },
+    pg: defaultPg,
+    user: { id: "550e8400-e29b-41d4-a716-446655440001", email: "alice@specora.dev", role: "admin" },
     worker,
   };
 }
@@ -29,8 +31,8 @@ function makeNode(props: any) {
   return { properties: { attributes: "{}", ...props } };
 }
 
-function makeRecord(node: any, rel?: any, target?: any) {
-  const getters: any = { n: node, root: node, src: node, tgt: target || node };
+function makeRecord(node: any, rel?: any, target?: any, source?: any) {
+  const getters: any = { n: node, root: node, src: source || node, source: source || node, tgt: target || node, target: target || node };
   if (rel) getters.rel = rel;
   return {
     get: (key: string) => getters[key],
@@ -183,25 +185,33 @@ describe("Mutation.createCI", () => {
 
 describe("Mutation.updateCI", () => {
   it("updates a CI name", async () => {
-    const session = mockNeo4jSession([makeRecord(makeNode({ id: "bs-1", name: "Updated", class: "BusinessService" }))]);
+    const oldNode = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
+    const updatedNode = makeNode({ id: "bs-1", name: "Updated", class: "BusinessService" });
+    const session = mockNeo4jSession([makeRecord(oldNode)], [makeRecord(updatedNode)]);
     const result = await resolvers.Mutation.updateCI(null, { id: "bs-1", input: { name: "Updated" } }, mockContext(session));
     expect(result.name).toBe("Updated");
   });
 
   it("updates a CI class", async () => {
-    const session = mockNeo4jSession([makeRecord(makeNode({ id: "bs-1", name: "Portal", class: "ApplicationService" }))]);
+    const oldNode = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
+    const updatedNode = makeNode({ id: "bs-1", name: "Portal", class: "ApplicationService" });
+    const session = mockNeo4jSession([makeRecord(oldNode)], [makeRecord(updatedNode)]);
     const result = await resolvers.Mutation.updateCI(null, { id: "bs-1", input: { class: "ApplicationService" } }, mockContext(session));
     expect(result.class).toBe("ApplicationService");
   });
 
   it("updates a CI environment", async () => {
-    const session = mockNeo4jSession([makeRecord(makeNode({ id: "bs-1", name: "Portal", class: "BusinessService", environment: "Staging" }))]);
+    const oldNode = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
+    const updatedNode = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService", environment: "Staging" });
+    const session = mockNeo4jSession([makeRecord(oldNode)], [makeRecord(updatedNode)]);
     const result = await resolvers.Mutation.updateCI(null, { id: "bs-1", input: { environment: "Staging" } }, mockContext(session));
     expect(result.environment).toBe("Staging");
   });
 
   it("updates a CI attributes", async () => {
-    const session = mockNeo4jSession([makeRecord(makeNode({ id: "bs-1", name: "Portal", class: "BusinessService", attributes: "{\"version\":\"2\"}" }))]);
+    const oldNode = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
+    const updatedNode = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService", attributes: "{\"version\":\"2\"}" });
+    const session = mockNeo4jSession([makeRecord(oldNode)], [makeRecord(updatedNode)]);
     const result = await resolvers.Mutation.updateCI(null, { id: "bs-1", input: { attributes: { version: "2" } } }, mockContext(session));
     expect(result.attributes).toEqual({ version: "2" });
   });
@@ -214,7 +224,7 @@ describe("Mutation.updateCI", () => {
   });
 
   it("throws when no fields provided", async () => {
-    const session = mockNeo4jSession([]);
+    const session = mockNeo4jSession([makeRecord(makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" }))]);
     await expect(
       resolvers.Mutation.updateCI(null, { id: "bs-1", input: {} }, mockContext(session))
     ).rejects.toThrow("No fields to update");
@@ -306,7 +316,7 @@ function mockContextWithPg(session: any, pg: any, worker = {}) {
   return {
     neo4j: { session: () => session },
     pg,
-    user: { id: "550e8400-e29b-41d4-a716-446655440001", email: "alice@specora.dev" },
+    user: { id: "550e8400-e29b-41d4-a716-446655440001", email: "alice@specora.dev", role: "admin" },
     worker,
   };
 }
@@ -356,7 +366,7 @@ describe("Mutation.createDiscoverySource", () => {
 
 describe("Mutation.deleteDiscoverySource", () => {
   it("deletes a discovery source", async () => {
-    const pg = mockPg([]);
+    const pg = mockPg([{ _: 1 }]);
     const result = await resolvers.Mutation.deleteDiscoverySource(null, { id: "src-1" }, mockContextWithPg(mockNeo4jSession(), pg));
     expect(result).toBe(true);
   });
@@ -410,7 +420,9 @@ describe("ConfigurationItem.health", () => {
 
 describe("Mutation.deleteRelationship", () => {
   it("deletes an existing relationship", async () => {
-    const session = mockNeo4jSession([{ get: (k: string) => k === "deleted" ? { toNumber: () => 1 } : null }]);
+    const oldRel = { start: "s", end: "t", type: "DEPENDS_ON", properties: {} };
+    const oldRecord = makeRecord(makeNode({ id: "src-1" }), oldRel, makeNode({ id: "tgt-1" }));
+    const session = mockNeo4jSession([oldRecord], [{ get: (k: string) => k === "deleted" ? { toNumber: () => 1 } : null }]);
     const result = await resolvers.Mutation.deleteRelationship(
       null,
       { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON" },
@@ -424,7 +436,7 @@ describe("Mutation.deleteRelationship", () => {
   });
 
   it("returns false when relationship not found", async () => {
-    const session = mockNeo4jSession([{ get: (k: string) => k === "deleted" ? { toNumber: () => 0 } : null }]);
+    const session = mockNeo4jSession([], [{ get: (k: string) => k === "deleted" ? { toNumber: () => 0 } : null }]);
     const result = await resolvers.Mutation.deleteRelationship(
       null,
       { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON" },
@@ -436,14 +448,17 @@ describe("Mutation.deleteRelationship", () => {
 
 describe("Mutation.updateRelationship", () => {
   it("updates relationship type when newType is different", async () => {
-    const rel = { start: "550e8400-e29b-41d4-a716-446655440000", end: "550e8400-e29b-41d4-a716-446655440001", type: "HOSTED_ON", properties: {} };
-    const session = mockNeo4jSession([{
+    const oldRel = { start: "550e8400-e29b-41d4-a716-446655440000", end: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", properties: {} };
+    const newRel = { start: "550e8400-e29b-41d4-a716-446655440000", end: "550e8400-e29b-41d4-a716-446655440001", type: "HOSTED_ON", properties: {} };
+    const oldRecord = makeRecord(makeNode({ id: "550e8400-e29b-41d4-a716-446655440000" }), oldRel, makeNode({ id: "550e8400-e29b-41d4-a716-446655440001", name: "Web-01", class: "Server" }));
+    const newRecord = {
       get: (k: string) => {
-        if (k === "r2") return rel;
+        if (k === "r2") return newRel;
         if (k === "target") return makeNode({ id: "550e8400-e29b-41d4-a716-446655440001", name: "Web-01", class: "Server" });
         return null;
       },
-    }]);
+    };
+    const session = mockNeo4jSession([oldRecord], [newRecord]);
     const result = await resolvers.Mutation.updateRelationship(
       null,
       { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", newType: "HOSTED_ON" },
@@ -457,14 +472,17 @@ describe("Mutation.updateRelationship", () => {
   });
 
   it("updates attributes when type unchanged", async () => {
-    const rel = { start: "550e8400-e29b-41d4-a716-446655440000", end: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", properties: { priority: "high" } };
-    const session = mockNeo4jSession([{
+    const oldRel = { start: "550e8400-e29b-41d4-a716-446655440000", end: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", properties: {} };
+    const newRel = { start: "550e8400-e29b-41d4-a716-446655440000", end: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", properties: { priority: "high" } };
+    const oldRecord = makeRecord(makeNode({ id: "550e8400-e29b-41d4-a716-446655440000" }), oldRel, makeNode({ id: "550e8400-e29b-41d4-a716-446655440001", name: "Web-01", class: "Server" }));
+    const newRecord = {
       get: (k: string) => {
-        if (k === "r") return rel;
+        if (k === "r") return newRel;
         if (k === "target") return makeNode({ id: "550e8400-e29b-41d4-a716-446655440001", name: "Web-01", class: "Server" });
         return null;
       },
-    }]);
+    };
+    const session = mockNeo4jSession([oldRecord], [newRecord]);
     const result = await resolvers.Mutation.updateRelationship(
       null,
       { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON", attributes: { priority: "high" } },
@@ -478,7 +496,7 @@ describe("Mutation.updateRelationship", () => {
   });
 
   it("throws when relationship not found", async () => {
-    const session = mockNeo4jSession([]);
+    const session = mockNeo4jSession([], []);
     await expect(
       resolvers.Mutation.updateRelationship(
         null,

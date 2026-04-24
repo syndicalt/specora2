@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { getToken } from "@/lib/auth";
 import { useShell } from "@/shell/AppContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Plus, Trash2, X, ChevronDown } from "lucide-react";
+import { Plus, Trash2, X, ChevronDown, ChevronRight, Calendar, Clock } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
 
@@ -20,6 +20,20 @@ interface Session {
   updated_at: string;
 }
 
+interface Capability {
+  id: string;
+  label: string;
+  description: string;
+  prompt: string;
+  icon?: string;
+}
+
+interface AppCapabilityGroup {
+  appId: string;
+  appName: string;
+  capabilities: Capability[];
+}
+
 function parseActions(text: string) {
   const actionRegex = /\[\[action\|([^|]+)\|([^|]+)\|([^\[\]]+)\]\]/g;
   const actions: { type: string; payload: string; label: string }[] = [];
@@ -31,6 +45,90 @@ function parseActions(text: string) {
   return { cleanText, actions };
 }
 
+/** Parse SSE events from a buffer. Returns parsed events + remaining unparsed buffer. */
+function parseSseEvents(buffer: string): { parsed: { type: string; data: any }[]; remainder: string } {
+  const parsed: { type: string; data: any }[] = [];
+  // SSE events are separated by double newlines
+  const blocks = buffer.split("\n\n");
+  // The last block might be incomplete — keep it in the buffer
+  const remainder = blocks.pop() || "";
+
+  for (const block of blocks) {
+    const lines = block.split("\n");
+    let eventType = "message";
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        eventType = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        dataLines.push(line.slice(6));
+      }
+    }
+    if (dataLines.length > 0) {
+      try {
+        const data = JSON.parse(dataLines.join("\n"));
+        parsed.push({ type: eventType, data });
+      } catch {
+        // ignore malformed JSON
+      }
+    }
+  }
+
+  return { parsed, remainder };
+}
+
+function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("");
+  const dateRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    dateRef.current?.focus();
+  }, []);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!date) return;
+    const formatted = time ? `${date}T${time}` : date;
+    onSubmit(formatted);
+  };
+
+  return (
+    <div className="mt-2 p-3 rounded-xl bg-gray-950 border border-gray-700/60 shadow-lg max-w-sm">
+      <p className="text-xs text-gray-400 mb-2 font-medium">Pick a date and time</p>
+      <form onSubmit={handleSubmit} className="flex items-center gap-2">
+        <div className="relative flex-1 min-w-0">
+          <Calendar className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500 pointer-events-none" />
+          <input
+            ref={dateRef}
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-gray-900 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+            required
+          />
+        </div>
+        <div className="relative flex-1 min-w-0">
+          <Clock className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500 pointer-events-none" />
+          <input
+            type="time"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+            className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-gray-900 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={!date}
+          className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors disabled:opacity-50 shrink-0"
+        >
+          Confirm
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export function ChatOverlay() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -40,18 +138,29 @@ export function ChatOverlay() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [capabilityGroups, setCapabilityGroups] = useState<AppCapabilityGroup[]>([]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const shell = useShell();
   const [uiContext, setUiContext] = useState<Record<string, any>>({});
+  const [forceDatePicker, setForceDatePicker] = useState(false);
+  const doSendRef = useRef<(text: string) => Promise<void>>(async () => {});
 
   // Auto-focus input on mount (panel opened) and when session changes
   useEffect(() => {
-    // small delay to ensure DOM is ready after animation
     const timer = setTimeout(() => inputRef.current?.focus(), 100);
     return () => clearTimeout(timer);
   }, [sessionId]);
+
+  // Refocus after loading completes
+  useEffect(() => {
+    if (!loading) {
+      const timer = setTimeout(() => inputRef.current?.focus(), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [loading]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -59,6 +168,7 @@ export function ChatOverlay() {
 
   useEffect(() => {
     loadSessions();
+    loadCapabilities();
   }, []);
 
   // Close dropdown on outside click or Escape
@@ -89,6 +199,13 @@ export function ChatOverlay() {
         setUiContext((prev) => ({ ...prev, activeApp: "cmdb-explorer", focusedCI: msg.payload?.id }));
       } else if (msg.type === "APP_ACTIVATED") {
         setUiContext((prev) => ({ ...prev, activeApp: msg.payload?.appId }));
+      } else if (msg.type === "CI_SELECTED" && msg.from === "cmdb-explorer") {
+        const ci = msg.payload?.ci;
+        if (ci) {
+          setUiContext((prev) => ({ ...prev, selectedCI: ci }));
+          // Auto-send CI selection to LLM so it can continue the workflow
+          doSendRef.current(`Selected CI: ${ci.name} (${ci.id})`);
+        }
       }
     });
     return unsubscribe;
@@ -102,6 +219,19 @@ export function ChatOverlay() {
       if (!res.ok) return;
       const data = await res.json();
       setSessions(data.sessions || []);
+    } catch {
+      // silent
+    }
+  }
+
+  async function loadCapabilities() {
+    try {
+      const res = await fetch(`${API_URL}/api/chat/capabilities`, {
+        headers: { Authorization: `Bearer ${getToken() || ""}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setCapabilityGroups(data.capabilities || []);
     } catch {
       // silent
     }
@@ -165,45 +295,165 @@ export function ChatOverlay() {
     }
   }
 
-  const sendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || loading) return;
+  const doSend = useCallback(async (text: string) => {
+    const userMsg = text.trim();
+    if (!userMsg || loading) return;
 
-    const userMsg = input.trim();
+    setForceDatePicker(false);
     setInput("");
-    const newMessages = [...messages, { role: "user" as const, text: userMsg }];
+    const newMessages: ChatMessage[] = [...messages, { role: "user" as const, text: userMsg }];
     setMessages(newMessages);
     setLoading(true);
 
     try {
       const apiMessages = newMessages.map((m) => ({ role: m.role, content: m.text }));
 
-      // Build UI context string
       const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
       const contextParts: string[] = [`Active app/view: ${activeApp}`];
       if (uiContext.selectedRootCI) contextParts.push(`Selected root CI in Service Map: ${uiContext.selectedRootCI}`);
       if (uiContext.focusedCI) contextParts.push(`Focused CI in CMDB Explorer: ${uiContext.focusedCI}`);
       const uiContextString = contextParts.join("\n");
 
-      const res = await fetch(`${API_URL}/api/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${getToken() || ""}`,
-        },
-        body: JSON.stringify({
-          messages: apiMessages,
-          sessionId: sessionId || undefined,
-          uiContext: uiContextString,
-        }),
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      if (data.sessionId && !sessionId) {
-        setSessionId(data.sessionId);
-        await loadSessions();
+      // Try SSE streaming first, fall back to non-streaming on failure
+      let streamSuccess = false;
+      let assistantText = "";
+      let currentSessionId = sessionId;
+
+      try {
+        const res = await fetch(`${API_URL}/api/chat/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${getToken() || ""}`,
+          },
+          body: JSON.stringify({
+            messages: apiMessages,
+            sessionId: sessionId || undefined,
+            uiContext: uiContextString,
+          }),
+        });
+
+        if (res.ok && res.body) {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          // Add a placeholder assistant message that we'll update
+          setMessages((prev) => [...prev, { role: "assistant", text: "" }]);
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            // Parse SSE events from buffer
+            const events = parseSseEvents(buffer);
+            buffer = events.remainder;
+
+            for (const ev of events.parsed) {
+              if (ev.type === "token" && ev.data.content) {
+                assistantText += ev.data.content;
+                setMessages((prev) => {
+                  const last = prev[prev.length - 1];
+                  if (last?.role === "assistant") {
+                    return [...prev.slice(0, -1), { ...last, text: assistantText }];
+                  }
+                  return prev;
+                });
+              } else if (ev.type === "tool_call") {
+                // Track that a tool was called; we'll append indicator only if no new tokens arrive
+                setMessages((prev) => {
+                  const last = prev[prev.length - 1];
+                  if (last?.role === "assistant") {
+                    return [...prev.slice(0, -1), { ...last, text: assistantText + `\n\n*(Running ${ev.data.name}...)*` }];
+                  }
+                  return prev;
+                });
+              } else if (ev.type === "done") {
+                currentSessionId = ev.data.sessionId;
+                streamSuccess = true;
+                // If the final content is empty but we have text from earlier rounds,
+                // keep it (the model may have produced content + tool_calls in one round
+                // and empty content in the final round).
+                if (ev.data.content && !assistantText.trim()) {
+                  assistantText = ev.data.content;
+                  setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last?.role === "assistant") {
+                      return [...prev.slice(0, -1), { ...last, text: assistantText }];
+                    }
+                    return prev;
+                  });
+                }
+              } else if (ev.type === "error") {
+                throw new Error(ev.data.message || "Stream error");
+              }
+            }
+          }
+
+          // Process any remaining events in the buffer after stream closes
+          if (buffer.trim()) {
+            const events = parseSseEvents(buffer + "\n\n");
+            for (const ev of events.parsed) {
+              if (ev.type === "done") {
+                currentSessionId = ev.data.sessionId;
+                streamSuccess = true;
+                if (ev.data.content && !assistantText.trim()) {
+                  assistantText = ev.data.content;
+                  setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last?.role === "assistant") {
+                      return [...prev.slice(0, -1), { ...last, text: assistantText }];
+                    }
+                    return prev;
+                  });
+                }
+              }
+            }
+          }
+        }
+      } catch (streamErr: any) {
+        // Streaming failed — will fall back below
+        console.warn("Chat stream failed, falling back:", streamErr.message);
       }
-      setMessages((prev) => [...prev, { role: "assistant", text: data.content }]);
+
+      // Fallback to non-streaming endpoint only if streaming failed and produced zero tokens
+      if (!streamSuccess && !assistantText.trim()) {
+        // Remove the empty placeholder if it was added
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === "assistant" && last.text === "") {
+            return prev.slice(0, -1);
+          }
+          return prev;
+        });
+
+        const res = await fetch(`${API_URL}/api/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${getToken() || ""}`,
+          },
+          body: JSON.stringify({
+            messages: apiMessages,
+            sessionId: sessionId || undefined,
+            uiContext: uiContextString,
+          }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        if (data.sessionId && !sessionId) {
+          setSessionId(data.sessionId);
+          await loadSessions();
+        }
+        setMessages((prev) => [...prev, { role: "assistant", text: data.content }]);
+      } else {
+        // Streaming succeeded — finalize
+        if (currentSessionId && !sessionId) {
+          setSessionId(currentSessionId);
+          await loadSessions();
+        }
+      }
     } catch (err: any) {
       setMessages((prev) => [
         ...prev,
@@ -212,6 +462,12 @@ export function ChatOverlay() {
     } finally {
       setLoading(false);
     }
+  }, [messages, loading, sessionId, shell.state.activeCanvasId, shell.state.focusedWindowId, uiContext]);
+  doSendRef.current = doSend;
+
+  const sendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await doSend(input);
   };
 
   const handleAction = (type: string, payload: string) => {
@@ -233,17 +489,38 @@ export function ChatOverlay() {
           shell.messageBus.publish({ type: "FOCUS_CI", from: "chat", to: "cmdb-explorer", payload: { id } });
         }, 500);
       }
+    } else if (type === "select-ci") {
+      const params = new URLSearchParams(payload);
+      const context = params.get("context") || "default";
+      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "cmdb-explorer", mode: "window", permissions: ["read:cmdb"] });
+      setTimeout(() => {
+        shell.messageBus.publish({ type: "START_CI_SELECTION", from: "chat", to: "cmdb-explorer", payload: { context, callbackChannel: "chat" } });
+      }, 500);
+    } else if (type === "open-change-manager") {
+      const params = new URLSearchParams(payload);
+      const rfcId = params.get("rfcId");
+      shell.dispatch({ type: "OPEN_APP", id: "change-manager", installKey: "change-manager", mode: "canvas", permissions: ["itsm:change:read", "itsm:change:write"] });
+      if (rfcId) {
+        setTimeout(() => {
+          shell.messageBus.publish({ type: "FOCUS_RFC", from: "chat", to: "change-manager", payload: { rfcId } });
+        }, 500);
+      }
+    } else if (type === "pick-date") {
+      setForceDatePicker(true);
+      // Focus the input so user knows something happened
+      setTimeout(() => inputRef.current?.focus(), 50);
     }
   };
 
   const currentTitle = sessions.find((s) => s.id === sessionId)?.title || "New Chat";
+
+  const showDatePicker = !loading && forceDatePicker;
 
   return (
     <div className="flex flex-col h-full w-full bg-gray-900">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
         <div className="flex items-center gap-3">
-          {/* Session dropdown trigger */}
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setDropdownOpen((prev) => !prev)}
@@ -252,8 +529,6 @@ export function ChatOverlay() {
               <span className="font-medium truncate max-w-[140px]">{currentTitle}</span>
               <ChevronDown className={`w-3.5 h-3.5 transition-transform ${dropdownOpen ? "rotate-180" : ""}`} />
             </button>
-
-            {/* Dropdown */}
             {dropdownOpen && (
               <div className="absolute top-full left-0 mt-1.5 w-64 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl overflow-hidden z-50">
                 <div className="p-2 border-b border-gray-700">
@@ -271,9 +546,7 @@ export function ChatOverlay() {
                       key={s.id}
                       onClick={() => loadSession(s.id)}
                       className={`group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
-                        sessionId === s.id
-                          ? "bg-gray-700/60 text-white"
-                          : "text-gray-400 hover:bg-gray-700/40 hover:text-gray-200"
+                        sessionId === s.id ? "bg-gray-700/60 text-white" : "text-gray-400 hover:bg-gray-700/40 hover:text-gray-200"
                       }`}
                     >
                       <span className="truncate flex-1">{s.title}</span>
@@ -286,9 +559,7 @@ export function ChatOverlay() {
                     </div>
                   ))}
                   {sessions.length === 0 && (
-                    <div className="px-3 py-4 text-center text-xs text-gray-500">
-                      No sessions yet
-                    </div>
+                    <div className="px-3 py-4 text-center text-xs text-gray-500">No sessions yet</div>
                   )}
                 </div>
               </div>
@@ -318,6 +589,9 @@ export function ChatOverlay() {
           }
 
           const { cleanText, actions } = parseActions(m.text);
+          const isLatestAssistant = i === messages.length - 1 || (i === messages.length - 2 && messages[messages.length - 1]?.role === "user");
+          const showPickerForThisMsg = isLatestAssistant && !loading && forceDatePicker;
+
           return (
             <div key={i} className="flex justify-start">
               <div className="max-w-[95%] space-y-2">
@@ -339,10 +613,55 @@ export function ChatOverlay() {
                     ))}
                   </div>
                 )}
+                {showPickerForThisMsg && (
+                  <DatePickerWidget onSubmit={(val) => doSend(val)} />
+                )}
               </div>
             </div>
           );
         })}
+        {/* Capability accordion — shown when conversation is fresh */}
+        {!loading && messages.filter((m) => m.role === "user").length === 0 && capabilityGroups.length > 0 && (
+          <div className="mt-2 space-y-1">
+            <p className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">What you can do</p>
+            {capabilityGroups.map((group) => {
+              const isOpen = expandedGroups.has(group.appId);
+              return (
+                <div key={group.appId} className="border border-gray-800 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => {
+                      setExpandedGroups((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(group.appId)) next.delete(group.appId);
+                        else next.add(group.appId);
+                        return next;
+                      });
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-300 hover:bg-gray-800/50 transition-colors"
+                  >
+                    <span className="font-medium">{group.appName}</span>
+                    {isOpen ? <ChevronDown className="w-3.5 h-3.5 text-gray-500" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-500" />}
+                  </button>
+                  {isOpen && (
+                    <div className="px-3 pb-2 space-y-1">
+                      {group.capabilities.map((cap) => (
+                        <button
+                          key={cap.id}
+                          onClick={() => doSend(cap.prompt)}
+                          className="w-full text-left px-2 py-1.5 rounded-md text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                          title={cap.description}
+                        >
+                          {cap.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {loading && (
           <div className="flex justify-start">
             <div className="px-3 py-2 rounded-lg text-sm bg-gray-800 text-gray-400 animate-pulse">
@@ -355,14 +674,30 @@ export function ChatOverlay() {
 
       {/* Input */}
       <form onSubmit={sendMessage} className="p-3 border-t border-gray-800 shrink-0">
-        <input
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about your CMDB, incidents, or services..."
-          className="w-full px-3 py-2.5 rounded-lg bg-gray-950 border border-gray-700 focus:outline-none focus:border-indigo-500 text-sm transition-colors"
-          disabled={loading}
-        />
+        <div className="relative">
+          <input
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask about your CMDB, incidents, or services..."
+            className="w-full px-3 py-2.5 rounded-lg bg-gray-950 border border-gray-700 focus:outline-none focus:border-indigo-500 text-sm transition-colors pr-10"
+            disabled={loading}
+          />
+          {showDatePicker && (
+            <button
+              type="button"
+              onClick={() => {
+                const today = new Date().toISOString().slice(0, 10);
+                setInput((prev) => (prev ? prev : today));
+                inputRef.current?.focus();
+              }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-indigo-400 transition-colors"
+              title="Insert today's date"
+            >
+              <Calendar className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </form>
     </div>
   );

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { graphqlClient } from "@/lib/api";
 import type { ShellAPI } from "@/sdk/types";
-import { Search, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { Search, ChevronLeft, ChevronRight, RefreshCw, CheckCircle } from "lucide-react";
 import { DetailPanel } from "./DetailPanel";
 
 interface CI {
@@ -31,6 +31,7 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
   const [classes, setClasses] = useState<string[]>([]);
   const [environments, setEnvironments] = useState<string[]>([]);
   const [selectedCi, setSelectedCi] = useState<CI | null>(null);
+  const [selectionMode, setSelectionMode] = useState<{ context: string; callbackChannel: string } | null>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout>>();
 
   const fetchData = useCallback(async () => {
@@ -103,6 +104,18 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
     setOffset(0);
   }, [classFilter, envFilter]);
 
+  // Subscribe to real-time CI events
+  useEffect(() => {
+    const unsubCreated = shell.eventBus.subscribe("ci.created", () => fetchData());
+    const unsubUpdated = shell.eventBus.subscribe("ci.updated", () => fetchData());
+    const unsubDeleted = shell.eventBus.subscribe("ci.deleted", () => fetchData());
+    return () => {
+      unsubCreated();
+      unsubUpdated();
+      unsubDeleted();
+    };
+  }, [shell, fetchData]);
+
   // Subscribe to FOCUS_CI from chat action cards
   useEffect(() => {
     const unsubscribe = shell.onMessage((msg) => {
@@ -126,10 +139,27 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
               });
           }
         }
+      } else if (msg.type === "START_CI_SELECTION") {
+        setSelectionMode({
+          context: msg.payload?.context || "default",
+          callbackChannel: msg.payload?.callbackChannel || "chat",
+        });
       }
     });
     return unsubscribe;
   }, [shell, cis]);
+
+  const handleSelectCI = (ci: CI) => {
+    if (!selectionMode) return;
+    shell.messageBus.publish({
+      type: "CI_SELECTED",
+      from: "cmdb-explorer",
+      to: selectionMode.callbackChannel,
+      payload: { ci: { id: ci.id, name: ci.name, class: ci.class }, context: selectionMode.context },
+    });
+    // Close the window after selection
+    setSelectionMode(null);
+  };
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -145,6 +175,21 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
 
   return (
     <div className="h-full w-full flex flex-col bg-gray-950 text-gray-100 relative overflow-hidden">
+      {/* Selection mode banner */}
+      {selectionMode && (
+        <div className="flex items-center justify-between px-4 py-2 bg-indigo-900/30 border-b border-indigo-500/30 shrink-0">
+          <span className="text-sm text-indigo-300">
+            Selection mode: Click <strong>Select</strong> on a CI to choose it for {selectionMode.context}
+          </span>
+          <button
+            onClick={() => setSelectionMode(null)}
+            className="text-xs text-indigo-400 hover:text-indigo-200 underline"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
       {/* Filter bar */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 shrink-0">
         {/* Search */}
@@ -195,7 +240,7 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
       </div>
 
       {/* Results table */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto pb-24">
         <table className="w-full text-sm">
           <thead className="bg-gray-900 sticky top-0 z-10">
             <tr className="border-b border-gray-800">
@@ -230,7 +275,23 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
                       : "hover:bg-gray-800/40"
                   }`}
                 >
-                  <td className="px-4 py-2.5 text-gray-200 font-medium">{ci.name}</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      {selectionMode && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSelectCI(ci);
+                          }}
+                          className="flex items-center gap-1 px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs transition-colors"
+                        >
+                          <CheckCircle className="w-3 h-3" />
+                          Select
+                        </button>
+                      )}
+                      <span className="text-gray-200 font-medium">{ci.name}</span>
+                    </div>
+                  </td>
                   <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{ci.id}</td>
                   <td className="px-4 py-2.5">
                     <span className="px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 text-xs">{ci.class}</span>

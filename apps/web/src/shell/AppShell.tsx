@@ -1,7 +1,7 @@
 "use client";
 
 import { useReducer, useEffect, useState, useRef } from "react";
-import { ShellContext, shellReducer, initialShellState } from "./AppContext";
+import { ShellContext, shellReducer, initialShellState, type ShellAction } from "./AppContext";
 import { CanvasArea, DormantApps, WindowLayer } from "./AppContainers";
 import { AppDock } from "./AppDock";
 import { AppLauncher } from "./AppLauncher";
@@ -10,6 +10,7 @@ import type { RegistryEntry, AppMessage } from "@/sdk/types";
 import { X } from "lucide-react";
 import { ChatPanel } from "@/components/ChatPanel";
 import { graphqlClient } from "@/lib/api";
+import { useEventStream } from "@/hooks/useEventStream";
 
 function createMessageBus() {
   const handlers = new Set<(msg: AppMessage) => void>();
@@ -32,6 +33,73 @@ const UPDATE_PREFS_MUTATION = `
   }
 `;
 
+interface HistoryState {
+  activeCanvasId: string | null;
+}
+
+function useShellHistory(
+  state: typeof initialShellState,
+  rawDispatch: React.Dispatch<ShellAction>,
+  registry: RegistryEntry[],
+  ready: boolean
+) {
+  const isNavigatingRef = useRef(false);
+  const historyLengthRef = useRef(0);
+
+  // Push history entry when active canvas changes due to user action
+  useEffect(() => {
+    if (!ready || isNavigatingRef.current) return;
+    const current: HistoryState = { activeCanvasId: state.activeCanvasId };
+    // Replace initial state, then push on subsequent changes
+    if (historyLengthRef.current === 0) {
+      history.replaceState(current, "");
+      historyLengthRef.current = 1;
+    } else {
+      history.pushState(current, "");
+      historyLengthRef.current++;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.activeCanvasId, ready]);
+
+  // Handle browser back/forward
+  useEffect(() => {
+    if (!ready) return;
+    const onPopState = (e: PopStateEvent) => {
+      const prev = e.state as HistoryState | null;
+      if (!prev) return;
+      isNavigatingRef.current = true;
+      if (prev.activeCanvasId) {
+        const instance = state.instances.find((i) => i.id === prev.activeCanvasId);
+        if (instance) {
+          rawDispatch({ type: "ACTIVATE_APP", instanceId: instance.instanceId });
+        } else {
+          const entry = registry.find((r) => r.id === prev.activeCanvasId);
+          if (entry) {
+            rawDispatch({
+              type: "OPEN_APP",
+              id: entry.id,
+              installKey: entry.installKey,
+              mode: entry.defaultMode,
+              permissions: entry.permissions,
+            });
+          }
+        }
+      } else {
+        // No active canvas — close the current one if any
+        const active = state.instances.find((i) => i.state === "active" && i.mode === "canvas");
+        if (active) {
+          rawDispatch({ type: "CLOSE_APP", instanceId: active.instanceId });
+        }
+      }
+      setTimeout(() => {
+        isNavigatingRef.current = false;
+      }, 0);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [ready, rawDispatch, state.instances, registry]);
+}
+
 export function AppShell() {
   const [state, dispatch] = useReducer(shellReducer, initialShellState);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
@@ -42,12 +110,19 @@ export function AppShell() {
   const hasLoadedPrefs = useRef(false);
   const loadedDockRef = useRef<string[] | null>(null);
 
+  useShellHistory(state, dispatch, registry, ready);
+
   // Initialize IndexedDB registry + fetch user preferences
   useEffect(() => {
     let mounted = true;
-    seedBuiltInApps().then(() => getRegistry()).then((apps) => {
-      if (!mounted) return;
-      setRegistry(apps);
+    seedBuiltInApps()
+      .catch((err) => {
+        console.error("[AppShell] seedBuiltInApps failed:", err);
+      })
+      .then(() => getRegistry())
+      .then((apps) => {
+        if (!mounted) return;
+        setRegistry(apps);
 
       // Fetch user preferences for dock order
       graphqlClient.request(ME_QUERY).then((data: any) => {
@@ -119,6 +194,8 @@ export function AppShell() {
     return () => timers.forEach(clearTimeout);
   }, [state.notifications]);
 
+  const eventStream = useEventStream();
+
   if (!ready) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-gray-950 text-gray-400">
@@ -128,7 +205,7 @@ export function AppShell() {
   }
 
   return (
-    <ShellContext.Provider value={{ state, dispatch, registry, messageBus }}>
+    <ShellContext.Provider value={{ state, dispatch, registry, messageBus, eventBus: eventStream }}>
       <div className="h-screen w-screen bg-gray-950 flex overflow-hidden">
         {/* Main workspace */}
         <div className="flex-1 relative overflow-hidden">

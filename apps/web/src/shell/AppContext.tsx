@@ -249,6 +249,10 @@ export interface ShellContextValue {
     subscribe: (handler: (msg: AppMessage) => void) => () => void;
     publish: (msg: AppMessage) => void;
   };
+  eventBus: {
+    subscribe: (type: string, handler: (payload: Record<string, unknown>) => void) => () => void;
+    connected: boolean;
+  };
 }
 
 export const ShellContext = createContext<ShellContextValue | null>(null);

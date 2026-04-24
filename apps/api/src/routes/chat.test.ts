@@ -296,3 +296,114 @@ describe("GET /api/chat/sessions/:id/messages", () => {
     );
   });
 });
+
+describe("POST /api/chat/stream", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function buildApp(pgRows: any[] = []) {
+    const app = Fastify();
+    app.decorate("authenticate", async (request: any) => {
+      request.user = { id: "u1", email: "alice@specora.dev" };
+    });
+    app.decorate("pg", mockPg(pgRows));
+    await app.register(chatRoutes);
+    return app;
+  }
+
+  it("streams tokens via SSE", async () => {
+    vi.spyOn(chatService, "chatStream").mockImplementation(async (_messages, _fastify, onEvent) => {
+      onEvent({ type: "token", content: "Hello" });
+      onEvent({ type: "token", content: " world" });
+      return { content: "Hello world" };
+    });
+    const app = await buildApp([{ id: "sess-1", user_id: "u1", title: "Hi", created_at: new Date(), updated_at: new Date() }]);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/stream",
+      payload: { messages: [{ role: "user", content: "Hi" }] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/event-stream");
+    expect(res.body).toContain('event: token');
+    expect(res.body).toContain('"content":"Hello"');
+    expect(res.body).toContain('"content":" world"');
+    expect(res.body).toContain('event: done');
+  });
+
+  it("streams tool_call and tool_result events", async () => {
+    vi.spyOn(chatService, "chatStream").mockImplementation(async (_messages, _fastify, onEvent) => {
+      onEvent({ type: "tool_call", name: "count_cis", arguments: {} });
+      onEvent({ type: "tool_result", name: "count_cis", result: { total: 5 } });
+      return { content: "There are 5 CIs.", toolCalls: [{ call: { id: "c1", type: "function", function: { name: "count_cis", arguments: "{}" } }, result: { total: 5 } }] };
+    });
+    const app = await buildApp([{ id: "sess-1", user_id: "u1", title: "Hi", created_at: new Date(), updated_at: new Date() }]);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/stream",
+      payload: { messages: [{ role: "user", content: "Count" }] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('event: tool_call');
+    expect(res.body).toContain('"name":"count_cis"');
+    expect(res.body).toContain('event: tool_result');
+    expect(res.body).toContain('"total":5');
+  });
+
+  it("returns 400 for missing messages", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/stream",
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("emits error event on chatStream failure", async () => {
+    vi.spyOn(chatService, "chatStream").mockImplementation(async (_messages, _fastify, onEvent) => {
+      throw new Error("LLM failure");
+    });
+    const app = await buildApp([{ id: "sess-1", user_id: "u1", title: "Hi", created_at: new Date(), updated_at: new Date() }]);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/stream",
+      payload: { messages: [{ role: "user", content: "Hi" }] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('event: error');
+    expect(res.body).toContain("LLM failure");
+  });
+
+  it("saves assistant message with tool calls after streaming", async () => {
+    vi.spyOn(chatService, "chatStream").mockImplementation(async (_messages, _fastify, onEvent) => {
+      onEvent({ type: "token", content: "Result" });
+      return {
+        content: "Result",
+        toolCalls: [{
+          call: { id: "call-1", type: "function", function: { name: "count_cis", arguments: "{}" } } as any,
+          result: { total: 5 },
+        }],
+      };
+    });
+    const app = await buildApp([
+      { id: "msg-1", session_id: "sess-1", role: "user", content: "Hi", tool_calls: null, tool_call_id: null, created_at: new Date() },
+    ]);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/stream",
+      payload: { messages: [{ role: "user", content: "Count" }], sessionId: "sess-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(app.pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO chat_messages"),
+      expect.arrayContaining(["sess-1", "assistant", "Result", expect.anything(), null])
+    );
+  });
+});

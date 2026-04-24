@@ -250,6 +250,24 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     return unsubscribe;
   }, [shell, rootId]);
 
+  // Subscribe to real-time graph events
+  useEffect(() => {
+    const unsubCreated = shell.eventBus.subscribe("ci.created", () => fetchData(rootId));
+    const unsubUpdated = shell.eventBus.subscribe("ci.updated", () => fetchData(rootId));
+    const unsubDeleted = shell.eventBus.subscribe("ci.deleted", () => fetchData(rootId));
+    const unsubRelCreated = shell.eventBus.subscribe("relationship.created", () => fetchData(rootId));
+    const unsubRelUpdated = shell.eventBus.subscribe("relationship.updated", () => fetchData(rootId));
+    const unsubRelDeleted = shell.eventBus.subscribe("relationship.deleted", () => fetchData(rootId));
+    return () => {
+      unsubCreated();
+      unsubUpdated();
+      unsubDeleted();
+      unsubRelCreated();
+      unsubRelUpdated();
+      unsubRelDeleted();
+    };
+  }, [shell, rootId, fetchData]);
+
   useEffect(() => {
     let cancelled = false;
     async function loadRoots() {

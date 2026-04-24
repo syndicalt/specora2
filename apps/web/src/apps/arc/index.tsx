@@ -113,7 +113,7 @@ export default function ArcApp() {
           </button>
         )}
       </div>
-      <div className="flex-1 overflow-auto p-4">
+      <div className="flex-1 overflow-auto p-4 pb-24">
         {loading && tab !== "installed" ? (
           <div className="text-center text-gray-500 py-8 animate-pulse">Loading...</div>
         ) : tab === "discover" ? (

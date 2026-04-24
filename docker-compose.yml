@@ -29,6 +29,20 @@ services:
       - ./packages/db/migrations/006_marketplace.sql:/docker-entrypoint-initdb.d/006_marketplace.sql
       - ./packages/db/migrations/007_marketplace_seed.sql:/docker-entrypoint-initdb.d/007_marketplace_seed.sql
       - ./packages/db/migrations/008_saved_views.sql:/docker-entrypoint-initdb.d/008_saved_views.sql
+      - ./packages/db/migrations/009_change_manager.sql:/docker-entrypoint-initdb.d/009_change_manager.sql
+      - ./packages/db/migrations/010_event_bus.sql:/docker-entrypoint-initdb.d/010_event_bus.sql
+      - ./packages/db/migrations/011_audit_log.sql:/docker-entrypoint-initdb.d/011_audit_log.sql
+      - ./packages/db/migrations/012_app_permissions.sql:/docker-entrypoint-initdb.d/012_app_permissions.sql
+      - ./packages/db/migrations/013_chat_trace.sql:/docker-entrypoint-initdb.d/013_chat_trace.sql
+      - ./packages/db/migrations/013_job_queue.sql:/docker-entrypoint-initdb.d/013_job_queue.sql
+      - ./packages/db/migrations/014_upgrade_jobs.sql:/docker-entrypoint-initdb.d/014_upgrade_jobs.sql
+      - ./packages/db/migrations/015_system_properties.sql:/docker-entrypoint-initdb.d/015_system_properties.sql
+      - ./packages/db/migrations/016_change_request_cis.sql:/docker-entrypoint-initdb.d/016_change_request_cis.sql
+      - ./packages/db/migrations/017_change_request_approvers.sql:/docker-entrypoint-initdb.d/017_change_request_approvers.sql
+      - ./packages/db/migrations/018_role_expansion.sql:/docker-entrypoint-initdb.d/018_role_expansion.sql
+      - ./packages/db/migrations/019_change_request_comments.sql:/docker-entrypoint-initdb.d/019_change_request_comments.sql
+      - ./packages/db/migrations/020_marketplace_admin_panels.sql:/docker-entrypoint-initdb.d/020_marketplace_admin_panels.sql
+      - ./packages/db/migrations/021_change_request_planned_times.sql:/docker-entrypoint-initdb.d/021_change_request_planned_times.sql
 
   api:
     build:

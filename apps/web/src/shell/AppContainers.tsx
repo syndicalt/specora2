@@ -1,14 +1,20 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import type { AppInstance } from "./AppContext";
 import type { RegistryEntry, ShellAPI } from "@/sdk/types";
 import { useShell } from "./AppContext";
+import { getUserRole } from "@/lib/auth";
 import ServiceMapApp from "@/apps/service-map";
 import CMDBExplorerApp from "@/apps/cmdb-explorer";
 import SettingsApp from "@/apps/settings";
 import DiscoveryApp from "@/apps/discovery";
 import ArcApp from "@/apps/arc";
+import ChangeManagerApp from "@/apps/change-manager";
+import DiscoveryInsightsApp from "@/apps/discovery-insights";
+import HealthMonitorApp from "@/apps/health-monitor";
+import AuditLogApp from "@/apps/audit-log";
+import AdminConsoleApp from "@/apps/admin-console";
 
 const BUILT_IN_COMPONENTS: Record<string, React.ComponentType<{ shell: ShellAPI }>> = {
   "service-map": ServiceMapApp,
@@ -16,6 +22,11 @@ const BUILT_IN_COMPONENTS: Record<string, React.ComponentType<{ shell: ShellAPI 
   "settings": SettingsApp,
   "discovery": DiscoveryApp,
   "arc": ArcApp,
+  "change-manager": ChangeManagerApp,
+  "discovery-insights": DiscoveryInsightsApp,
+  "health-monitor": HealthMonitorApp,
+  "audit-log": AuditLogApp,
+  "admin-console": AdminConsoleApp,
 };
 
 const externalCache = new Map<string, React.ComponentType<{ shell: ShellAPI }>>();
@@ -57,12 +68,61 @@ const PERMISSION_CAPABILITIES: Record<string, string[]> = {
   "write:discovery": ["sendMessage", "onMessage", "notify"],
   "read:profile": ["sendMessage", "onMessage", "notify"],
   "read:chat": ["sendMessage", "onMessage", "notify"],
+  "itsm:change:read": ["sendMessage", "onMessage", "notify"],
+  "itsm:change:write": ["sendMessage", "onMessage", "notify"],
+  "itsm:discovery:read": ["sendMessage", "onMessage", "notify"],
+  "itsm:health:read": ["sendMessage", "onMessage", "notify"],
+  "itsm:health:write": ["sendMessage", "onMessage", "notify"],
 };
+
+const ROLE_PERMISSIONS: Record<string, string[]> = {
+  viewer: [
+    "read:cmdb", "read:relationships", "read:discovery",
+    "itsm:change:read", "itsm:discovery:read", "itsm:health:read",
+    "audit-log:read", "read:profile", "read:chat"
+  ],
+  operator: [
+    "read:cmdb", "write:cmdb", "read:relationships", "write:relationships",
+    "read:discovery", "write:discovery",
+    "itsm:change:read", "itsm:change:write",
+    "itsm:discovery:read",
+    "itsm:health:read", "itsm:health:write",
+    "audit-log:read", "read:profile", "read:chat"
+  ],
+  admin: [
+    "read:cmdb", "write:cmdb", "read:relationships", "write:relationships",
+    "read:discovery", "write:discovery",
+    "itsm:change:read", "itsm:change:write",
+    "itsm:discovery:read",
+    "itsm:health:read", "itsm:health:write",
+    "audit-log:read", "read:profile", "read:chat",
+    "app:install", "app:uninstall"
+  ],
+  security_admin: [
+    "rbac:read", "rbac:write",
+    "system-properties:read", "system-properties:write",
+    "audit-log:read",
+    "app:install", "app:uninstall",
+    "read:profile", "read:chat"
+  ],
+};
+
+export function filterRegistryByRole(registry: RegistryEntry[], role: string | null): RegistryEntry[] {
+  if (!role || role === "admin" || role === "security_admin") return registry;
+  const perms = ROLE_PERMISSIONS[role];
+  if (!perms) {
+    console.warn(`[filterRegistryByRole] Unknown role "${role}" — showing all apps as fallback`);
+    return registry;
+  }
+  const allowed = new Set(perms);
+  return registry.filter((entry) => entry.permissions.some((p) => allowed.has(p)));
+}
 
 function buildShellAPI(
   instance: AppInstance,
   dispatch: React.Dispatch<any>,
-  bus: { publish: (m: any) => void; subscribe: (h: any) => () => void }
+  bus: { publish: (m: any) => void; subscribe: (h: any) => () => void },
+  eventBus: { subscribe: (type: string, handler: any) => () => void; connected: boolean }
 ): ShellAPI {
   const allowed = new Set(
     instance.permissions.flatMap((p) => PERMISSION_CAPABILITIES[p] || [])
@@ -86,6 +146,7 @@ function buildShellAPI(
       : () => {},
     dispatch: allowed.has("dispatch") ? dispatch : () => {},
     messageBus: bus,
+    eventBus,
   };
 }
 
@@ -177,7 +238,9 @@ function AppLoader({ entry, shellAPI }: {
 }
 
 export function CanvasArea() {
-  const { state, dispatch, messageBus, registry } = useShell();
+  const { state, dispatch, messageBus, registry, eventBus } = useShell();
+  const role = useMemo(() => getUserRole(), []);
+  const visibleRegistry = filterRegistryByRole(registry, role);
   const activeInstance = state.instances.find(
     (i) => i.id === state.activeCanvasId && i.mode === "canvas"
   );
@@ -210,16 +273,17 @@ export function CanvasArea() {
     );
   }
 
-  const entry = registry.find((r) => r.id === activeInstance.id);
+  const entry = visibleRegistry.find((r) => r.id === activeInstance.id);
   if (!entry) {
+    const exists = registry.find((r) => r.id === activeInstance.id);
     return (
       <div className="h-full w-full flex items-center justify-center text-gray-500">
-        Unknown app: {activeInstance.id}
+        {exists ? "Access denied" : `Unknown app: ${activeInstance.id}`}
       </div>
     );
   }
 
-  const shellAPI = buildShellAPI(activeInstance, dispatch, messageBus);
+  const shellAPI = buildShellAPI(activeInstance, dispatch, messageBus, eventBus);
 
   return (
     <div className="h-full w-full">
@@ -229,15 +293,17 @@ export function CanvasArea() {
 }
 
 export function DormantApps() {
-  const { state, dispatch, messageBus, registry } = useShell();
+  const { state, dispatch, messageBus, registry, eventBus } = useShell();
+  const role = useMemo(() => getUserRole(), []);
+  const visibleRegistry = filterRegistryByRole(registry, role);
   const dormantInstances = state.instances.filter((i) => i.state === "dormant" && i.mode === "canvas");
 
   return (
     <div className="hidden">
       {dormantInstances.map((instance) => {
-        const entry = registry.find((r) => r.id === instance.id);
+        const entry = visibleRegistry.find((r) => r.id === instance.id);
         if (!entry) return null;
-        const shellAPI = buildShellAPI(instance, dispatch, messageBus);
+        const shellAPI = buildShellAPI(instance, dispatch, messageBus, eventBus);
         return (
           <div key={instance.instanceId} id={`dormant-${instance.instanceId}`}>
             <AppLoader entry={entry} shellAPI={shellAPI} />
@@ -466,7 +532,9 @@ function WindowFrame({
 }
 
 export function WindowLayer({ registry }: { registry: RegistryEntry[] }) {
-  const { state, dispatch, messageBus } = useShell();
+  const { state, dispatch, messageBus, eventBus } = useShell();
+  const role = useMemo(() => getUserRole(), []);
+  const visibleRegistry = filterRegistryByRole(registry, role);
   const windowInstances = state.instances.filter((i) => i.mode === "window");
 
   if (windowInstances.length === 0) return null;
@@ -474,9 +542,9 @@ export function WindowLayer({ registry }: { registry: RegistryEntry[] }) {
   return (
     <div className="absolute inset-0 pointer-events-none z-40">
       {windowInstances.map((instance) => {
-        const entry = registry.find((r) => r.id === instance.id);
+        const entry = visibleRegistry.find((r) => r.id === instance.id);
         if (!entry) return null;
-        const shellAPI = buildShellAPI(instance, dispatch, messageBus);
+        const shellAPI = buildShellAPI(instance, dispatch, messageBus, eventBus);
         return (
           <WindowFrame
             key={instance.instanceId}

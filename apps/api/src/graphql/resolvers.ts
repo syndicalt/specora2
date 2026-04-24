@@ -7,10 +7,22 @@ import {
   DeleteRelationshipInputSchema,
   UpdateRelationshipInputSchema,
 } from "@specora/core";
+import { hasPermission } from "../services/rbac";
 
 function parseNode(node: any) {
   const attrs = typeof node.attributes === "string" ? JSON.parse(node.attributes) : (node.attributes || {});
   return { ...node, attributes: attrs };
+}
+
+async function checkPermission(context: any, resource: string, action: string) {
+  const user = context.user as { role?: string } | null;
+  if (!user?.role) {
+    throw new GraphQLError("Forbidden: not authenticated", { extensions: { code: "FORBIDDEN" } });
+  }
+  const allowed = await hasPermission(context.pg, { role: user.role, resource, action });
+  if (!allowed) {
+    throw new GraphQLError(`Forbidden: ${user.role} cannot ${action} ${resource}`, { extensions: { code: "FORBIDDEN" } });
+  }
 }
 
 export const resolvers = {
@@ -391,6 +403,61 @@ LIMIT 50`;
         throw err;
       }
     },
+    async auditLog(_parent: any, args: { entityType?: string; entityId?: string; limit?: number; offset?: number }, context: any) {
+      let query = "SELECT id, actor_id, action, entity_type, entity_id, old_values, new_values, metadata, created_at FROM audit_log WHERE 1=1";
+      const params: any[] = [];
+      let idx = 1;
+      if (args.entityType) {
+        query += ` AND entity_type = $${idx++}`;
+        params.push(args.entityType);
+      }
+      if (args.entityId) {
+        query += ` AND entity_id = $${idx++}`;
+        params.push(args.entityId);
+      }
+      query += " ORDER BY created_at DESC";
+      if (args.limit) {
+        query += ` LIMIT $${idx++}`;
+        params.push(args.limit);
+      }
+      if (args.offset) {
+        query += ` OFFSET $${idx++}`;
+        params.push(args.offset);
+      }
+      const result = await context.pg.query(query, params);
+      return result.rows.map((row: any) => ({
+        id: row.id,
+        actorId: row.actor_id,
+        action: row.action,
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        oldValues: row.old_values,
+        newValues: row.new_values,
+        metadata: row.metadata,
+        createdAt: row.created_at,
+      }));
+    },
+    async auditLogForCI(_parent: any, args: { ciId: string; limit?: number }, context: any) {
+      const result = await context.pg.query(
+        `SELECT id, actor_id, action, entity_type, entity_id, old_values, new_values, metadata, created_at
+         FROM audit_log
+         WHERE entity_type = 'ConfigurationItem' AND entity_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [args.ciId, args.limit || 50]
+      );
+      return result.rows.map((row: any) => ({
+        id: row.id,
+        actorId: row.actor_id,
+        action: row.action,
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        oldValues: row.old_values,
+        newValues: row.new_values,
+        metadata: row.metadata,
+        createdAt: row.created_at,
+      }));
+    },
   },
   ConfigurationItem: {
     async relationships(parent: any, _args: any, context: any) {
@@ -457,6 +524,7 @@ LIMIT 50`;
   },
   Mutation: {
     async createCI(_parent: any, args: { input: any }, context: any) {
+      await checkPermission(context, "cmdb", "write");
       const validated = CreateCIInputSchema.safeParse(args.input);
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
@@ -469,18 +537,31 @@ LIMIT 50`;
            RETURN n`,
           { ...validated.data, id, attributes: JSON.stringify(validated.data.attributes || {}) }
         );
-        return parseNode(result.records[0].get("n").properties);
+        const node = parseNode(result.records[0].get("n").properties);
+        if (context.emit) {
+          context.emit("ci.created", { ciId: node.id, class: node.class, name: node.name });
+        }
+        return node;
       } finally {
         await session.close();
       }
     },
     async updateCI(_parent: any, args: { id: string; input: any }, context: any) {
+      await checkPermission(context, "cmdb", "write");
       const validated = UpdateCIInputSchema.safeParse(args.input);
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
       }
       const session = context.neo4j.session();
       try {
+        // Fetch old values for audit
+        const oldResult = await session.run(
+          `MATCH (n:ConfigurationItem {id: $id}) RETURN n`,
+          { id: args.id }
+        );
+        if (!oldResult.records.length) throw new GraphQLError("CI not found");
+        const oldNode = parseNode(oldResult.records[0].get("n").properties);
+
         const sets: string[] = [];
         const params: any = { id: args.id };
         if (validated.data.name !== undefined) {
@@ -504,25 +585,45 @@ LIMIT 50`;
           `MATCH (n:ConfigurationItem {id: $id}) SET ${sets.join(", ")} RETURN n`,
           params
         );
-        if (!result.records.length) throw new GraphQLError("CI not found");
-        return parseNode(result.records[0].get("n").properties);
+        const node = parseNode(result.records[0].get("n").properties);
+        if (context.emit) {
+          context.emit("ci.updated", {
+            ciId: node.id,
+            class: node.class,
+            name: node.name,
+            oldValues: oldNode,
+            newValues: node,
+            actorId: context.user?.id,
+          });
+        }
+        return node;
       } finally {
         await session.close();
       }
     },
     async deleteCI(_parent: any, args: { id: string }, context: any) {
+      await checkPermission(context, "cmdb", "write");
       const session = context.neo4j.session();
       try {
+        const oldResult = await session.run(
+          `MATCH (n:ConfigurationItem {id: $id}) RETURN n`,
+          { id: args.id }
+        );
+        const oldNode = oldResult.records.length ? parseNode(oldResult.records[0].get("n").properties) : null;
         await session.run(
           `MATCH (n:ConfigurationItem {id: $id}) DETACH DELETE n`,
           { id: args.id }
         );
+        if (context.emit) {
+          context.emit("ci.deleted", { ciId: args.id, oldValues: oldNode, actorId: context.user?.id });
+        }
         return true;
       } finally {
         await session.close();
       }
     },
     async createRelationship(_parent: any, args: { input: any }, context: any) {
+      await checkPermission(context, "relationships", "write");
       const validated = CreateRelationshipInputSchema.safeParse(args.input);
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
@@ -538,6 +639,14 @@ LIMIT 50`;
         if (!result.records.length) throw new GraphQLError("Source or target not found");
         const rel = result.records[0].get("r");
         const target = parseNode(result.records[0].get("target").properties);
+        if (context.emit) {
+          context.emit("relationship.created", {
+            sourceId: validated.data.sourceId,
+            targetId: validated.data.targetId,
+            type: validated.data.type,
+            actorId: context.user?.id,
+          });
+        }
         return {
           id: `${rel.start}-${rel.end}-${rel.type}`,
           type: rel.type,
@@ -549,12 +658,21 @@ LIMIT 50`;
       }
     },
     async deleteRelationship(_parent: any, args: { sourceId: string; targetId: string; type: string }, context: any) {
+      await checkPermission(context, "relationships", "write");
       const validated = DeleteRelationshipInputSchema.safeParse(args);
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
       }
       const session = context.neo4j.session();
       try {
+        const oldResult = await session.run(
+          `MATCH (a:ConfigurationItem {id: $sourceId})-[r:${validated.data.type}]->(b:ConfigurationItem {id: $targetId})
+           RETURN r, a as source, b as target`,
+          { sourceId: validated.data.sourceId, targetId: validated.data.targetId }
+        );
+        const oldRel = oldResult.records.length ? oldResult.records[0].get("r") : null;
+        const oldSource = oldResult.records.length ? parseNode(oldResult.records[0].get("source").properties) : null;
+        const oldTarget = oldResult.records.length ? parseNode(oldResult.records[0].get("target").properties) : null;
         const result = await session.run(
           `MATCH (a:ConfigurationItem {id: $sourceId})-[r:${validated.data.type}]->(b:ConfigurationItem {id: $targetId})
            DELETE r
@@ -562,6 +680,15 @@ LIMIT 50`;
           { sourceId: validated.data.sourceId, targetId: validated.data.targetId }
         );
         const deleted = result.records[0]?.get("deleted")?.toNumber() || 0;
+        if (deleted > 0 && context.emit) {
+          context.emit("relationship.deleted", {
+            sourceId: validated.data.sourceId,
+            targetId: validated.data.targetId,
+            type: validated.data.type,
+            oldValues: oldRel ? { source: oldSource, target: oldTarget, attributes: oldRel.properties } : undefined,
+            actorId: context.user?.id,
+          });
+        }
         return deleted > 0;
       } finally {
         await session.close();
@@ -572,6 +699,7 @@ LIMIT 50`;
       args: { sourceId: string; targetId: string; type: string; newType?: string; attributes?: any },
       context: any
     ) {
+      await checkPermission(context, "relationships", "write");
       const validated = UpdateRelationshipInputSchema.safeParse(args);
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
@@ -581,6 +709,15 @@ LIMIT 50`;
         const { sourceId, targetId, type, newType, attributes } = validated.data;
         const needsTypeChange = newType && newType !== type;
         let result;
+
+        const oldResult = await session.run(
+          `MATCH (a:ConfigurationItem {id: $sourceId})-[r:${type}]->(b:ConfigurationItem {id: $targetId})
+           RETURN r, a as source, b as target`,
+          { sourceId, targetId }
+        );
+        const oldRel = oldResult.records.length ? oldResult.records[0].get("r") : null;
+        const oldSource = oldResult.records.length ? parseNode(oldResult.records[0].get("source").properties) : null;
+        const oldTarget = oldResult.records.length ? parseNode(oldResult.records[0].get("target").properties) : null;
 
         if (needsTypeChange) {
           result = await session.run(
@@ -603,6 +740,17 @@ LIMIT 50`;
         if (!result.records.length) throw new GraphQLError("Relationship not found");
         const rel = result.records[0].get(needsTypeChange ? "r2" : "r");
         const target = parseNode(result.records[0].get("target").properties);
+        if (context.emit) {
+          context.emit("relationship.updated", {
+            sourceId: validated.data.sourceId,
+            targetId: validated.data.targetId,
+            type: rel.type,
+            previousType: needsTypeChange ? type : undefined,
+            oldValues: oldRel ? { source: oldSource, target: oldTarget, type: oldRel.type, attributes: oldRel.properties } : undefined,
+            newValues: { source: oldSource, target, type: rel.type, attributes: rel.properties },
+            actorId: context.user?.id,
+          });
+        }
         return {
           id: `${rel.start}-${rel.end}-${rel.type}`,
           type: rel.type,
@@ -614,6 +762,7 @@ LIMIT 50`;
       }
     },
     async ingestCMDB(_parent: any, args: { payload: any }, context: any) {
+      await checkPermission(context, "discovery", "write");
       const jobId = crypto.randomUUID();
       try {
         const response = await context.worker.ingestCMDB({
@@ -628,6 +777,7 @@ LIMIT 50`;
       }
     },
     async createDiscoverySource(_parent: any, args: { name: string; type: string; config?: any }, context: any) {
+      await checkPermission(context, "discovery", "write");
       const result = await context.pg.query(
         "INSERT INTO discovery_sources (name, type, config) VALUES ($1, $2, $3) RETURNING id, name, type, config, created_at as createdAt",
         [args.name, args.type, JSON.stringify(args.config || {})]
@@ -635,6 +785,7 @@ LIMIT 50`;
       return result.rows[0];
     },
     async deleteDiscoverySource(_parent: any, args: { id: string }, context: any) {
+      await checkPermission(context, "discovery", "write");
       await context.pg.query("DELETE FROM discovery_sources WHERE id = $1", [args.id]);
       return true;
     },
@@ -658,6 +809,7 @@ LIMIT 50`;
       return result.rows[0];
     },
     async submitMarketplaceApp(_parent: any, args: { id: string; name: string; description?: string; url: string; icon?: string; version?: string; permissions?: string[]; reactVersion?: string; author: string; authorUrl?: string }, context: any) {
+      await checkPermission(context, "app", "install");
       const result = await context.pg.query(
         `INSERT INTO marketplace_apps (id, name, description, url, icon, version, permissions, react_version, author, author_url, status)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
@@ -678,13 +830,7 @@ LIMIT 50`;
       return result.rows[0];
     },
     async approveMarketplaceApp(_parent: any, args: { id: string }, context: any) {
-      if (!context.user?.id) {
-        throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
-      }
-      const userResult = await context.pg.query("SELECT role FROM users WHERE id = $1", [context.user.id]);
-      if (userResult.rows[0]?.role !== 'admin') {
-        throw new GraphQLError("Admin required", { extensions: { code: "FORBIDDEN" } });
-      }
+      await checkPermission(context, "app", "install");
       const result = await context.pg.query(
         `UPDATE marketplace_apps SET status = 'approved', reviewed_by = $1, updated_at = NOW()
          WHERE id = $2
@@ -697,13 +843,7 @@ LIMIT 50`;
       return result.rows[0];
     },
     async rejectMarketplaceApp(_parent: any, args: { id: string }, context: any) {
-      if (!context.user?.id) {
-        throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
-      }
-      const userResult = await context.pg.query("SELECT role FROM users WHERE id = $1", [context.user.id]);
-      if (userResult.rows[0]?.role !== 'admin') {
-        throw new GraphQLError("Admin required", { extensions: { code: "FORBIDDEN" } });
-      }
+      await checkPermission(context, "app", "install");
       const result = await context.pg.query(
         `UPDATE marketplace_apps SET status = 'rejected', reviewed_by = $1, updated_at = NOW()
          WHERE id = $2
@@ -716,6 +856,7 @@ LIMIT 50`;
       return result.rows[0];
     },
     async createSavedView(_parent: any, args: any, context: any) {
+      await checkPermission(context, "cmdb", "read");
       if (!context.user?.id) {
         throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
       }
@@ -752,6 +893,7 @@ LIMIT 50`;
       }
     },
     async updateSavedView(_parent: any, args: any, context: any) {
+      await checkPermission(context, "cmdb", "read");
       if (!context.user?.id) {
         throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
       }
@@ -800,6 +942,7 @@ LIMIT 50`;
       }
     },
     async deleteSavedView(_parent: any, args: { id: string }, context: any) {
+      await checkPermission(context, "cmdb", "read");
       if (!context.user?.id) {
         throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
       }

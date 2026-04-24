@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { chat } from "../services/chat";
+import { chat, chatStream } from "../services/chat";
 
 const mockCreate = vi.fn();
 
@@ -30,7 +30,7 @@ const mockFastify = (recordSets: any[][] = [[]]) =>
     neo4j: {
       session: vi.fn().mockReturnValue(mockNeo4jSession(recordSets)),
     },
-    log: { info: vi.fn(), error: vi.fn() },
+    log: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
   }) as any;
 
 describe("chat", () => {
@@ -56,12 +56,28 @@ describe("chat", () => {
     expect(result.content).toBe("Direct response");
   });
 
-  it("returns fallback when direct response is empty", async () => {
-    mockCreate.mockResolvedValueOnce({
-      choices: [{ message: { content: "" } }],
-    });
+  it("retries without tools when direct response is empty", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "" } }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "Retry response" } }],
+      });
     const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
-    expect(result.content).toBe("I don't have a response for that.");
+    expect(result.content).toBe("Retry response");
+  });
+
+  it("returns fallback when retry also returns empty", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "" } }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "" } }],
+      });
+    const result = await chat([{ role: "user", content: "Hi" }], mockFastify());
+    expect(result.content).toBe("I'm not sure how to respond to that. Could you rephrase or provide more detail?");
   });
 
   it("returns fallback when tool response is empty", async () => {
@@ -79,6 +95,9 @@ describe("chat", () => {
       })
       .mockResolvedValueOnce({
         choices: [{ message: { content: "" } }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "" } }],
       });
 
     const fastify = mockFastify([[
@@ -86,7 +105,7 @@ describe("chat", () => {
     ]]);
 
     const result = await chat([{ role: "user", content: "Count" }], fastify);
-    expect(result.content).toBe("I processed the data but have no response.");
+    expect(result.content).toBe("I'm not sure how to respond to that. Could you rephrase or provide more detail?");
   });
 
   it("executes search_cis tool with name filter", async () => {
@@ -581,7 +600,7 @@ describe("chat", () => {
     session.run = vi.fn().mockRejectedValue(new Error("Neo4j failure"));
     const fastify = {
       neo4j: { session: vi.fn().mockReturnValue(session) },
-      log: { info: vi.fn(), error: vi.fn() },
+    log: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
     } as any;
 
     const result = await chat([{ role: "user", content: "Map" }], fastify);
@@ -638,5 +657,154 @@ describe("chat", () => {
     ]]);
 
     await expect(chat([{ role: "user", content: "Count" }], fastify, traceMock as any)).rejects.toThrow("Second call failed");
+  });
+});
+
+describe("chatStream", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreate.mockReset();
+    process.env.OPENAI_API_KEY = "sk-test";
+  });
+
+  it("streams direct response without tool calls", async () => {
+    mockCreate.mockResolvedValueOnce({
+      [Symbol.asyncIterator]: async function* () {
+        yield { choices: [{ delta: { content: "Hello" } }] };
+        yield { choices: [{ delta: { content: " world" } }] };
+      },
+    });
+
+    const events: any[] = [];
+    const result = await chatStream([{ role: "user", content: "Hi" }], mockFastify(), (ev) => events.push(ev));
+    expect(result.content).toBe("Hello world");
+    expect(events.filter((e) => e.type === "token").map((e) => e.content)).toEqual(["Hello", " world"]);
+  });
+
+  it("streams tool call and then final answer", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: null,
+                tool_calls: [{
+                  index: 0,
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "count_cis", arguments: "" },
+                }],
+              },
+            }],
+          };
+          yield {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  function: { arguments: "{}" },
+                }],
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "You have 5 CIs" } }] };
+        },
+      });
+
+    const fastify = mockFastify([[
+      { get: (k: string) => k === "total" ? { toNumber: () => 5 } : undefined },
+    ]]);
+
+    const events: any[] = [];
+    const result = await chatStream([{ role: "user", content: "How many?" }], fastify, (ev) => events.push(ev));
+    expect(result.content).toBe("You have 5 CIs");
+    expect(result.toolCalls).toHaveLength(1);
+    expect(events.some((e) => e.type === "tool_call")).toBe(true);
+    expect(events.some((e) => e.type === "tool_result")).toBe(true);
+  });
+
+  it("retries without tools when streaming response is empty", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: {} }] };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "Retry stream" } }] };
+        },
+      });
+
+    const result = await chatStream([{ role: "user", content: "Hi" }], mockFastify(), () => {});
+    expect(result.content).toBe("Retry stream");
+  });
+
+  it("returns fallback when streaming retry also returns empty", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: {} }] };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: {} }] };
+        },
+      });
+
+    const result = await chatStream([{ role: "user", content: "Hi" }], mockFastify(), () => {});
+    expect(result.content).toBe("I'm not sure how to respond to that. Could you rephrase or provide more detail?");
+  });
+
+  it("streams content interleaved with tool calls", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: "Let me ",
+                tool_calls: [{
+                  index: 0,
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "count_cis", arguments: "" },
+                }],
+              },
+            }],
+          };
+          yield {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  function: { arguments: "{}" },
+                }],
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "check: 5 CIs" } }] };
+        },
+      });
+
+    const fastify = mockFastify([[
+      { get: (k: string) => k === "total" ? { toNumber: () => 5 } : undefined },
+    ]]);
+
+    const events: any[] = [];
+    const result = await chatStream([{ role: "user", content: "Count" }], fastify, (ev) => events.push(ev));
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.content).toBe("check: 5 CIs");
+    expect(events.filter((e) => e.type === "token").map((e) => e.content)).toEqual(["Let me ", "check: 5 CIs"]);
   });
 });

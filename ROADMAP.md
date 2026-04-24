@@ -46,19 +46,44 @@
 
 ---
 
+## Released
+
+### v0.4 — AI Layer / Specora Arc Orchestrator (2026-04-24)
+- [x] **Chat Tool Registry** — Apps declare `chatTools` in manifest; AI dynamically loads them into system prompt
+- [x] **Event Bus** — In-memory pub/sub + PostgreSQL persistence; `ci.created/updated/deleted`, `relationship.created/updated/deleted`, `discovery.completed`
+- [x] **ITSM App Ecosystem** — 3 non-core built-in apps registered in Arc marketplace:
+  - **Change Manager** — RFC workflow (`draft` → `pending_approval` → `approved` → `implemented` → `closed`), PostgreSQL-backed, chat tools for CRUD
+  - **Discovery Insights** — Coverage gap analysis, scan recommendations, chat tools
+  - **Health Monitor** — Anomaly detection (orphaned, stale, cycles), health scoring, chat tools
+- [x] **AI Multi-Tool Orchestration** — Chat routes tool calls to core Neo4j queries or app-specific handlers via unified registry
+- [x] **Synthetic Completeness** — Hybrid approach:
+  - **Hardcoded rules** — 8 deterministic CSDMv5 structural validations (Cypher)
+  - **AI Rule Generator** — LLM analyzes graph topology, suggests new Cypher queries, safety-guarded execution
+- [x] **App Manifest v2** — Added `chatTools`, `events` arrays to `AppManifest`
+- [x] **App Tool REST API** — `GET /api/apps/:id/tools`, `POST /api/apps/:id/tools/:tool` with JWT auth
+
+## Released
+
+### v0.5 — Scale & Ops (2026-04-24)
+- [x] **Audit log** — Every graph mutation tracked with who/when/why via Event Bus
+- [x] **RBAC** — Role-based access (viewer, operator, admin, security_admin, change_manager, approver) enforced in GraphQL resolvers and app tool routes
+- [x] **Worker queue** — PostgreSQL-backed job queue for large ingestion batches
+- [x] **Chat proactive suggestions** — Capability accordion in chat overlay with built-in app shortcuts
+
 ## Next Up
 
-### v0.4 — AI Layer
-1. **Natural language CI search** — "Find all production databases in us-east-1"
-2. **Auto-discovery suggestions** — "You uploaded servers.csv but no network gear; want to scan?"
-3. **Anomaly detection** — Orphaned CIs, circular dependencies, missing ownership
-4. **Chatops** — "Deploy customer portal" → validates graph, opens change request
+### v0.5 — Remaining
+- [ ] **Real-time events** — WebSocket pub/sub for event bus + SSE chat streaming (in progress)
 
-### v0.5 — Scale & Ops
-1. **Worker queue** — PostgreSQL-backed job queue for large ingestion batches
-2. **Change management** — RFC workflow integrated with graph mutations
-3. **RBAC** — Role-based access (viewer, operator, admin)
-4. **Audit log** — Every graph mutation tracked with who/when/why
+### v0.6 — Intelligence
+1. **NL CI Search standalone UI** — Global search bar with LLM→Cypher translation
+2. **Impact analysis** — Blast radius calculation before changes
+3. **Auto-remediation** — Suggest fixes for anomalies (create missing relationships)
+
+### v0.6 — Intelligence
+1. **NL CI Search standalone UI** — Global search bar with LLM→Cypher translation
+2. **Impact analysis** — Blast radius calculation before changes
+3. **Auto-remediation** — Suggest fixes for anomalies (create missing relationships)
 
 ---
 

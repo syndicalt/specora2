@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { graphqlClient } from "@/lib/api";
+import type { ShellAPI } from "@/sdk/types";
 import { RefreshCw, Upload, Database, Clock, CheckCircle2, XCircle, AlertCircle, FileText } from "lucide-react";
 
 interface DiscoverySource {
@@ -22,7 +23,7 @@ interface DiscoveryJob {
   updatedAt: string;
 }
 
-export default function DiscoveryDashboardApp() {
+export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [sources, setSources] = useState<DiscoverySource[]>([]);
   const [jobs, setJobs] = useState<DiscoveryJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,6 +48,15 @@ export default function DiscoveryDashboardApp() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Subscribe to discovery completion events
+  useEffect(() => {
+    const unsub = shell.eventBus.subscribe("discovery.completed", () => {
+      fetchData();
+      shell.notify("Discovery job completed. Dashboard refreshed.", "success");
+    });
+    return () => unsub();
+  }, [shell, fetchData]);
 
   const statusIcon = (status: string) => {
     switch (status.toLowerCase()) {
@@ -113,7 +123,7 @@ export default function DiscoveryDashboardApp() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-4">
+      <div className="flex-1 overflow-auto p-4 pb-24">
         {loading && activeTab === "jobs" && jobs.length === 0 ? (
           <div className="text-center text-gray-500 py-8 animate-pulse">Loading...</div>
         ) : activeTab === "jobs" ? (

@@ -1,5 +1,47 @@
 import type React from "react";
 
+export type JSONSchemaType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "object"
+  | "array"
+  | "integer";
+
+export interface JSONSchemaProperty {
+  type: JSONSchemaType;
+  description?: string;
+  enum?: (string | number | boolean)[];
+  items?: JSONSchemaProperty;
+  properties?: Record<string, JSONSchemaProperty>;
+  required?: string[];
+}
+
+export interface ChatToolDefinition {
+  name: string;
+  description: string;
+  parameters: {
+    type: "object";
+    properties: Record<string, JSONSchemaProperty>;
+    required?: string[];
+  };
+}
+
+export interface ChatCapability {
+  id: string;
+  label: string;
+  description: string;
+  prompt: string;
+  icon?: string;
+}
+
+export interface AdminPanelDefinition {
+  id: string;
+  name: string;
+  icon: string;
+  permissions: string[];
+}
+
 export interface AppManifest {
   id: string;
   name: string;
@@ -11,6 +53,10 @@ export interface AppManifest {
   url?: string;
   reactVersion?: string;
   publisher?: string;
+  chatTools?: ChatToolDefinition[];
+  chatCapabilities?: ChatCapability[];
+  events?: string[];
+  adminPanels?: AdminPanelDefinition[];
 }
 
 export interface RegistryEntry extends AppManifest {
@@ -27,6 +73,8 @@ export interface AppMessage {
   payload?: any;
 }
 
+export type EventHandler = (payload: Record<string, unknown>) => void;
+
 export interface ShellAPI {
   installKey: string;
   appId: string;
@@ -39,5 +87,9 @@ export interface ShellAPI {
   messageBus: {
     subscribe: (handler: (msg: AppMessage) => void) => () => void;
     publish: (msg: AppMessage) => void;
+  };
+  eventBus: {
+    subscribe: (type: string, handler: EventHandler) => () => void;
+    connected: boolean;
   };
 }

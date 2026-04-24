@@ -9,7 +9,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
 
     const result = await fastify.pg.query(
-      "SELECT id, name, email, password_hash FROM users WHERE email = $1",
+      "SELECT id, name, email, password_hash, role FROM users WHERE email = $1",
       [body.email]
     );
     const user = result.rows[0];
@@ -22,8 +22,8 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
 
-    const token = await fastify.jwt.sign({ id: user.id, email: user.email });
-    return { token, user: { id: user.id, name: user.name, email: user.email } };
+    const token = await fastify.jwt.sign({ id: user.id, email: user.email, role: user.role });
+    return { token, user: { id: user.id, name: user.name, email: user.email, role: user.role } };
   });
 
   fastify.post("/api/register", async (request, reply) => {
@@ -42,8 +42,8 @@ export async function authRoutes(fastify: FastifyInstance) {
 
     // Create canonical user in Postgres
     await fastify.pg.query(
-      "INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4)",
-      [id, body.email, body.name, passwordHash]
+      "INSERT INTO users (id, email, name, password_hash, role) VALUES ($1, $2, $3, $4, $5)",
+      [id, body.email, body.name, passwordHash, "operator"]
     );
 
     // Create visualization node in Neo4j (no passwordHash)
@@ -57,7 +57,13 @@ export async function authRoutes(fastify: FastifyInstance) {
       await session.close();
     }
 
-    const token = await fastify.jwt.sign({ id, email: body.email });
-    return { token, user: { id, name: body.name, email: body.email } };
+    const token = await fastify.jwt.sign({ id, email: body.email, role: "operator" });
+    return { token, user: { id, name: body.name, email: body.email, role: "operator" } };
+  });
+
+  fastify.post("/api/ws-ticket", { onRequest: [fastify.authenticate] }, async (request, _reply) => {
+    const user = request.user as { id: string };
+    const ticket = await fastify.jwt.sign({ id: user.id, type: "ws-ticket" }, { expiresIn: "60s" });
+    return { ticket };
   });
 }
