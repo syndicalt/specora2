@@ -45,36 +45,14 @@ function parseActions(text: string) {
   return { cleanText, actions };
 }
 
-/** Parse SSE events from a buffer. Returns parsed events + remaining unparsed buffer. */
-function parseSseEvents(buffer: string): { parsed: { type: string; data: any }[]; remainder: string } {
-  const parsed: { type: string; data: any }[] = [];
-  // SSE events are separated by double newlines
-  const blocks = buffer.split("\n\n");
-  // The last block might be incomplete — keep it in the buffer
-  const remainder = blocks.pop() || "";
-
-  for (const block of blocks) {
-    const lines = block.split("\n");
-    let eventType = "message";
-    const dataLines: string[] = [];
-    for (const line of lines) {
-      if (line.startsWith("event: ")) {
-        eventType = line.slice(7).trim();
-      } else if (line.startsWith("data: ")) {
-        dataLines.push(line.slice(6));
-      }
-    }
-    if (dataLines.length > 0) {
-      try {
-        const data = JSON.parse(dataLines.join("\n"));
-        parsed.push({ type: eventType, data });
-      } catch {
-        // ignore malformed JSON
-      }
-    }
-  }
-
-  return { parsed, remainder };
+function sanitizeXml(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, "")
+    .replace(/<invoke\s+[^>]*>[\s\S]*?<\/invoke>/gi, "")
+    .replace(/<result>[\s\S]*?<\/result>/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
@@ -299,160 +277,62 @@ export function ChatOverlay() {
     const userMsg = text.trim();
     if (!userMsg || loading) return;
 
+    // Fast-path: explicit navigation commands that don't need the backend
+    const lower = userMsg.toLowerCase();
+    if ((lower === "open service map" || lower === "show service map") && (uiContext.selectedCI?.id || uiContext.selectedRootCI || uiContext.focusedCI)) {
+      const rootId = uiContext.selectedCI?.id || uiContext.selectedRootCI || uiContext.focusedCI;
+      handleAction("open-service-map", `rootId=${rootId}`);
+      return;
+    }
+
     setForceDatePicker(false);
     setInput("");
     const newMessages: ChatMessage[] = [...messages, { role: "user" as const, text: userMsg }];
     setMessages(newMessages);
     setLoading(true);
 
+    const apiMessages = newMessages.map((m) => ({ role: m.role, content: m.text }));
+
+    const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
+    const contextParts: string[] = [`Active app/view: ${activeApp}`];
+    if (uiContext.selectedRootCI) contextParts.push(`Selected root CI in Service Map: ${uiContext.selectedRootCI}`);
+    if (uiContext.focusedCI) contextParts.push(`Focused CI in CMDB Explorer: ${uiContext.focusedCI}`);
+    if (uiContext.selectedCI) contextParts.push(`Selected CI in CMDB Explorer: ${uiContext.selectedCI.name} (${uiContext.selectedCI.id})`);
+    const uiContextString = contextParts.join("\n");
+
+    // Use non-streaming endpoint for reliable tool calling
     try {
-      const apiMessages = newMessages.map((m) => ({ role: m.role, content: m.text }));
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-      const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
-      const contextParts: string[] = [`Active app/view: ${activeApp}`];
-      if (uiContext.selectedRootCI) contextParts.push(`Selected root CI in Service Map: ${uiContext.selectedRootCI}`);
-      if (uiContext.focusedCI) contextParts.push(`Focused CI in CMDB Explorer: ${uiContext.focusedCI}`);
-      const uiContextString = contextParts.join("\n");
+      const res = await fetch(`${API_URL}/api/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${getToken() || ""}`,
+        },
+        body: JSON.stringify({
+          messages: apiMessages,
+          sessionId: sessionId || undefined,
+          uiContext: uiContextString,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-      // Try SSE streaming first, fall back to non-streaming on failure
-      let streamSuccess = false;
-      let assistantText = "";
-      let currentSessionId = sessionId;
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
 
-      try {
-        const res = await fetch(`${API_URL}/api/chat/stream`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${getToken() || ""}`,
-          },
-          body: JSON.stringify({
-            messages: apiMessages,
-            sessionId: sessionId || undefined,
-            uiContext: uiContextString,
-          }),
-        });
-
-        if (res.ok && res.body) {
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-
-          // Add a placeholder assistant message that we'll update
-          setMessages((prev) => [...prev, { role: "assistant", text: "" }]);
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            // Parse SSE events from buffer
-            const events = parseSseEvents(buffer);
-            buffer = events.remainder;
-
-            for (const ev of events.parsed) {
-              if (ev.type === "token" && ev.data.content) {
-                assistantText += ev.data.content;
-                setMessages((prev) => {
-                  const last = prev[prev.length - 1];
-                  if (last?.role === "assistant") {
-                    return [...prev.slice(0, -1), { ...last, text: assistantText }];
-                  }
-                  return prev;
-                });
-              } else if (ev.type === "tool_call") {
-                // Track that a tool was called; we'll append indicator only if no new tokens arrive
-                setMessages((prev) => {
-                  const last = prev[prev.length - 1];
-                  if (last?.role === "assistant") {
-                    return [...prev.slice(0, -1), { ...last, text: assistantText + `\n\n*(Running ${ev.data.name}...)*` }];
-                  }
-                  return prev;
-                });
-              } else if (ev.type === "done") {
-                currentSessionId = ev.data.sessionId;
-                streamSuccess = true;
-                // If the final content is empty but we have text from earlier rounds,
-                // keep it (the model may have produced content + tool_calls in one round
-                // and empty content in the final round).
-                if (ev.data.content && !assistantText.trim()) {
-                  assistantText = ev.data.content;
-                  setMessages((prev) => {
-                    const last = prev[prev.length - 1];
-                    if (last?.role === "assistant") {
-                      return [...prev.slice(0, -1), { ...last, text: assistantText }];
-                    }
-                    return prev;
-                  });
-                }
-              } else if (ev.type === "error") {
-                throw new Error(ev.data.message || "Stream error");
-              }
-            }
-          }
-
-          // Process any remaining events in the buffer after stream closes
-          if (buffer.trim()) {
-            const events = parseSseEvents(buffer + "\n\n");
-            for (const ev of events.parsed) {
-              if (ev.type === "done") {
-                currentSessionId = ev.data.sessionId;
-                streamSuccess = true;
-                if (ev.data.content && !assistantText.trim()) {
-                  assistantText = ev.data.content;
-                  setMessages((prev) => {
-                    const last = prev[prev.length - 1];
-                    if (last?.role === "assistant") {
-                      return [...prev.slice(0, -1), { ...last, text: assistantText }];
-                    }
-                    return prev;
-                  });
-                }
-              }
-            }
-          }
-        }
-      } catch (streamErr: any) {
-        // Streaming failed — will fall back below
-        console.warn("Chat stream failed, falling back:", streamErr.message);
+      const text = sanitizeXml(data.content || "");
+      const { actions } = parseActions(text);
+      // Only add assistant message if it has text or actions (buttons)
+      if (text.trim() || actions.length > 0) {
+        setMessages((prev) => [...prev, { role: "assistant", text }]);
       }
 
-      // Fallback to non-streaming endpoint only if streaming failed and produced zero tokens
-      if (!streamSuccess && !assistantText.trim()) {
-        // Remove the empty placeholder if it was added
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.role === "assistant" && last.text === "") {
-            return prev.slice(0, -1);
-          }
-          return prev;
-        });
-
-        const res = await fetch(`${API_URL}/api/chat`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${getToken() || ""}`,
-          },
-          body: JSON.stringify({
-            messages: apiMessages,
-            sessionId: sessionId || undefined,
-            uiContext: uiContextString,
-          }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        if (data.sessionId && !sessionId) {
-          setSessionId(data.sessionId);
-          await loadSessions();
-        }
-        setMessages((prev) => [...prev, { role: "assistant", text: data.content }]);
-      } else {
-        // Streaming succeeded — finalize
-        if (currentSessionId && !sessionId) {
-          setSessionId(currentSessionId);
-          await loadSessions();
-        }
+      if (data.sessionId && !sessionId) {
+        setSessionId(data.sessionId);
+        await loadSessions();
       }
     } catch (err: any) {
       setMessages((prev) => [
@@ -588,18 +468,24 @@ export function ChatOverlay() {
             );
           }
 
-          const { cleanText, actions } = parseActions(m.text);
+          const sanitizedText = sanitizeXml(m.text);
+          const { cleanText, actions } = parseActions(sanitizedText);
           const isLatestAssistant = i === messages.length - 1 || (i === messages.length - 2 && messages[messages.length - 1]?.role === "user");
           const showPickerForThisMsg = isLatestAssistant && !loading && forceDatePicker;
+
+          // Skip rendering assistant messages that have no text and no actions
+          if (!cleanText && actions.length === 0) return null;
 
           return (
             <div key={i} className="flex justify-start">
               <div className="max-w-[95%] space-y-2">
-                <div className="px-3 py-2 rounded-lg text-sm bg-gray-800 text-gray-200 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_code]:bg-gray-950 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:text-xs [&_a]:text-indigo-400 [&_a]:underline [&_h1]:text-lg [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_blockquote]:border-l-2 [&_blockquote]:border-gray-600 [&_blockquote]:pl-3 [&_blockquote]:italic [&_hr]:border-gray-700">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {cleanText}
-                  </ReactMarkdown>
-                </div>
+                {cleanText && (
+                  <div className="px-3 py-2 rounded-lg text-sm bg-gray-800 text-gray-200 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_code]:bg-gray-950 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:text-xs [&_a]:text-indigo-400 [&_a]:underline [&_h1]:text-lg [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_blockquote]:border-l-2 [&_blockquote]:border-gray-600 [&_blockquote]:pl-3 [&_blockquote]:italic [&_hr]:border-gray-700">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {cleanText}
+                    </ReactMarkdown>
+                  </div>
+                )}
                 {actions.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {actions.map((a, idx) => (

@@ -51,25 +51,39 @@ async function callProvara(
 }
 
 function buildSystemPrompt(uiContext?: string): string {
-  let prompt = `You are Specora Assistant, an AI expert in IT Service Management and the CSDMv5 data model.
-You help users explore their CMDB (Configuration Management Database), understand service dependencies, and navigate IT infrastructure.
+  let prompt = `You are Specora Assistant, an AI-native IT Service Management expert. You have ZERO knowledge of the actual CMDB. Every fact about CIs, servers, databases, dependencies, or service maps must come from tool calls. Never guess or hallucinate.
 
-CRITICAL RULES:
-1. You do NOT have any knowledge of the actual CMDB contents. You MUST use the provided tools to answer every question about infrastructure, CIs, servers, databases, services, dependencies, or the service map. Never guess or make up CI names, IDs, or counts.
-2. NEVER output raw XML, JSON, markdown code blocks, or text descriptions for tool calls. Do NOT write things like "<function_calls>" or "I'll call search_cis". Use the native tool-calling mechanism silently. The user should never see raw tool syntax in your response.
-3. When you need to call a tool, your response content should be empty (or a brief natural-language acknowledgment) and the tool call should be made through the tool-calling API.
-4. When you receive tool results, give a thorough, specific answer using the actual data. Name exact CIs, list specific relationships, and quote real values.
+HOW TO ANSWER QUESTIONS:
+1. When the user asks about infrastructure, CIs, or dependencies, immediately call the relevant tool(s). Use search_cis, get_ci_details, get_service_map, count_cis, or other available tools.
+2. After receiving tool results, summarize the data clearly. Name exact CIs, list relationships, and quote real values from the results.
+3. If the user mentions a CI by name or ID, use that exact identifier in your tool calls. Do not ask "which one?" if they already told you.
 
-Proactively offer action directives whenever they would help the user explore visually:
-- After describing a CI and its dependencies, offer: [[action|open-service-map|rootId=<id>|Open Service Map]]
-- After describing a specific CI's details, offer: [[action|open-ci-details|id=<id>|View CI Details]]
+UI NAVIGATION (action directives):
+These are special tags that open apps in the user's browser. They do NOT fetch data — they only open visual views AFTER you have already fetched the data with tools.
+- [[action|open-service-map|rootId=<id>|Open Service Map]] — opens the visual service map
+- [[action|open-ci-details|id=<id>|View CI Details]] — opens the CI details panel
+- [[action|select-ci|context=default|Browse CMDB]] — opens the CMDB Explorer
+- [[action|pick-date|context=planned-start|Pick Start Date]] — shows a date picker
 
-Use multiple tools in sequence if needed to build a complete picture. For example, if asked about a service, first search for it, then get its details, then get its service map.
+Always include the relevant action directive at the end of your response after describing data fetched via tools. For example, after describing a CI's dependencies, add: [[action|open-service-map|rootId=srv-6|Open Service Map]]
+
+EXAMPLE WORKFLOW:
+User: "Show me the service map for db-prod-01"
+→ Call search_cis with name="db-prod-01" to find its ID
+→ Call get_service_map with rootId=<found_id> to fetch the graph
+→ Summarize the nodes and relationships from the results
+→ Add [[action|open-service-map|rootId=<found_id>|Open Service Map]]
+
+User: "What are the dependencies of Portal API?"
+→ Call search_cis with name="Portal API" to find its ID
+→ Call get_ci_details with id=<found_id> to get relationships
+→ Summarize the dependencies
+→ Add [[action|open-service-map|rootId=<found_id>|Open Service Map]]
+
+CRITICAL: Do NOT say "I will open it" or "The map is now open." The map only opens when the user clicks the action button or explicitly asks. Always fetch data with tools first, then describe it, then offer the action directive.
 
 Available CI classes: BusinessService, ApplicationService, TechnicalService, Server, Database, Application, NetworkGear, User, Group, Location.
 Relationship types: PART_OF, DEPENDS_ON, HOSTED_ON, MANAGED_BY, OWNED_BY, LOCATED_AT.
-
-You can also use structural validation tools to check for missing relationships (e.g., Database without HOSTED_ON, BusinessService without children).
 
 When a user wants to create or edit a change request, use a step-by-step conversational approach:
 1. Ask which CI they want to change, one question at a time.
@@ -87,6 +101,57 @@ When a user wants to create or edit a change request, use a step-by-step convers
     prompt += `\n\nCURRENT UI CONTEXT:\n${uiContext}`;
   }
   return prompt;
+}
+
+const XML_BLOCK_PATTERNS = [
+  /<function_calls>[\s\S]*?<\/function_calls>/gi,
+  /<invoke\s+[^>]*>[\s\S]*?<\/invoke>/gi,
+  /<result>[\s\S]*?<\/result>/gi,
+];
+
+function sanitizeAssistantContent(text: string): string {
+  if (!text) return text;
+  let cleaned = text;
+  for (const pattern of XML_BLOCK_PATTERNS) {
+    cleaned = cleaned.replace(pattern, "");
+  }
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+  return cleaned;
+}
+
+/**
+ * Fallback parser for models that output action directives instead of native tool calls.
+ * Converts [[action|<type>|<payload>|<label>]] into corresponding tool calls.
+ */
+function parseActionToolCalls(text: string): { id: string; type: "function"; function: { name: string; arguments: string } }[] | undefined {
+  if (!text.includes("[[action|")) return undefined;
+  const actionRegex = /\[\[action\|([^|]+)\|([^|]+)\|([^\[\]]+)\]\]/g;
+  const toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[] = [];
+  let match;
+  while ((match = actionRegex.exec(text)) !== null) {
+    const actionType = match[1];
+    const payload = match[2];
+    const params = new URLSearchParams(payload);
+
+    if (actionType === "search_cis") {
+      const args: any = {};
+      if (params.get("name")) args.name = params.get("name");
+      if (params.get("query")) args.query = params.get("query");
+      if (params.get("class")) args.class = params.get("class");
+      toolCalls.push({ id: `act-${Date.now()}-${toolCalls.length}`, type: "function", function: { name: "search_cis", arguments: JSON.stringify(args) } });
+    } else if (actionType === "open-service-map") {
+      const rootId = params.get("rootId");
+      if (rootId) {
+        toolCalls.push({ id: `act-${Date.now()}-${toolCalls.length}`, type: "function", function: { name: "get_service_map", arguments: JSON.stringify({ rootId }) } });
+      }
+    } else if (actionType === "open-ci-details") {
+      const id = params.get("id");
+      if (id) {
+        toolCalls.push({ id: `act-${Date.now()}-${toolCalls.length}`, type: "function", function: { name: "get_ci_details", arguments: JSON.stringify({ id }) } });
+      }
+    }
+  }
+  return toolCalls.length > 0 ? toolCalls : undefined;
 }
 
 const CORE_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
@@ -199,9 +264,10 @@ async function executeCoreTool(
         let query = "MATCH (n:ConfigurationItem)";
         const params: any = {};
         const conditions: string[] = [];
-        if (args.name) {
+        const searchName = args.name || args.query;
+        if (searchName) {
           conditions.push("n.name CONTAINS $name");
-          params.name = args.name;
+          params.name = searchName;
         }
         if (args.class) {
           conditions.push("n.class = $class");
@@ -254,23 +320,41 @@ async function executeCoreTool(
         };
       }
       case "get_service_map": {
+        // Fetch root node first to guarantee it's included and to validate existence
+        const rootResult = await session.run(
+          `MATCH (root:ConfigurationItem {id: $rootId}) RETURN root`,
+          { rootId: args.rootId }
+        );
+        if (!rootResult.records.length) {
+          return { rootId: args.rootId, nodes: [], edges: [], error: "CI not found" };
+        }
+        const rootProps = rootResult.records[0].get("root").properties;
+
+        // Use a bounded path query to avoid combinatorial explosion on dense graphs
         const result = await session.run(
-          `MATCH path = (root:ConfigurationItem {id: $rootId})-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT*1..3]-(related:ConfigurationItem)
+          `MATCH (root:ConfigurationItem {id: $rootId})
+           CALL {
+             WITH root
+             MATCH path = (root)-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT*1..3]-(related:ConfigurationItem)
+             WHERE related <> root
+             RETURN path
+             LIMIT 25
+           }
            UNWIND relationships(path) as rel
-           RETURN root, related, rel, startNode(rel) as src, endNode(rel) as tgt
+           WITH DISTINCT root, rel, startNode(rel) as src, endNode(rel) as tgt
+           RETURN root, rel, src, tgt
            LIMIT 50`,
           { rootId: args.rootId }
         );
         const nodesMap = new Map();
         const edges: any[] = [];
+        nodesMap.set(rootProps.id, { id: rootProps.id, name: rootProps.name, class: rootProps.class });
         for (const record of result.records) {
-          const root = record.get("root").properties;
-          const related = record.get("related").properties;
           const rel = record.get("rel");
           const src = record.get("src").properties;
           const tgt = record.get("tgt").properties;
-          nodesMap.set(root.id, { id: root.id, name: root.name, class: root.class });
-          nodesMap.set(related.id, { id: related.id, name: related.name, class: related.class });
+          nodesMap.set(src.id, { id: src.id, name: src.name, class: src.class });
+          nodesMap.set(tgt.id, { id: tgt.id, name: tgt.name, class: tgt.class });
           edges.push({
             type: rel.type,
             sourceId: src.id,
@@ -446,19 +530,34 @@ export async function chat(
     })),
   ];
   const allCallMetas: { call: OpenAI.Chat.ChatCompletionMessageToolCall; result: any }[] = [];
+  let lastServiceMapRootId: string | null = null;
+  let lastCiDetailsId: string | null = null;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     let completion = await callLlm(currentMessages, fastify, usedProvara, openai, provara, trace, round);
     let message = completion.choices[0].message;
 
-    // Fallback: some models output XML tool calls in text instead of using native tool-calling API
-    if ((!message.tool_calls || message.tool_calls.length === 0) && message.content) {
-      const xmlToolCalls = parseXmlToolCalls(message.content);
-      if (xmlToolCalls) {
-        fastify.log.warn({ round, tools: xmlToolCalls.map((t) => t.function.name) }, "Detected XML tool calls in model text — using fallback parser");
-        message.tool_calls = xmlToolCalls;
+    // Fallback: check for XML and action-directive tool calls BEFORE sanitizing content.
+    // Some models embed tool calls in XML or action directives within the content text.
+    const rawContent = message.content || "";
+    if (!message.tool_calls || message.tool_calls.length === 0) {
+      if (rawContent) {
+        const xmlToolCalls = parseXmlToolCalls(rawContent);
+        if (xmlToolCalls) {
+          fastify.log.warn({ round, tools: xmlToolCalls.map((t) => t.function.name) }, "Detected XML tool calls in model text — using fallback parser");
+          message.tool_calls = xmlToolCalls;
+        } else {
+          const actionToolCalls = parseActionToolCalls(rawContent);
+          if (actionToolCalls) {
+            fastify.log.warn({ round, tools: actionToolCalls.map((t) => t.function.name) }, "Detected action-directive tool calls in model text — using fallback parser");
+            message.tool_calls = actionToolCalls;
+          }
+        }
       }
     }
+
+    // Sanitize content for display and history AFTER extracting fallbacks.
+    message.content = sanitizeAssistantContent(rawContent);
 
     if (!message.tool_calls || message.tool_calls.length === 0) {
       // Retry once without tools if the model returned empty content.
@@ -466,6 +565,17 @@ export async function chat(
         fastify.log.warn({ round }, "chat empty content — retrying without tools");
         completion = await callLlm(currentMessages, fastify, usedProvara, openai, provara, trace, round, false);
         message = completion.choices[0].message;
+        const retryRaw = message.content || "";
+        const retryXml = parseXmlToolCalls(retryRaw);
+        if (retryXml && (!message.tool_calls || message.tool_calls.length === 0)) {
+          message.tool_calls = retryXml;
+        } else {
+          const retryAction = parseActionToolCalls(retryRaw);
+          if (retryAction && (!message.tool_calls || message.tool_calls.length === 0)) {
+            message.tool_calls = retryAction;
+          }
+        }
+        message.content = sanitizeAssistantContent(retryRaw);
       }
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
@@ -499,6 +609,14 @@ export async function chat(
         result = { error: err.message };
       }
 
+      // Track which CIs were queried so we can auto-append action directives
+      if (toolCall.function.name === "get_service_map" && args.rootId) {
+        lastServiceMapRootId = args.rootId;
+      }
+      if (toolCall.function.name === "get_ci_details" && args.id) {
+        lastCiDetailsId = args.id;
+      }
+
       toolResults.push({
         tool_call_id: toolCall.id,
         role: "tool",
@@ -507,10 +625,14 @@ export async function chat(
       allCallMetas.push({ call: toolCall, result });
     }
 
+    // When tools were used, strip all content from the assistant message in history
+    // to prevent XML/filler text from leaking into subsequent rounds.
+    const historyContent = (message.tool_calls && message.tool_calls.length > 0) ? "" : message.content;
+
     // Add assistant message with tool_calls + tool results for next round
     currentMessages = [
       ...currentMessages,
-      { role: "assistant", content: message.content || "", tool_calls: message.tool_calls },
+      { role: "assistant", content: historyContent, tool_calls: message.tool_calls },
       ...toolResults,
     ];
   }
@@ -521,11 +643,23 @@ export async function chat(
     { role: "user", content: "Please provide a final answer based on the tool results above." },
   ];
   const finalCompletion = await callLlm(finalMessages, fastify, usedProvara, openai, provara, trace, MAX_TOOL_ROUNDS, false);
+  let finalContent = sanitizeAssistantContent(finalCompletion.choices[0].message.content || "");
+
+  // Auto-append action directives if the model fetched data but forgot to offer the visual
+  if (lastServiceMapRootId && !finalContent.includes("[[action|open-service-map")) {
+    finalContent += `\n\n[[action|open-service-map|rootId=${lastServiceMapRootId}|Open Service Map]]`;
+  }
+  if (lastCiDetailsId && !finalContent.includes("[[action|open-ci-details")) {
+    finalContent += `\n\n[[action|open-ci-details|id=${lastCiDetailsId}|View CI Details]]`;
+  }
+
   return {
-    content: finalCompletion.choices[0].message.content || "I processed the data but don't have a clear answer. Could you rephrase or provide more detail?",
+    content: finalContent,
     toolCalls: allCallMetas,
   };
 }
+
+const LLM_REQUEST_TIMEOUT_MS = 120_000;
 
 async function callLlm(
   messages: any[],
@@ -545,15 +679,27 @@ async function callLlm(
     let completion: OpenAI.Chat.ChatCompletion;
     if (usedProvara) {
       _fastify.log.info("[LLM] Routing through Provara");
-      completion = await callProvara(messages, tools);
+      completion = await Promise.race([
+        callProvara(messages, tools),
+        new Promise<OpenAI.Chat.ChatCompletion>((_, reject) =>
+          setTimeout(() => reject(new Error(`Provara request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`)), LLM_REQUEST_TIMEOUT_MS)
+        ),
+      ]);
     } else {
       _fastify.log.info("[LLM] Routing through OpenAI directly");
-      completion = await openai!.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages,
-        ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
-        temperature: 0.3,
-      });
+      // Force tool usage on the first round to prevent the model from hallucinating
+      const toolChoice = (includeTools && round === 0) ? "required" : (tools.length > 0 ? "auto" : undefined);
+      completion = await Promise.race([
+        openai!.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages,
+          ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
+          temperature: 0.3,
+        }),
+        new Promise<OpenAI.Chat.ChatCompletion>((_, reject) =>
+          setTimeout(() => reject(new Error(`OpenAI request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`)), LLM_REQUEST_TIMEOUT_MS)
+        ),
+      ]);
     }
     await span?.end({ status: "completed", output: { toolCalls: completion.choices[0].message.tool_calls?.length ?? 0 } });
     return completion;
@@ -569,6 +715,8 @@ export type ChatStreamEvent =
   | { type: "tool_result"; name: string; result: any }
   | { type: "done"; content: string; sessionId: string; toolCalls?: any[] }
   | { type: "error"; message: string };
+
+const LLM_STREAM_TIMEOUT_MS = 120_000;
 
 async function callLlmStream(
   messages: any[],
@@ -588,6 +736,15 @@ async function callLlmStream(
     const tools = includeTools ? getAllTools() : [];
     let accumulatedContent = "";
     let toolCalls: any[] | undefined;
+
+    const timeoutRace = <T>(promise: Promise<T>, label: string): Promise<T> => {
+      return Promise.race([
+        promise,
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error(`${label} timed out after ${LLM_STREAM_TIMEOUT_MS}ms`)), LLM_STREAM_TIMEOUT_MS)
+        ),
+      ]);
+    };
 
     if (usedProvara) {
       // Provara streaming via fetch
@@ -623,7 +780,7 @@ async function callLlmStream(
       let buffer = "";
 
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await timeoutRace(reader.read(), "Provara stream read");
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
@@ -680,7 +837,11 @@ async function callLlmStream(
         stream: true,
       });
 
-      for await (const chunk of stream) {
+      const streamIterator = stream[Symbol.asyncIterator]();
+      while (true) {
+        const next = await timeoutRace(streamIterator.next(), "OpenAI stream read");
+        if (next.done) break;
+        const chunk = next.value;
         const delta = chunk.choices[0].delta;
         _fastify.log.debug({ hasContent: !!delta?.content, hasToolCalls: !!delta?.tool_calls }, "OpenAI stream chunk");
         if (delta?.content) {
@@ -751,6 +912,8 @@ export async function chatStream(
     })),
   ];
   const allCallMetas: { call: any; result: any }[] = [];
+  let lastServiceMapRootId: string | null = null;
+  let lastCiDetailsId: string | null = null;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // Always pass tools (matching non-streaming behavior). The model uses them
@@ -758,16 +921,28 @@ export async function chatStream(
     // Provara's router when tool_calls exist in the history.
     let { content, toolCalls } = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, true);
 
-    fastify.log.info({ round, hasToolCalls: !!toolCalls?.length, contentLength: content?.length }, "chatStream round complete");
-
-    // Fallback: some models output XML tool calls in text instead of using native tool-calling API
-    if ((!toolCalls || toolCalls.length === 0) && content) {
-      const xmlToolCalls = parseXmlToolCalls(content);
-      if (xmlToolCalls) {
-        fastify.log.warn({ round, tools: xmlToolCalls.map((t: any) => t.function.name) }, "Detected XML tool calls in stream text — using fallback parser");
-        toolCalls = xmlToolCalls;
+    // Fallback: check for XML and action-directive tool calls BEFORE sanitizing content.
+    const rawContent = content || "";
+    if (!toolCalls || toolCalls.length === 0) {
+      if (rawContent) {
+        const xmlToolCalls = parseXmlToolCalls(rawContent);
+        if (xmlToolCalls) {
+          fastify.log.warn({ round, tools: xmlToolCalls.map((t: any) => t.function.name) }, "Detected XML tool calls in stream text — using fallback parser");
+          toolCalls = xmlToolCalls;
+        } else {
+          const actionToolCalls = parseActionToolCalls(rawContent);
+          if (actionToolCalls) {
+            fastify.log.warn({ round, tools: actionToolCalls.map((t: any) => t.function.name) }, "Detected action-directive tool calls in stream text — using fallback parser");
+            toolCalls = actionToolCalls;
+          }
+        }
       }
     }
+
+    // Sanitize content for display and history AFTER extracting fallbacks.
+    content = sanitizeAssistantContent(rawContent);
+
+    fastify.log.info({ round, hasToolCalls: !!toolCalls?.length, contentLength: content?.length }, "chatStream round complete");
 
     if (!toolCalls || toolCalls.length === 0) {
       // Retry once without tools if the model returned empty content.
@@ -776,8 +951,19 @@ export async function chatStream(
       if (!content) {
         fastify.log.warn({ round }, "chatStream empty content — retrying without tools");
         const retry = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, false);
-        content = retry.content;
-        toolCalls = retry.toolCalls;
+        const retryRaw = retry.content || "";
+        const retryXml = parseXmlToolCalls(retryRaw);
+        if (retryXml && (!retry.toolCalls || retry.toolCalls.length === 0)) {
+          toolCalls = retryXml;
+        } else {
+          const retryAction = parseActionToolCalls(retryRaw);
+          if (retryAction && (!retry.toolCalls || retry.toolCalls.length === 0)) {
+            toolCalls = retryAction;
+          } else {
+            toolCalls = retry.toolCalls;
+          }
+        }
+        content = sanitizeAssistantContent(retryRaw);
       }
 
       if (!toolCalls || toolCalls.length === 0) {
@@ -815,6 +1001,14 @@ export async function chatStream(
         result = { error: err.message };
       }
 
+      // Track which CIs were queried so we can auto-append action directives
+      if (toolCall.function.name === "get_service_map" && args.rootId) {
+        lastServiceMapRootId = args.rootId;
+      }
+      if (toolCall.function.name === "get_ci_details" && args.id) {
+        lastCiDetailsId = args.id;
+      }
+
       onEvent({ type: "tool_result", name: toolCall.function.name, result });
 
       toolResults.push({
@@ -825,10 +1019,14 @@ export async function chatStream(
       allCallMetas.push({ call: toolCall, result });
     }
 
+    // When tools were used, strip all content from the assistant message in history
+    // to prevent XML/filler text from leaking into subsequent rounds.
+    const historyContent = (toolCalls && toolCalls.length > 0) ? "" : content;
+
     // Add assistant message with tool_calls + tool results for next round
     currentMessages = [
       ...currentMessages,
-      { role: "assistant", content: content || "", tool_calls: toolCalls },
+      { role: "assistant", content: historyContent, tool_calls: toolCalls },
       ...toolResults,
     ];
   }
@@ -838,6 +1036,16 @@ export async function chatStream(
     ...currentMessages,
     { role: "user", content: "Please provide a final answer based on the tool results above." },
   ];
-  const { content } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, false);
-  return { content: content || "I processed the data but don't have a clear answer. Could you rephrase or provide more detail?", toolCalls: allCallMetas };
+  const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, false);
+  let sanitizedFinal = sanitizeAssistantContent(finalContent || "");
+
+  // Auto-append action directives if the model fetched data but forgot to offer the visual
+  if (lastServiceMapRootId && !sanitizedFinal.includes("[[action|open-service-map")) {
+    sanitizedFinal += `\n\n[[action|open-service-map|rootId=${lastServiceMapRootId}|Open Service Map]]`;
+  }
+  if (lastCiDetailsId && !sanitizedFinal.includes("[[action|open-ci-details")) {
+    sanitizedFinal += `\n\n[[action|open-ci-details|id=${lastCiDetailsId}|View CI Details]]`;
+  }
+
+  return { content: sanitizedFinal, toolCalls: allCallMetas };
 }
