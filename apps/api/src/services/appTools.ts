@@ -2,6 +2,7 @@ import { FastifyInstance } from "fastify";
 import { registerTool } from "@specora/sdk";
 import { getStateMachineConfig } from "../routes/admin";
 import { emit } from "./eventBus";
+import { computeImpactScore } from "./impactScoring";
 
 async function validateStatusTransition(
   pg: any,
@@ -36,7 +37,7 @@ function combineDateTime(date?: string, time?: string): string | null {
 
 registerTool<FastifyInstance>("change-manager", {
   name: "create_rfc",
-  description: `Create a change request for a CI.
+  description: `Create a change request for a CI. Automatically computes a risk score (0-100), blast radius, and priority based on affected CIs.
 
 IMPORTANT: Before calling this tool, collect ALL required information from the user through conversation, ONE QUESTION AT A TIME:
 1. Ask which CI they want to change. Use search_cis if they don't know the ID.
@@ -89,6 +90,28 @@ Only call this tool once all required information is gathered.`,
       );
     }
     await client.query("COMMIT");
+
+    // Compute impact score asynchronously (don't block response)
+    computeImpactScore(fastify, rfc.id, ciId, affected).then((score) => {
+      return fastify.pg.query(
+        `UPDATE change_requests SET risk_score = $1, blast_radius = $2, priority = $3 WHERE id = $4`,
+        [score.riskScore, score.blastRadius, score.priority, rfc.id]
+      ).then(() => {
+        // Store per-CI impact metadata
+        const allCis = [ciId, ...affected.filter((id: string) => id !== ciId)];
+        return Promise.all(allCis.map((cid) => {
+          const scored = score.affectedCis.find((c) => c.ciId === cid);
+          if (!scored) return Promise.resolve();
+          return fastify.pg.query(
+            `UPDATE change_request_cis SET distance = $1, direction = $2, contribution = $3 WHERE change_request_id = $4 AND ci_id = $5`,
+            [scored.distance, scored.direction, scored.contribution, rfc.id, cid]
+          );
+        }));
+      });
+    }).catch((err) => {
+      fastify.log.warn({ err: err.message, rfcId: rfc.id }, "Impact scoring failed");
+    });
+
     emit("rfc.created", { rfcId: rfc.id, ciId, title, status: "draft", requesterId: _userId });
     return rfc;
   } catch (err) {
@@ -198,6 +221,23 @@ registerTool<FastifyInstance>("change-manager", {
     }
     await client.query("COMMIT");
     const updated = result.rows[0];
+
+    // Recalculate impact score if affected CIs changed
+    if (Array.isArray(affectedCiIds)) {
+      const rfcResult = await fastify.pg.query(`SELECT ci_id FROM change_requests WHERE id = $1`, [rfcId]);
+      const primaryCiId = rfcResult.rows[0]?.ci_id;
+      if (primaryCiId) {
+        computeImpactScore(fastify, rfcId, primaryCiId, affectedCiIds).then((score) => {
+          return fastify.pg.query(
+            `UPDATE change_requests SET risk_score = $1, blast_radius = $2, priority = $3 WHERE id = $4`,
+            [score.riskScore, score.blastRadius, score.priority, rfcId]
+          );
+        }).catch((err) => {
+          fastify.log.warn({ err: err.message, rfcId }, "Impact scoring recalculation failed");
+        });
+      }
+    }
+
     emit("rfc.updated", { rfcId, title: updated.title, status: updated.status });
     if (status !== undefined && oldStatus !== status) {
       emit("rfc.status_changed", { rfcId, oldStatus, newStatus: status, actorId: _userId });
@@ -287,7 +327,7 @@ registerTool<FastifyInstance>("change-manager", {
 
 registerTool<FastifyInstance>("change-manager", {
   name: "get_rfc_details",
-  description: "Get full details of a change request including affected CIs, approvers, and comments",
+  description: "Get full details of a change request including risk score, blast radius, affected CIs with direction/distance, approvers, and comments",
   parameters: {
     type: "object",
     properties: {
@@ -358,7 +398,17 @@ registerTool<FastifyInstance>("change-manager", {
     ...rfc,
     plannedStartAt: rfc.planned_start_at || rfc.scheduled_at,
     plannedEndAt: rfc.planned_end_at,
-    affectedCis: cisResult.rows.map((r: any) => ({ ciId: r.ci_id, role: r.role, name: ciNames[r.ci_id] || r.ci_id })),
+    riskScore: rfc.risk_score,
+    blastRadius: rfc.blast_radius,
+    priority: rfc.priority,
+    affectedCis: cisResult.rows.map((r: any) => ({
+      ciId: r.ci_id,
+      role: r.role,
+      name: ciNames[r.ci_id] || r.ci_id,
+      distance: r.distance,
+      direction: r.direction,
+      contribution: r.contribution,
+    })),
     edges: realEdges,
     approvers: approversResult.rows,
     comments: commentsResult.rows,
@@ -377,7 +427,7 @@ registerTool<FastifyInstance>("change-manager", {
   },
 }, async (args, fastify) => {
   const { status, ciId } = args as any;
-  let query = "SELECT id, ci_id, title, status, COALESCE(planned_start_at, scheduled_at) as planned_start_at, created_at FROM change_requests WHERE 1=1";
+  let query = "SELECT id, ci_id, title, status, COALESCE(planned_start_at, scheduled_at) as planned_start_at, created_at, risk_score, blast_radius, priority FROM change_requests WHERE 1=1";
   const params: any[] = [];
   let idx = 1;
   if (status) {
@@ -733,7 +783,9 @@ registerTool<FastifyInstance>("change-manager", {
   const isCritical = criticalClasses.includes(criticalityData.class);
 
   return {
-    blastRadius: affectedCount,
+    blastRadius: rfc.blast_radius || affectedCount,
+    riskScore: rfc.risk_score,
+    priority: rfc.priority,
     primaryCiClass: criticalityData.class,
     primaryCiEnvironment: criticalityData.environment,
     isCriticalClass: isCritical,

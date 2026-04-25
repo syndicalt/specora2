@@ -25,6 +25,16 @@ vi.mock("../routes/admin", () => ({
   getStateMachineConfig: vi.fn(() => Promise.resolve(null)),
 }));
 
+vi.mock("./impactScoring", () => ({
+  computeImpactScore: vi.fn(() => Promise.resolve({
+    riskScore: 25,
+    blastRadius: 10,
+    priority: "low",
+    breakdown: {},
+    affectedCis: [],
+  })),
+}));
+
 describe("appTools", () => {
   beforeEach(() => {
     mockTools.length = 0;

@@ -18,7 +18,10 @@ interface RFC {
   planned_start_at: string;
   planned_end_at: string;
   created_at: string;
-  affectedCis?: { ciId: string; role: string; name?: string }[];
+  risk_score?: number;
+  blast_radius?: number;
+  priority?: string;
+  affectedCis?: { ciId: string; role: string; name?: string; distance?: number; direction?: string; contribution?: number }[];
   approvers?: { user_id: string; name: string; email: string; role: string; approved_at: string | null }[];
   comments?: { id: string; content: string; author: string; created_at: string }[];
 }
@@ -274,6 +277,13 @@ export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
     rolled_back: "bg-orange-900/50 text-orange-300",
   };
 
+  const priorityColors: Record<string, string> = {
+    critical: "bg-red-900/60 text-red-300 border-red-700",
+    high: "bg-orange-900/50 text-orange-300 border-orange-700",
+    medium: "bg-yellow-900/40 text-yellow-300 border-yellow-700",
+    low: "bg-green-900/40 text-green-300 border-green-700",
+  };
+
   if (selectedRfc) {
     return (
       <div className="h-full w-full bg-gray-950 text-gray-100 flex flex-col">
@@ -330,6 +340,36 @@ export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
               </div>
             </div>
 
+            {/* Risk Summary */}
+            {(selectedRfc.risk_score !== undefined || selectedRfc.priority) && (
+              <div className={`bg-gray-900 border rounded-xl p-4 ${priorityColors[selectedRfc.priority || "low"] || "border-gray-800"}`}>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-gray-300">Impact Analysis</h3>
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${priorityColors[selectedRfc.priority || "low"] || "bg-gray-800 text-gray-400"}`}>
+                    {selectedRfc.priority || "low"} risk
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div>
+                    <div className="text-xs text-gray-500 mb-0.5">Risk Score</div>
+                    <div className="text-lg font-semibold">{selectedRfc.risk_score ?? 0}<span className="text-xs text-gray-500 font-normal">/100</span></div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500 mb-0.5">Blast Radius</div>
+                    <div className="text-lg font-semibold">{selectedRfc.blast_radius ?? 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500 mb-0.5">Affected CIs</div>
+                    <div className="text-lg font-semibold">{selectedRfc.affectedCis?.length ?? 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500 mb-0.5">Downstream</div>
+                    <div className="text-lg font-semibold">{selectedRfc.affectedCis?.filter((ci) => ci.direction === "downstream").length ?? 0}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Description */}
             {selectedRfc.description && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
@@ -358,7 +398,17 @@ export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
                         <span className="text-sm text-gray-300">{ci.name || ci.ciId}</span>
                         <span className="text-xs text-gray-500 font-mono">{ci.ciId}</span>
                       </div>
-                      <span className="text-xs text-gray-500 capitalize">{ci.role}</span>
+                      <div className="flex items-center gap-2">
+                        {ci.distance !== undefined && (
+                          <span className="text-xs text-gray-500">{ci.distance}h</span>
+                        )}
+                        {ci.direction && (
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${ci.direction === "downstream" ? "bg-red-900/30 text-red-300" : "bg-blue-900/30 text-blue-300"}`}>
+                            {ci.direction}
+                          </span>
+                        )}
+                        <span className="text-xs text-gray-500 capitalize">{ci.role}</span>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -636,9 +686,16 @@ export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
               >
                 <div className="flex items-start justify-between mb-2">
                   <h3 className="font-medium text-gray-200 line-clamp-1">{rfc.title}</h3>
-                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${statusColors[rfc.status] || "bg-gray-800 text-gray-400"}`}>
-                    {rfc.status.replace("_", " ")}
-                  </span>
+                  <div className="flex gap-1.5">
+                    {rfc.priority && (
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${priorityColors[rfc.priority] || "bg-gray-800 text-gray-400"}`}>
+                        {rfc.priority}
+                      </span>
+                    )}
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${statusColors[rfc.status] || "bg-gray-800 text-gray-400"}`}>
+                      {rfc.status.replace("_", " ")}
+                    </span>
+                  </div>
                 </div>
                 <p className="text-sm text-gray-500 line-clamp-2 mb-3">{rfc.description || "No description"}</p>
                 <div className="flex items-center gap-3 text-xs text-gray-500">
