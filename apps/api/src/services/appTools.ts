@@ -2,7 +2,7 @@ import { FastifyInstance } from "fastify";
 import { registerTool } from "@specora/sdk";
 import { getStateMachineConfig } from "../routes/admin";
 import { emit } from "./eventBus";
-import { computeImpactScore } from "./impactScoring";
+import { computeImpactScore, previewImpactScore, recordRiskScoreHistory, getRiskScoreHistory } from "./impactScoring";
 
 async function validateStatusTransition(
   pg: any,
@@ -107,6 +107,9 @@ Only call this tool once all required information is gathered.`,
             [scored.distance, scored.direction, scored.contribution, rfc.id, cid]
           );
         }));
+      }).then(() => {
+        // Record risk score history for trend tracking
+        return recordRiskScoreHistory(fastify, rfc.id, score, _userId || "system");
       });
     }).catch((err) => {
       fastify.log.warn({ err: err.message, rfcId: rfc.id }, "Impact scoring failed");
@@ -826,7 +829,7 @@ registerTool<FastifyInstance>("change-manager", {
   );
   const ciIds = cisResult.rows.map((r: any) => r.ci_id);
 
-  // Find other RFCs scheduled within the window that affect any of the same CIs
+  // Direct CI conflicts: other RFCs that share the same affected CIs
   const conflictResult = await pg.query(
     `SELECT DISTINCT cr.id, cr.title, cr.ci_id, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at, cr.status, crc.ci_id as conflicting_ci
      FROM change_requests cr
@@ -840,12 +843,61 @@ registerTool<FastifyInstance>("change-manager", {
     [rfcId, startAt, windowHours, ciIds]
   );
 
+  // Dependency-aware conflicts: RFCs on different CIs that share a downstream dependency
+  const directConflictIds = new Set(conflictResult.rows.map((r: any) => r.id));
+  const potentialResult = await pg.query(
+    `SELECT DISTINCT cr.id, cr.title, cr.ci_id as primary_ci, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at, cr.status
+     FROM change_requests cr
+     WHERE cr.id <> $1
+       AND COALESCE(cr.planned_start_at, cr.scheduled_at) IS NOT NULL
+       AND cr.status NOT IN ('closed', 'rejected', 'rolled_back')
+       AND ABS(EXTRACT(EPOCH FROM (COALESCE(cr.planned_start_at, cr.scheduled_at) - $2))) <= $3 * 3600
+       AND cr.id <> ALL($4)
+     ORDER BY COALESCE(cr.planned_start_at, cr.scheduled_at)
+     LIMIT 20`,
+    [rfcId, startAt, windowHours, Array.from(directConflictIds)]
+  );
+
+  const dependencyConflicts: any[] = [];
+  if (potentialResult.rows.length > 0) {
+    const session = fastify.neo4j.session();
+    try {
+      for (const other of potentialResult.rows) {
+        const otherCiId = other.primary_ci;
+        // Check if there's a path within 3 hops between any of our CIs and their primary CI
+        const pathResult = await session.run(
+          `MATCH (a:ConfigurationItem)-[:DEPENDS_ON|PART_OF|HOSTED_ON*1..3]-(b:ConfigurationItem)
+           WHERE a.id IN $ourIds AND b.id = $theirId
+           RETURN count(*) as pathCount LIMIT 1`,
+          { ourIds: ciIds, theirId: otherCiId }
+        );
+        const pathCount = pathResult.records[0]?.get("pathCount")?.toNumber() || 0;
+        if (pathCount > 0) {
+          dependencyConflicts.push({
+            ...other,
+            conflictType: "dependency-aware",
+            reason: `Primary CI ${otherCiId} is within 3 hops of an affected CI in this RFC`,
+          });
+        }
+      }
+    } finally {
+      await session.close();
+    }
+  }
+
+  const allConflicts = [
+    ...conflictResult.rows.map((r: any) => ({ ...r, conflictType: "direct" })),
+    ...dependencyConflicts,
+  ];
+
   return {
     primaryCi: ci_id,
     plannedStartAt: startAt,
     windowHours,
-    conflicts: conflictResult.rows,
-    conflictCount: conflictResult.rows.length,
+    conflicts: allConflicts,
+    conflictCount: allConflicts.length,
+    directConflicts: conflictResult.rows.length,
+    dependencyConflicts: dependencyConflicts.length,
   };
 });
 
@@ -964,6 +1016,124 @@ registerTool<FastifyInstance>("change-manager", {
     primaryCi,
     affectedCount: affected.length,
     dependencyPaths,
+  };
+});
+
+registerTool<FastifyInstance>("change-manager", {
+  name: "preview_impact",
+  description: "Preview the impact score for a proposed change WITHOUT creating an RFC. Useful for planning and what-if analysis.",
+  parameters: {
+    type: "object",
+    properties: {
+      ciId: { type: "string", description: "ID of the primary CI" },
+      affectedCiIds: { type: "array", items: { type: "string" }, description: "IDs of affected CIs to include" },
+    },
+    required: ["ciId"],
+  },
+}, async (args, fastify) => {
+  const { ciId, affectedCiIds } = args as any;
+  const affected = Array.isArray(affectedCiIds) ? affectedCiIds : [];
+  const score = await previewImpactScore(fastify, ciId, affected);
+  return {
+    preview: true,
+    primaryCi: ciId,
+    riskScore: score.riskScore,
+    blastRadius: score.blastRadius,
+    priority: score.priority,
+    breakdown: score.breakdown,
+    affectedCis: score.affectedCis,
+  };
+});
+
+registerTool<FastifyInstance>("change-manager", {
+  name: "find_critical_path",
+  description: "Find the most critical dependency path from the primary CI to a downstream BusinessService. Returns the path nodes and total weight.",
+  parameters: {
+    type: "object",
+    properties: {
+      rfcId: { type: "string", description: "UUID of the RFC" },
+    },
+    required: ["rfcId"],
+  },
+}, async (args, fastify) => {
+  const { rfcId } = args as any;
+  const pg = fastify.pg;
+  const cisResult = await pg.query(
+    `SELECT ci_id, role FROM change_request_cis WHERE change_request_id = $1`,
+    [rfcId]
+  );
+  const primaryCi = cisResult.rows.find((r: any) => r.role === "primary")?.ci_id;
+  if (!primaryCi) return { error: "No primary CI found" };
+
+  const session = fastify.neo4j.session();
+  try {
+    // Find the highest-weight path from primary to any BusinessService
+    const result = await session.run(
+      `MATCH path = (primary:ConfigurationItem {id: $primaryId})-[:DEPENDS_ON|PART_OF|HOSTED_ON*1..5]->(bs:BusinessService)
+       WITH path, primary, bs, length(path) as hops,
+            reduce(weight = 0, n in nodes(path) |
+              weight + CASE n.class
+                WHEN 'BusinessService' THEN 25
+                WHEN 'ApplicationService' THEN 20
+                WHEN 'Database' THEN 20
+                WHEN 'TechnicalService' THEN 15
+                WHEN 'Application' THEN 15
+                WHEN 'Server' THEN 10
+                ELSE 5
+              END * CASE coalesce(n.environment, 'Staging')
+                WHEN 'Production' THEN 2.0
+                WHEN 'Staging' THEN 1.0
+                ELSE 0.5
+              END
+            ) as pathWeight
+       RETURN bs.id as targetId, bs.name as targetName, hops, pathWeight,
+              [n in nodes(path) | {id: n.id, name: n.name, class: n.class}] as nodes
+       ORDER BY pathWeight DESC
+       LIMIT 1`,
+      { primaryId: primaryCi }
+    );
+
+    if (result.records.length === 0) {
+      return { primaryCi, criticalPath: null, message: "No downstream BusinessServices found" };
+    }
+
+    const record = result.records[0];
+    return {
+      primaryCi,
+      criticalPath: {
+        targetId: record.get("targetId"),
+        targetName: record.get("targetName"),
+        hops: record.get("hops").toNumber(),
+        pathWeight: record.get("pathWeight"),
+        nodes: record.get("nodes"),
+      },
+    };
+  } finally {
+    await session.close();
+  }
+});
+
+registerTool<FastifyInstance>("change-manager", {
+  name: "get_rfc_risk_history",
+  description: "Get the risk score history for a change request. Shows how the risk score has evolved over time.",
+  parameters: {
+    type: "object",
+    properties: {
+      rfcId: { type: "string", description: "UUID of the RFC" },
+      limit: { type: "integer", description: "Maximum number of history entries (default 30)" },
+    },
+    required: ["rfcId"],
+  },
+}, async (args, fastify) => {
+  const { rfcId, limit = 30 } = args as any;
+  const history = await getRiskScoreHistory(fastify, rfcId, limit);
+  return {
+    rfcId,
+    history,
+    count: history.length,
+    trend: history.length >= 2
+      ? history[0].riskScore - history[history.length - 1].riskScore
+      : 0,
   };
 });
 

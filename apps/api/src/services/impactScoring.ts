@@ -193,11 +193,11 @@ async function countOverlappingRfcs(
 // Main entry point
 // ─────────────────────────────────────────────────────────────
 
-export async function computeImpactScore(
+async function buildImpactScore(
   fastify: FastifyInstance,
-  rfcId: string,
   primaryCiId: string,
-  affectedCiIds: string[]
+  affectedCiIds: string[],
+  options: { skipConflictCheck?: boolean; rfcId?: string } = {}
 ): Promise<ImpactScore> {
   const session = fastify.neo4j.session();
 
@@ -251,9 +251,12 @@ export async function computeImpactScore(
       : 1.0;
     const healthPenalty = (1 - averageHealth) * HEALTH_PENALTY_MAX;
 
-    // 6. Conflict penalty
-    const overlappingCount = await countOverlappingRfcs(fastify.pg, rfcId, affectedCiIds);
-    const conflictPenalty = Math.min(overlappingCount * CONFLICT_PENALTY_PER_RFC, CONFLICT_PENALTY_MAX);
+    // 6. Conflict penalty (optional)
+    let conflictPenalty = 0;
+    if (!options.skipConflictCheck && options.rfcId) {
+      const overlappingCount = await countOverlappingRfcs(fastify.pg, options.rfcId, affectedCiIds);
+      conflictPenalty = Math.min(overlappingCount * CONFLICT_PENALTY_PER_RFC, CONFLICT_PENALTY_MAX);
+    }
 
     // 7. Final score
     const blastRadius = Math.round(totalContribution * 100) / 100;
@@ -278,4 +281,56 @@ export async function computeImpactScore(
   } finally {
     await session.close();
   }
+}
+
+export async function computeImpactScore(
+  fastify: FastifyInstance,
+  rfcId: string,
+  primaryCiId: string,
+  affectedCiIds: string[]
+): Promise<ImpactScore> {
+  return buildImpactScore(fastify, primaryCiId, affectedCiIds, { rfcId });
+}
+
+export async function previewImpactScore(
+  fastify: FastifyInstance,
+  primaryCiId: string,
+  affectedCiIds: string[]
+): Promise<ImpactScore> {
+  return buildImpactScore(fastify, primaryCiId, affectedCiIds, { skipConflictCheck: true });
+}
+
+export async function recordRiskScoreHistory(
+  fastify: FastifyInstance,
+  rfcId: string,
+  score: ImpactScore,
+  computedBy = "system"
+): Promise<void> {
+  await fastify.pg.query(
+    `INSERT INTO change_request_risk_history (change_request_id, risk_score, blast_radius, priority, computed_by)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [rfcId, score.riskScore, score.blastRadius, score.priority, computedBy]
+  );
+}
+
+export async function getRiskScoreHistory(
+  fastify: FastifyInstance,
+  rfcId: string,
+  limit = 30
+): Promise<Array<{ riskScore: number; blastRadius: number; priority: string; computedAt: string; computedBy: string }>> {
+  const result = await fastify.pg.query(
+    `SELECT risk_score, blast_radius, priority, computed_at, computed_by
+     FROM change_request_risk_history
+     WHERE change_request_id = $1
+     ORDER BY computed_at DESC
+     LIMIT $2`,
+    [rfcId, limit]
+  );
+  return result.rows.map((r: any) => ({
+    riskScore: r.risk_score,
+    blastRadius: r.blast_radius,
+    priority: r.priority,
+    computedAt: r.computed_at,
+    computedBy: r.computed_by,
+  }));
 }
