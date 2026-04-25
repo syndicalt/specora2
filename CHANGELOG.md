@@ -137,6 +137,5 @@
 - Next.js 14 App Router with dark-first Tailwind UI.
 - Python 3.12 asyncio gRPC worker for discovery ingestion.
 - Docker Compose for Neo4j + PostgreSQL.
-- Chat integration with Provara + OpenAI fallback.
+- Chat integration with Provara plus direct OpenAI fallback.
 - File upload → worker ingest → Neo4j persist pipeline.
-

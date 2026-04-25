@@ -35,6 +35,8 @@ function combineDateTime(date?: string, time?: string): string | null {
   return `${date}T${t}:00Z`;
 }
 
+export function registerAllAppTools() {
+
 registerTool<FastifyInstance>("change-manager", {
   name: "create_rfc",
   description: `Create a change request for a CI. Automatically computes a risk score (0-100), blast radius, and priority based on affected CIs.
@@ -1433,6 +1435,9 @@ registerTool<FastifyInstance>("health-monitor", {
     relType: a.relType,
   });
 });
+
+
+} // end registerAllAppTools
 
 export function getAllAppToolDefinitions() {
   const { getToolsForSession } = require("@specora/sdk");

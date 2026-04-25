@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { chat, ChatResult, chatStream, ChatStreamEvent } from "../services/chat";
+import { chat, ChatResult, chatStream, ChatStreamEvent, getProvaraConfig } from "../services/chat";
 import {
   createSession,
   listSessions,
@@ -157,10 +157,21 @@ export async function chatRoutes(fastify: FastifyInstance) {
       if (sessionId) {
         traceId = await getSessionTraceId(fastify.pg, sessionId);
       }
+      const provara = getProvaraConfig();
+      const model = provara ? "provara-router" : "gpt-4o-mini";
+      const provider = provara ? "provara" : "openai";
+      const traceInput = {
+        userId: user.id,
+        sessionId,
+        model,
+        provider,
+        messageCount: body.messages.length,
+        lastMessage: body.messages[body.messages.length - 1]?.content?.slice(0, 500),
+      };
       if (traceId && pathlight) {
         trace = new SessionTrace(pathlight, traceId, "chat-request");
       } else if (pathlight) {
-        trace = await SessionTrace.create(pathlight, "chat-request", { userId: user.id, sessionId });
+        trace = await SessionTrace.create(pathlight, "chat-request", traceInput);
         if (sessionId) {
           await setSessionTraceId(fastify.pg, sessionId, trace.id);
         }
@@ -285,11 +296,22 @@ export async function chatRoutes(fastify: FastifyInstance) {
       if (sessionId) {
         traceId = await getSessionTraceId(fastify.pg, sessionId);
       }
+      const provaraStream = getProvaraConfig();
+      const modelStream = provaraStream ? "provara-router" : "gpt-4o-mini";
+      const providerStream = provaraStream ? "provara" : "openai";
+      const traceInputStream = {
+        userId: user.id,
+        sessionId,
+        model: modelStream,
+        provider: providerStream,
+        messageCount: body.messages.length,
+        lastMessage: body.messages[body.messages.length - 1]?.content?.slice(0, 500),
+      };
       const pathlight = fastify.pathlight;
       if (traceId && pathlight) {
         trace = new SessionTrace(pathlight, traceId, "chat-stream");
       } else if (pathlight) {
-        trace = await SessionTrace.create(pathlight, "chat-stream", { userId: user.id, sessionId });
+        trace = await SessionTrace.create(pathlight, "chat-stream", traceInputStream);
       }
 
       if (sessionId) {

@@ -209,7 +209,6 @@ const typeDefs = `
     ci(id: ID!): ConfigurationItem
     cis(filter: CIFilterInput, limit: Int, offset: Int): [ConfigurationItem!]!
     ciCount(filter: CIFilterInput): Int!
-    ciClasses: [String!]!
     ciEnvironments: [String!]!
     serviceMap(rootId: ID!, classFilter: [String], environmentFilter: [String], relationshipFilter: [String]): ServiceMap!
     neighbors(nodeId: ID!, types: [String], limit: Int): ServiceMap!

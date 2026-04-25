@@ -29,6 +29,7 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
   const [classFilter, setClassFilter] = useState("");
   const [envFilter, setEnvFilter] = useState("");
   const [classes, setClasses] = useState<string[]>([]);
+  const [classDisplayNames, setClassDisplayNames] = useState<Record<string, string>>({});
   const [environments, setEnvironments] = useState<string[]>([]);
   const [selectedCi, setSelectedCi] = useState<CI | null>(null);
   const [selectionMode, setSelectionMode] = useState<{ context: string; callbackChannel: string } | null>(null);
@@ -71,10 +72,16 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
   const fetchFilters = useCallback(async () => {
     try {
       const [classesData, envsData] = await Promise.all([
-        graphqlClient.request(`query { ciClasses }`),
+        graphqlClient.request(`query { ciClasses { name displayName } }`),
         graphqlClient.request(`query { ciEnvironments }`),
       ]);
-      setClasses(((classesData as any).ciClasses || []) as string[]);
+      const clsList = (classesData as any).ciClasses || [];
+      setClasses(clsList.map((c: any) => c.name));
+      const dnMap: Record<string, string> = {};
+      for (const c of clsList) {
+        dnMap[c.name] = c.displayName || c.name;
+      }
+      setClassDisplayNames(dnMap);
       setEnvironments(((envsData as any).ciEnvironments || []) as string[]);
     } catch {
       // silent
@@ -211,7 +218,7 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
         >
           <option value="">All Classes</option>
           {classes.map((c) => (
-            <option key={c} value={c}>{c}</option>
+            <option key={c} value={c}>{classDisplayNames[c] || c}</option>
           ))}
         </select>
 
@@ -294,7 +301,7 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
                   </td>
                   <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{ci.id}</td>
                   <td className="px-4 py-2.5">
-                    <span className="px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 text-xs">{ci.class}</span>
+                    <span className="px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 text-xs">{classDisplayNames[ci.class] || ci.class}</span>
                   </td>
                   <td className="px-4 py-2.5 text-gray-400">{ci.environment || "—"}</td>
                   <td className="px-4 py-2.5">

@@ -1,104 +1,87 @@
 # Specora Roadmap
 
+This file is the planning-level view of Specora. Use `CHANGELOG.md` for release details and `TODOS.md` for task-level engineering backlog.
+
 ## Released
+
+### v0.1 — Foundation
+
+- Fastify/GraphQL Yoga API with JWT auth.
+- Neo4j CSDMv5 schema with seeded data.
+- Next.js 14 App Router with dark-first Tailwind UI.
+- Python 3.12 asyncio gRPC worker for discovery.
+- Provara chat integration with direct OpenAI fallback.
+- File upload → worker ingest → Neo4j pipeline.
 
 ### v0.2 — App Ecosystem (2026-04-23)
-- [x] **App Shell Platform** — IndexedDB registry, app-to-app messaging bus, multi-mode rendering (canvas/window), dormancy, dock v2 with drag-reorder
-- [x] **Specora Arc** — Two-tier app marketplace:
-  - **Specora Native** — Built-in apps signed by Specora (Service Map, CMDB Explorer, Discovery, Settings, Arc)
-  - **Arc Applications** — External marketplace apps with install/uninstall, admin review queue, permission-filtered ShellAPI, dynamic ESM loader with iframe fallback
-- [x] **Window Mode v2** — Draggable, resizable, position/size persisted to localStorage, click-to-front z-index stacking
-- [x] **Settings** — Theme toggle, API endpoint config, profile management, danger zone
-- [x] **Discovery Dashboard** — Jobs/sources tabs, ingestion status, file browser
-- [x] **CMDB Explorer** — Search, filters, paginated table, detail panel with cross-app navigation
-- [x] **Service Map** — Dynamic root CI selector, React Flow graph, dagre layout, relationship CRUD
-- [x] **Right-side Chat Panel** — Resizable workspace panel, dock toggle, `Ctrl+/` shortcut
-- [x] **Marketplace Backend** — PostgreSQL schema, GraphQL CRUD with admin role enforcement
 
-### v0.1 — Foundation
-- [x] Fastify/GraphQL Yoga API with JWT auth
-- [x] Neo4j CSDMv5 schema with seeded data
-- [x] Next.js 14 App Router with dark-first Tailwind UI
-- [x] Python 3.12 asyncio gRPC worker for discovery
-- [x] Chat integration with Provara + OpenAI fallback
-- [x] File upload → worker ingest → Neo4j pipeline
-
----
-
-## Released
+- App shell platform with IndexedDB registry, app-to-app messaging, canvas/window rendering, dormancy, and dock v2.
+- Specora Arc marketplace with built-in Specora Native apps and external Arc Applications.
+- Dynamic ESM app loading with iframe sandbox fallback.
+- Permission-filtered `ShellAPI`.
+- Draggable, resizable, persisted window mode.
+- Built-in Settings, Discovery Dashboard, CMDB Explorer, Service Map, and Arc apps.
+- Marketplace PostgreSQL schema and GraphQL CRUD with admin review.
 
 ### v0.3 — Graph Power (2026-04-24)
-- [x] **Graph Filtering** — Class/environment/relationship filter panel with custom dark-theme checkboxes, server-side Cypher filtering
-- [x] **Path Tracing** — Two-click source→target selection, `shortestPath()` query, gold highlight with dimmed non-path elements
-- [x] **Expand/Collapse** — "Expand" context menu fetches 1-hop neighbors via `neighbors` GraphQL query
-- [x] **Add Existing CI** — Search modal to pull any CMDB node into the current graph view
-- [x] **Edge Hover Highlighting** — Stroke width boost + glow drop-shadow on hover
-- [x] **Saved Views** — `saved_views` PostgreSQL table, GraphQL CRUD, Save/Load/Delete UI in Service Map toolbar
-- [x] **GraphQL Enhancements** — `neighbors`, `dependencyPath`, filter params on `serviceMap`
 
-### v0.1 — Foundation
-- [x] Fastify/GraphQL Yoga API with JWT auth
-- [x] Neo4j CSDMv5 schema with seeded data
-- [x] Next.js 14 App Router with dark-first Tailwind UI
-- [x] Python 3.12 asyncio gRPC worker for discovery
-- [x] Chat integration with Provara + OpenAI fallback
-- [x] File upload → worker ingest → Neo4j pipeline
-
----
-
-## Released
+- Service Map graph filtering by class, environment, and relationship type.
+- Source-to-target dependency path tracing.
+- Expand/collapse through 1-hop neighbor queries.
+- Add Existing CI workflow for pulling CMDB nodes into graph views.
+- Edge hover highlighting and custom React Flow nodes.
+- Saved views backed by PostgreSQL.
+- GraphQL enhancements: `neighbors`, `dependencyPath`, and filter params on `serviceMap`.
 
 ### v0.4 — AI Layer / Specora Arc Orchestrator (2026-04-24)
-- [x] **Chat Tool Registry** — Apps declare `chatTools` in manifest; AI dynamically loads them into system prompt
-- [x] **Event Bus** — In-memory pub/sub + PostgreSQL persistence; `ci.created/updated/deleted`, `relationship.created/updated/deleted`, `discovery.completed`
-- [x] **ITSM App Ecosystem** — 3 non-core built-in apps registered in Arc marketplace:
-  - **Change Manager** — RFC workflow (`draft` → `pending_approval` → `approved` → `implemented` → `closed`), PostgreSQL-backed, chat tools for CRUD
-  - **Discovery Insights** — Coverage gap analysis, scan recommendations, chat tools
-  - **Health Monitor** — Anomaly detection (orphaned, stale, cycles), health scoring, chat tools
-- [x] **AI Multi-Tool Orchestration** — Chat routes tool calls to core Neo4j queries or app-specific handlers via unified registry
-- [x] **Synthetic Completeness** — Hybrid approach:
-  - **Hardcoded rules** — 8 deterministic CSDMv5 structural validations (Cypher)
-  - **AI Rule Generator** — LLM analyzes graph topology, suggests new Cypher queries, safety-guarded execution
-- [x] **App Manifest v2** — Added `chatTools`, `events` arrays to `AppManifest`
-- [x] **App Tool REST API** — `GET /api/apps/:id/tools`, `POST /api/apps/:id/tools/:tool` with JWT auth
 
-## Released
+- Chat tool registry loaded from core platform tools and app manifests.
+- Event Bus with in-memory pub/sub and PostgreSQL persistence.
+- ITSM built-in apps: Change Manager, Discovery Insights, and Health Monitor.
+- AI multi-tool orchestration across core Neo4j queries and app-specific handlers.
+- Synthetic completeness checks with deterministic Cypher rules and guarded AI-generated rules.
+- App Manifest v2 with `chatTools` and `events`.
+- App Tool REST API with JWT auth.
 
 ### v0.5 — Scale & Ops (2026-04-24)
-- [x] **Audit log** — Every graph mutation tracked with who/when/why via Event Bus
-- [x] **RBAC** — Role-based access (viewer, operator, admin, security_admin, change_manager, approver) enforced in GraphQL resolvers and app tool routes
-- [x] **Worker queue** — PostgreSQL-backed job queue for large ingestion batches
-- [x] **Chat proactive suggestions** — Capability accordion in chat overlay with built-in app shortcuts
+
+- Audit logging for graph mutations.
+- RBAC roles enforced in GraphQL resolvers and app tool routes.
+- PostgreSQL-backed worker queue for large ingestion batches.
+- Chat proactive suggestions with built-in app shortcuts.
+
+### v0.6 — Intelligence
+
+- Deterministic impact-analysis risk scoring for RFCs.
+- What-if impact preview chat tool.
+- Dependency-aware change conflict detection.
+- Critical-path tracing.
+- Risk score history.
+- Frontend impact-analysis UI for change requests.
 
 ## Next Up
 
-### v0.5 — Remaining
-- [ ] **Real-time events** — WebSocket pub/sub for event bus + SSE chat streaming (in progress)
-
-### v0.6 — Intelligence
-1. **NL CI Search standalone UI** — Global search bar with LLM→Cypher translation
-2. **Impact analysis** — Blast radius calculation before changes
-3. **Auto-remediation** — Suggest fixes for anomalies (create missing relationships)
-
-### v0.6 — Intelligence
-1. **NL CI Search standalone UI** — Global search bar with LLM→Cypher translation
-2. **Impact analysis** — Blast radius calculation before changes
-3. **Auto-remediation** — Suggest fixes for anomalies (create missing relationships)
-
----
+- **Real-time events** — WebSocket pub/sub for event bus and SSE chat streaming.
+- **NL CI Search standalone UI** — Global search bar with LLM-to-Cypher translation.
+- **Auto-remediation** — Suggest fixes for anomalies, such as missing relationships.
+- **Multi-instance API scale path** — Shared backplane for event subscriptions, RBAC cache invalidation, websocket state, and rate-limit state.
 
 ## Technical Debt
-- [ ] Web dev server crashes with `ELIFECYCLE` when run via `turbo run dev` — use `node ./node_modules/next/dist/bin/next dev` instead
-- [ ] Vitest coverage parser can't parse TSX (Rolldown error on `import type`, JSX) — non-blocking, tests pass
-- [ ] `GraphExplorer.tsx` still in `components/` but unused — safe to delete after migration confirmation
-- [ ] Provara chat fallback to OpenAI if `PROVARA_URL` not set — verify fallback path works end-to-end
 
----
+- Web dev server crashes with `ELIFECYCLE` when run via `turbo run dev`; use `node ./node_modules/next/dist/bin/next dev` as the workaround.
+- Vitest coverage parser cannot parse some TSX under the current Rolldown path; tests pass, coverage remains non-blocking.
+- `GraphExplorer.tsx` remains in `components/` but appears unused; delete after migration confirmation.
+- Keep Provara and OpenAI fallback routing covered by tests as the chat/tool-call path evolves.
+- Replace websocket app-layer JSON ping with protocol-level `ping()` / `pong`.
+- Add JWT expiration and refresh flow.
 
 ## Decisions Log
-- **IndexedDB over backend registry** — Client-side discovery, zero-config installs, works offline
-- **Dormant apps in `display: none`** — Preserves React state without DOM overhead
-- **Chat as right-side panel (not overlay)** — First-class workspace utility, parallel with canvas
-- **Tailwind arbitrary values avoided** — Use standard utilities to prevent JIT generation misses
-- **Provara URL normalization** — Strip trailing `/v1` before appending API path for flexibility
-- **CMDB Explorer is built-in** — Core platform feature, not marketplace add-on
+
+- **Neo4j for CMDB** — Graph topology is the core data model, not a secondary projection.
+- **GraphQL for CSDMv5 CRUD** — Centralizes auth, validation, relationship allowlisting, and parsing.
+- **Provara as primary LLM router** — Provara supports tool calls and centralizes model routing; direct OpenAI remains the fallback.
+- **IndexedDB over backend registry for installed apps** — Enables local discovery, zero-config installs, and offline behavior.
+- **Dormant apps use `display: none`** — Preserves React state while keeping inactive app DOM out of view.
+- **Chat as right-side panel** — Keeps assistant context available beside the main workspace.
+- **Tailwind arbitrary values avoided** — Prefer standard utilities to reduce JIT generation misses.
+- **CMDB Explorer is built in** — Core platform capability, not an optional marketplace add-on.

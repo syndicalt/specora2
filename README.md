@@ -1,51 +1,56 @@
 # Specora
 
-**AI-Native ITSM Platform**
+Specora is an open-source, AI-native ITSM platform. It treats graph relationships, AI agents, and app-level automation as first-class parts of service management.
 
-Specora is an open-source, AI-first ITSM platform built to eventually displace legacy suites like ServiceNow. It treats AI agents and graph relationships as first-class citizens, with a conversational-first interface and a graph-native implementation of the CSDMv5 data model.
+The platform centers on a graph-native CSDMv5 CMDB, a conversational workspace, and an extensible app ecosystem called Specora Arc.
 
-## Phase 1: The Kernel
+## Current Platform
 
-Phase 1 establishes the graph-native CSDMv5 data layer, the API, the foundational GUI, and the event-processing worker.
+- **CMDB graph**: Neo4j-backed CSDMv5 subset with configuration items, ownership, dependency, hosting, and location relationships.
+- **API**: TypeScript Fastify server with GraphQL Yoga for CSDMv5 CRUD, JWT auth, app tooling, chat, and marketplace operations.
+- **Web app**: Next.js 14 App Router UI with React Flow service maps, CMDB Explorer, Discovery, Settings, Change Manager, Health Monitor, and Specora Arc.
+- **Worker**: Python 3.12 asyncio gRPC service for ingestion and background jobs.
+- **Ops data**: PostgreSQL for marketplace data, saved views, event persistence, queues, and change-management records.
+- **AI layer**: Provara is the primary LLM router for chat and tool calls. OpenAI is retained as a direct fallback.
+
+## Repository Layout
+
+```text
+specora2/
+├── apps/
+│   ├── api/        # Fastify, GraphQL Yoga, chat/tools, app APIs
+│   ├── web/        # Next.js frontend and built-in Arc apps
+│   └── worker/     # Python asyncio gRPC worker
+├── packages/
+│   ├── core/       # Shared TypeScript types and schemas
+│   ├── db/         # Neo4j/PostgreSQL migrations and seeders
+│   ├── protobuf/   # Protobuf definitions and generated gRPC stubs
+│   ├── tsconfig/   # Shared TypeScript configs
+│   └── eslint-config/
+├── docs/           # Focused technical notes
+├── AGENTS.md       # Primary coding-agent context
+└── ROADMAP.md      # Released work, next work, and known debt
+```
 
 ## Technology Stack
 
 | Layer | Technology |
-|-------|------------|
-| **Monorepo** | pnpm workspaces + Turborepo |
-| **API** | TypeScript, Fastify, GraphQL Yoga, neo4j-driver, grpc-js |
-| **Web GUI** | Next.js 14 (App Router), React Flow, TanStack Query |
-| **Worker** | Python 3.12, asyncio, grpcio, neo4j Python driver |
-| **Graph DB** | Neo4j Community Edition |
-| **Queue / Ops DB** | PostgreSQL 16 |
-| **Inter-service** | gRPC + Protobuf |
-| **Auth** | JWT (stateless) |
-| **Local Dev** | Docker Compose |
-| **Production** | Railway (Docker-based) |
+| --- | --- |
+| Monorepo | pnpm workspaces, Turborepo |
+| API | Node 20, TypeScript, Fastify, GraphQL Yoga, neo4j-driver, grpc-js |
+| Web | Next.js 14 App Router, React, React Flow, TanStack Query, Tailwind CSS |
+| Worker | Python 3.12, asyncio, grpcio, Neo4j Python driver |
+| Graph database | Neo4j Community Edition |
+| Queue / ops database | PostgreSQL 16 |
+| Inter-service protocol | gRPC + Protobuf |
+| Auth | Stateless JWT |
+| Local infrastructure | Docker Compose |
 
-## Directory Structure
+## CSDMv5 Graph Subset
 
-```
-specora2/
-├── apps/
-│   ├── api/                    # Fastify API Server
-│   ├── web/                    # Next.js Frontend
-│   └── worker/                 # Python gRPC Worker
-├── packages/
-│   ├── core/                   # Shared TS types, Zod schemas
-│   ├── db/                     # Neo4j schema, migrations, seeders
-│   ├── protobuf/               # .proto definitions + scripts
-│   ├── tsconfig/               # Shared TS configs
-│   └── eslint-config/          # Shared lint rules
-├── docker-compose.yml
-├── turbo.json
-└── pnpm-workspace.yaml
-```
+Node labels:
 
-## CSDMv5 Graph Schema (Phase 1 Subset)
-
-### Node Labels
-- `ConfigurationItem` (base)
+- `ConfigurationItem`
 - `BusinessService`
 - `ApplicationService`
 - `TechnicalService`
@@ -57,7 +62,8 @@ specora2/
 - `Group`
 - `Location`
 
-### Relationship Types
+Relationship types:
+
 - `PART_OF`
 - `DEPENDS_ON`
 - `HOSTED_ON`
@@ -65,215 +71,75 @@ specora2/
 - `OWNED_BY`
 - `LOCATED_AT`
 
-## Development
+The API validates relationship types against an allowlist. Cypher queries must be parameterized.
 
-### Prerequisites
-- Node.js >= 20
-- pnpm >= 8
+## Local Development
+
+Prerequisites:
+
+- Node.js 20+
+- pnpm 8+
 - Python 3.12
-- Docker & Docker Compose
+- Docker and Docker Compose
 
-### Local Setup
+Setup:
 
 ```bash
-# Install dependencies
 pnpm install
-
-# Start infrastructure (Neo4j + Postgres)
 docker-compose up -d neo4j postgres
-
-# Seed Neo4j schema and sample data
 pnpm --filter @specora/db seed
-
-# Start all apps in dev mode
 pnpm dev
 ```
 
-The API will be available at `http://localhost:4000/graphql` and the web UI at `http://localhost:3000`.
+Default endpoints:
 
-### Proto Generation
+- Web UI: `http://localhost:3000`
+- GraphQL API: `http://localhost:4000/graphql`
+
+Regenerate gRPC stubs:
 
 ```bash
 pnpm proto:generate
 ```
 
-## Keyboard Shortcuts
+## Environment
 
-- `Ctrl+K` / `Cmd+K` — Open Specora Assistant chat overlay from anywhere in the UI.
+Core variables:
+
+| Variable | Used by | Description |
+| --- | --- | --- |
+| `NEO4J_URI` | API, Worker | Neo4j Bolt URI |
+| `NEO4J_USER` | API, Worker | Neo4j username |
+| `NEO4J_PASSWORD` | API, Worker | Neo4j password |
+| `DATABASE_URL` | Worker, API features backed by Postgres | PostgreSQL connection string |
+| `JWT_SECRET` | API | JWT signing secret |
+| `WORKER_GRPC_HOST` | API | Worker gRPC target, for example `worker:50051` |
+| `GRPC_PORT` | Worker | Worker gRPC server port |
+| `NEXT_PUBLIC_API_URL` | Web | GraphQL endpoint URL |
+| `PROVARA_URL` | API | Provara API endpoint for LLM routing |
+| `PROVARA_API_KEY` | API | Provara API key |
+| `PROVARA_TENANT_ID` | API | Optional Provara tenant ID |
+| `OPENAI_API_KEY` | API | Direct OpenAI fallback for chat |
+| `REDIS_URL` | API | Redis URL for multi-instance pub/sub, default `redis://localhost:6379` |
+| `UPLOAD_DIR` | API | Discovery upload directory, default `./uploads` |
+
+Do not commit `.env` files.
+
+## Documentation Map
+
+- [AGENTS.md](AGENTS.md) is the compact source of truth for coding agents.
+- [ROADMAP.md](ROADMAP.md) tracks released capability, near-term work, technical debt, and decisions.
+- [CHANGELOG.md](CHANGELOG.md) records release-level changes.
+- [docs/llm-routing.md](docs/llm-routing.md) explains current chat model routing and tool-call behavior.
+- [CLAUDE.md](CLAUDE.md), [CURSOR.md](CURSOR.md), [README-KARPATHY.md](README-KARPATHY.md), [README.zh.md](README.zh.md), [EXAMPLES.md](EXAMPLES.md), and [skills/karpathy-guidelines/SKILL.md](skills/karpathy-guidelines/SKILL.md) are imported coding-agent behavior guidelines, not Specora product architecture.
+
+## User Experience Notes
+
+- The UI is conversational-first.
+- `Ctrl+K` / `Cmd+K` opens the app launcher or assistant entry point depending on workspace context.
+- `Ctrl+/` toggles the right-side chat panel.
+- Built-in apps are registered in the web app and seeded into the Arc registry.
 
 ## License
 
 AGPL-3.0
-
-# Karpathy-Inspired Claude Code Guidelines
-
-> Check out my new project [Multica](https://github.com/multica-ai/multica) — an open-source platform for running and managing coding agents with reusable skills.
->
-> Follow me on X: [https://x.com/jiayuan_jy](https://x.com/jiayuan_jy)
-
-A single `CLAUDE.md` file to improve Claude Code behavior, derived from [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls.
-
-English | [简体中文](./README.zh.md)
-
-## The Problems
-
-From Andrej's post:
-
-> "The models make wrong assumptions on your behalf and just run along with them without checking. They don't manage their confusion, don't seek clarifications, don't surface inconsistencies, don't present tradeoffs, don't push back when they should."
-
-> "They really like to overcomplicate code and APIs, bloat abstractions, don't clean up dead code... implement a bloated construction over 1000 lines when 100 would do."
-
-> "They still sometimes change/remove comments and code they don't sufficiently understand as side effects, even if orthogonal to the task."
-
-## The Solution
-
-Four principles in one file that directly address these issues:
-
-| Principle | Addresses |
-|-----------|-----------|
-| **Think Before Coding** | Wrong assumptions, hidden confusion, missing tradeoffs |
-| **Simplicity First** | Overcomplication, bloated abstractions |
-| **Surgical Changes** | Orthogonal edits, touching code you shouldn't |
-| **Goal-Driven Execution** | Leverage through tests-first, verifiable success criteria |
-
-## The Four Principles in Detail
-
-### 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-LLMs often pick an interpretation silently and run with it. This principle forces explicit reasoning:
-
-- **State assumptions explicitly** — If uncertain, ask rather than guess
-- **Present multiple interpretations** — Don't pick silently when ambiguity exists
-- **Push back when warranted** — If a simpler approach exists, say so
-- **Stop when confused** — Name what's unclear and ask for clarification
-
-### 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-Combat the tendency toward overengineering:
-
-- No features beyond what was asked
-- No abstractions for single-use code
-- No "flexibility" or "configurability" that wasn't requested
-- No error handling for impossible scenarios
-- If 200 lines could be 50, rewrite it
-
-**The test:** Would a senior engineer say this is overcomplicated? If yes, simplify.
-
-### 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-
-- Don't "improve" adjacent code, comments, or formatting
-- Don't refactor things that aren't broken
-- Match existing style, even if you'd do it differently
-- If you notice unrelated dead code, mention it — don't delete it
-
-When your changes create orphans:
-
-- Remove imports/variables/functions that YOUR changes made unused
-- Don't remove pre-existing dead code unless asked
-
-**The test:** Every changed line should trace directly to the user's request.
-
-### 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform imperative tasks into verifiable goals:
-
-| Instead of... | Transform to... |
-|--------------|-----------------|
-| "Add validation" | "Write tests for invalid inputs, then make them pass" |
-| "Fix the bug" | "Write a test that reproduces it, then make it pass" |
-| "Refactor X" | "Ensure tests pass before and after" |
-
-For multi-step tasks, state a brief plan:
-
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let the LLM loop independently. Weak criteria ("make it work") require constant clarification.
-
-## Install
-
-**Option A: Claude Code Plugin (recommended)**
-
-From within Claude Code, first add the marketplace:
-```
-/plugin marketplace add forrestchang/andrej-karpathy-skills
-```
-
-Then install the plugin:
-```
-/plugin install andrej-karpathy-skills@karpathy-skills
-```
-
-This installs the guidelines as a Claude Code plugin, making the skill available across all your projects.
-
-**Option B: CLAUDE.md (per-project)**
-
-New project:
-```bash
-curl -o CLAUDE.md https://raw.githubusercontent.com/forrestchang/andrej-karpathy-skills/main/CLAUDE.md
-```
-
-Existing project (append):
-```bash
-echo "" >> CLAUDE.md
-curl https://raw.githubusercontent.com/forrestchang/andrej-karpathy-skills/main/CLAUDE.md >> CLAUDE.md
-```
-
-## Using with Cursor
-
-This repository includes a committed Cursor project rule ([`.cursor/rules/karpathy-guidelines.mdc`](.cursor/rules/karpathy-guidelines.mdc)) so the same guidelines apply when you open the project in Cursor. See **[CURSOR.md](CURSOR.md)** for setup, using the rule in other projects, and how this relates to Claude Code.
-
-## Key Insight
-
-From Andrej:
-
-> "LLMs are exceptionally good at looping until they meet specific goals... Don't tell it what to do, give it success criteria and watch it go."
-
-The "Goal-Driven Execution" principle captures this: transform imperative instructions into declarative goals with verification loops.
-
-## How to Know It's Working
-
-These guidelines are working if you see:
-
-- **Fewer unnecessary changes in diffs** — Only requested changes appear
-- **Fewer rewrites due to overcomplication** — Code is simple the first time
-- **Clarifying questions come before implementation** — Not after mistakes
-- **Clean, minimal PRs** — No drive-by refactoring or "improvements"
-
-## Customization
-
-These guidelines are designed to be merged with project-specific instructions. Add them to your existing `CLAUDE.md` or create a new one.
-
-For project-specific rules, add sections like:
-
-```markdown
-## Project-Specific Guidelines
-
-- Use TypeScript strict mode
-- All API endpoints must have tests
-- Follow the existing error handling patterns in `src/utils/errors.ts`
-```
-
-## Tradeoff Note
-
-These guidelines bias toward **caution over speed**. For trivial tasks (simple typo fixes, obvious one-liners), use judgment — not every change needs the full rigor.
-
-The goal is reducing costly mistakes on non-trivial work, not slowing down simple tasks.
-
-## License
-
-MIT
-

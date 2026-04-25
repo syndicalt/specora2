@@ -52,7 +52,7 @@ function getRelColor(type: string) {
   return REL_COLORS[type] || REL_COLORS.DEPENDS_ON;
 }
 
-function computeLayout(nodes: APINode[], edges: APIEdge[], highlightId?: string | null) {
+function computeLayout(nodes: APINode[], edges: APIEdge[], classDisplayNames: Record<string, string>, highlightId?: string | null) {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "TB", nodesep: 90, ranksep: 160, edgesep: 40, marginx: 20, marginy: 20 });
   g.setDefaultEdgeLabel(() => ({}));
@@ -88,6 +88,7 @@ function computeLayout(nodes: APINode[], edges: APIEdge[], highlightId?: string 
       id: node.id,
       name: node.name,
       class: node.class,
+      classDisplayName: classDisplayNames[node.class] || node.class,
       environment: node.environment,
       attributes: node.attributes,
       health: node.health,
@@ -158,6 +159,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const [environmentFilters, setEnvironmentFilters] = useState<string[]>([]);
   const [relationshipFilters, setRelationshipFilters] = useState<string[]>([]);
   const [availableClasses, setAvailableClasses] = useState<string[]>([]);
+  const [classDisplayNames, setClassDisplayNames] = useState<Record<string, string>>({});
   const [availableEnvironments, setAvailableEnvironments] = useState<string[]>([]);
 
   // Path tracing state
@@ -185,6 +187,8 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const [newCiName, setNewCiName] = useState("");
   const [newCiClass, setNewCiClass] = useState("");
   const [newCiEnvironment, setNewCiEnvironment] = useState("Production");
+  const [newCiMandatoryAttrs, setNewCiMandatoryAttrs] = useState<Record<string, string>>({});
+  const [newCiClassDef, setNewCiClassDef] = useState<{ name: string; attrType: string; displayName?: string }[]>([]);
   const newCiRef = useRef<HTMLDivElement>(null);
 
   // Change relationship type modal state
@@ -227,7 +231,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }
       );
       const map = (data as any).serviceMap;
-      const layout = computeLayout(map.nodes, map.edges, highlightId);
+      const layout = computeLayout(map.nodes, map.edges, classDisplayNames, highlightId);
       // Merge plugin decorators into node data
       const nodesWithDecorators = layout.nodes.map((n) => ({
         ...n,
@@ -390,11 +394,17 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     async function loadFilterOptions() {
       try {
         const [classesData, envsData] = await Promise.all([
-          graphqlClient.request(`query { ciClasses }`),
+          graphqlClient.request(`query { ciClasses { name displayName } }`),
           graphqlClient.request(`query { ciEnvironments }`),
         ]);
         if (!cancelled) {
-          setAvailableClasses((classesData as any).ciClasses || []);
+          const classes = (classesData as any).ciClasses || [];
+          setAvailableClasses(classes.map((c: any) => c.name));
+          const dnMap: Record<string, string> = {};
+          for (const c of classes) {
+            dnMap[c.name] = c.displayName || c.name;
+          }
+          setClassDisplayNames(dnMap);
           setAvailableEnvironments((envsData as any).ciEnvironments || []);
         }
       } catch {
@@ -845,6 +855,8 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
           setNewCiName("");
           setNewCiClass("");
           setNewCiEnvironment("Production");
+          setNewCiMandatoryAttrs({});
+          setNewCiClassDef([]);
           setNewCiModalOpen(true);
         }},
         { label: "Add Existing CI", onClick: () => setAddCiModalOpen(true) },
@@ -948,7 +960,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
                     className={`w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-gray-800 transition-colors ${ci.id === rootId ? "bg-gray-800/60" : ""}`}
                   >
                     <span className="text-gray-200">{ci.name}</span>
-                    <span className="text-xs text-gray-500 ml-auto px-1.5 py-0.5 bg-gray-800 rounded-md">{ci.class}</span>
+                    <span className="text-xs text-gray-500 ml-auto px-1.5 py-0.5 bg-gray-800 rounded-md">{classDisplayNames[ci.class] || ci.class}</span>
                   </button>
                 ))}
               </div>
@@ -977,7 +989,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
                 <button key={ci.id} onClick={() => selectResult(ci.id, ci.name)}
                   className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-gray-800 transition-colors">
                   <span className="text-gray-200">{ci.name}</span>
-                  <span className="text-xs text-gray-500 ml-auto px-1.5 py-0.5 bg-gray-800 rounded-md">{ci.class}</span>
+                  <span className="text-xs text-gray-500 ml-auto px-1.5 py-0.5 bg-gray-800 rounded-md">{classDisplayNames[ci.class] || ci.class}</span>
                 </button>
               ))}
             </div>
@@ -1053,7 +1065,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
                         <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                     </div>
-                    {cls}
+                    {classDisplayNames[cls] || cls}
                   </label>
                 ))}
               </div>
@@ -1209,7 +1221,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm hover:bg-gray-800 transition-colors"
                   >
                     <span className="text-gray-200">{ci.name}</span>
-                    <span className="text-xs text-gray-500 ml-auto px-1.5 py-0.5 bg-gray-800 rounded-md">{ci.class}</span>
+                    <span className="text-xs text-gray-500 ml-auto px-1.5 py-0.5 bg-gray-800 rounded-md">{classDisplayNames[ci.class] || ci.class}</span>
                   </button>
                 ))
               )}
@@ -1239,15 +1251,52 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
                 <label className="block text-sm text-gray-400 mb-1">Class</label>
                 <select
                   value={newCiClass}
-                  onChange={(e) => setNewCiClass(e.target.value)}
+                  onChange={async (e) => {
+                    const cls = e.target.value;
+                    setNewCiClass(cls);
+                    setNewCiMandatoryAttrs({});
+                    if (cls) {
+                      try {
+                        const data = await graphqlClient.request(
+                          `query($name: String!) { ciClass(name: $name) { attributes { name displayName attrType isMandatory defaultValue } } }`,
+                          { name: cls }
+                        );
+                        const attrs = ((data as any).ciClass?.attributes || []).filter((a: any) => a.isMandatory);
+                        setNewCiClassDef(attrs);
+                        const defaults: Record<string, string> = {};
+                        for (const a of attrs) {
+                          if (a.defaultValue != null) defaults[a.name] = String(a.defaultValue);
+                        }
+                        setNewCiMandatoryAttrs(defaults);
+                      } catch {
+                        setNewCiClassDef([]);
+                      }
+                    } else {
+                      setNewCiClassDef([]);
+                    }
+                  }}
                   className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-indigo-500"
                 >
                   <option value="">Select a class...</option>
                   {availableClasses.map((cls) => (
-                    <option key={cls} value={cls}>{cls}</option>
+                    <option key={cls} value={cls}>{classDisplayNames[cls] || cls}</option>
                   ))}
                 </select>
               </div>
+              {newCiClassDef.map((attr) => (
+                <div key={attr.name}>
+                  <label className="block text-sm text-gray-400 mb-1">
+                    {attr.displayName || attr.name} <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    type={attr.attrType === "number" ? "number" : "text"}
+                    value={newCiMandatoryAttrs[attr.name] || ""}
+                    onChange={(e) => setNewCiMandatoryAttrs((prev) => ({ ...prev, [attr.name]: e.target.value }))}
+                    placeholder={`Enter ${attr.displayName || attr.name}...`}
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              ))}
               <div>
                 <label className="block text-sm text-gray-400 mb-1">Environment</label>
                 <select
@@ -1271,11 +1320,20 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
               <button
                 onClick={() => {
                   if (newCiName.trim() && newCiClass) {
-                    createCI({ name: newCiName.trim(), class: newCiClass, environment: newCiEnvironment });
+                    const attrs: Record<string, any> = {};
+                    for (const [k, v] of Object.entries(newCiMandatoryAttrs)) {
+                      const def = newCiClassDef.find((a) => a.name === k);
+                      attrs[k] = def?.attrType === "number" ? Number(v) : v;
+                    }
+                    createCI({ name: newCiName.trim(), class: newCiClass, environment: newCiEnvironment, attributes: attrs });
                     setNewCiModalOpen(false);
+                    setNewCiName("");
+                    setNewCiClass("");
+                    setNewCiMandatoryAttrs({});
+                    setNewCiClassDef([]);
                   }
                 }}
-                disabled={!newCiName.trim() || !newCiClass}
+                disabled={!newCiName.trim() || !newCiClass || newCiClassDef.some((a) => !newCiMandatoryAttrs[a.name])}
                 className="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 text-sm text-white transition-colors"
               >
                 Create CI

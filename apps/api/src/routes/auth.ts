@@ -75,7 +75,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     return { token, user: { id, name: body.name, email: body.email, role: "operator" } };
   });
 
-  fastify.post("/api/auth/refresh", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/api/auth/refresh", { onRequest: [fastify.authenticate] }, async (request, _reply) => {
     const user = request.user as { id: string; email: string; role: string };
     const fresh = await fastify.jwt.sign(buildTokenPayload(user), { expiresIn: JWT_EXPIRES_IN });
     return { token: fresh };

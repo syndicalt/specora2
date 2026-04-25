@@ -7,6 +7,7 @@ export interface NodeData {
   id: string;
   name: string;
   class: string;
+  classDisplayName?: string;
   environment?: string;
   attributes?: Record<string, any>;
   health?: {
@@ -207,7 +208,7 @@ export function ServiceMapNode({ data }: { data: NodeData }) {
               {data.name}
             </div>
             <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">
-              {data.class}
+              {data.classDisplayName || data.class}
             </div>
           </div>
           {env && (

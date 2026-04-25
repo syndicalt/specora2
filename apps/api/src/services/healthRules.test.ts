@@ -18,6 +18,10 @@ function mockFastify(recordSets: any[][] = [[]]) {
   } as any;
 }
 
+function record(values: Record<string, string>) {
+  return { get: (key: string) => values[key] };
+}
+
 describe("healthRules", () => {
   it("returns all rule definitions", () => {
     expect(HARDCODED_RULES.length).toBe(8);
@@ -81,5 +85,42 @@ describe("healthRules", () => {
     const violations = await runHardcodedRules(fastify);
     expect(violations).toEqual([]);
     expect(fastify.log.warn).toHaveBeenCalled();
+  });
+
+  it("suggests fixes for every fixable hardcoded rule", async () => {
+    const records = [
+      [record({ ciId: "bs-1", ciName: "Portal", ciClass: "BusinessService" })],
+      [record({ id: "app-1", name: "Portal API" })],
+      [record({ ciId: "app-1", ciName: "Portal API", ciClass: "ApplicationService" })],
+      [record({ id: "ts-1", name: "Cache" })],
+      [record({ ciId: "db-1", ciName: "DB", ciClass: "Database" })],
+      [record({ id: "srv-1", name: "Server" })],
+      [record({ ciId: "app-2", ciName: "Web", ciClass: "Application" })],
+      [record({ id: "srv-1", name: "Server" })],
+      [record({ ciId: "srv-1", ciName: "Server", ciClass: "Server" })],
+      [record({ id: "usr-1", name: "Alice" })],
+      [record({ ciId: "bs-2", ciName: "Billing", ciClass: "BusinessService" })],
+      [record({ id: "usr-1", name: "Alice" })],
+      [record({ ciId: "orphan-1", ciName: "Orphan", ciClass: "Server" })],
+      [record({ ciId: "net-1", ciName: "Switch", ciClass: "NetworkGear" })],
+      [record({ id: "loc-1", name: "DC1" })],
+    ];
+    const fastify = mockFastify(records);
+
+    const violations = await runHardcodedRules(fastify);
+
+    expect(violations).toHaveLength(8);
+    expect(violations.filter((v) => v.suggestedFix)).toHaveLength(7);
+    expect(violations.find((v) => v.ruleId === "bs-missing-app")?.suggestedFix).toMatchObject({
+      sourceId: "app-1",
+      targetId: "bs-1",
+      relType: "PART_OF",
+    });
+    expect(violations.find((v) => v.ruleId === "network-gear-no-location")?.suggestedFix).toMatchObject({
+      sourceId: "net-1",
+      targetId: "loc-1",
+      relType: "LOCATED_AT",
+    });
+    expect(violations.find((v) => v.ruleId === "orphaned-cis")?.suggestedFix).toBeUndefined();
   });
 });

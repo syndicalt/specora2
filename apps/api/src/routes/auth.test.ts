@@ -27,7 +27,9 @@ async function buildApp(pg?: any, neo4jSession?: any) {
   app.decorate("jwt", {
     sign: vi.fn().mockReturnValue("mock-token"),
   });
-  app.decorate("authenticate", vi.fn());
+  app.decorate("authenticate", vi.fn(async (request: any) => {
+    request.user = { id: "user-1", email: "alice@specora.dev", role: "operator" };
+  }));
   await app.register(authRoutes);
   return app;
 }
@@ -135,5 +137,41 @@ describe("POST /api/register", () => {
     });
 
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("POST /api/auth/refresh", () => {
+  it("returns a fresh token for the authenticated user", async () => {
+    const app = await buildApp();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/refresh",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ token: "mock-token" });
+    expect((app as any).jwt.sign).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "user-1", email: "alice@specora.dev", role: "operator", jti: expect.any(String) }),
+      { expiresIn: "24h" }
+    );
+  });
+});
+
+describe("POST /api/ws-ticket", () => {
+  it("returns a short-lived websocket ticket", async () => {
+    const app = await buildApp();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/ws-ticket",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ticket: "mock-token" });
+    expect((app as any).jwt.sign).toHaveBeenCalledWith(
+      { id: "user-1", type: "ws-ticket" },
+      { expiresIn: "60s" }
+    );
   });
 });

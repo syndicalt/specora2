@@ -1,60 +1,79 @@
 # AGENTS.md
 
-## Project Overview
-Specora is an open-source, AI-native ITSM platform. This document provides context for AI coding agents working on the codebase.
+This is the primary context file for AI coding agents working in Specora.
+
+## Product Summary
+
+Specora is an open-source, AI-native ITSM platform. It combines a graph-native CSDMv5 CMDB, a conversational workspace, and an app ecosystem called Specora Arc.
 
 ## Architecture
+
 - **Monorepo**: pnpm workspaces + Turborepo.
-- **API**: TypeScript/Fastify/GraphQL Yoga. Runs on Node 20.
-- **Web**: Next.js 14 App Router. Conversational-first UI with React Flow graph visualization.
-- **Worker**: Python 3.12 asyncio gRPC server. Handles ingestion and background jobs.
-- **Database**: Neo4j CE (graph) + PostgreSQL 16 (queue/ops).
-- **Protocol**: gRPC + Protobuf for API-to-Worker communication.
+- **API**: Node 20, TypeScript, Fastify, GraphQL Yoga, Neo4j driver, gRPC client.
+- **Web**: Next.js 14 App Router, React, React Flow, TanStack Query, Tailwind CSS.
+- **Worker**: Python 3.12 asyncio gRPC server for ingestion and background jobs.
+- **Databases**: Neo4j CE for CMDB graph data; PostgreSQL 16 for queues, saved views, marketplace, audit/event data, and operational records.
+- **Protocol**: gRPC + Protobuf for API-to-worker communication.
+- **Auth**: Stateless JWT. GraphQL and app tool operations require `Authorization: Bearer <token>`.
+- **AI routing**: Provara is the primary LLM router and supports tool calls. Direct OpenAI is a fallback path.
 
 ## Key Conventions
-- **TypeScript**: Strict mode enabled. Prefer `type` over `interface` for data shapes.
-- **GraphQL**: All CRUD for CSDMv5 entities goes through the Yoga server at `/graphql`.
-- **Neo4j**: Cypher queries should use parameterized queries. Never interpolate user input.
-- **Python**: Use `async`/`await` for IO-bound operations. Format with black (recommended).
-- **Styling**: Tailwind CSS. Dark-first UI (`bg-gray-950`, `text-gray-100`).
-- **Auth**: Stateless JWT. The `Authorization: Bearer <token>` header is required for GraphQL operations.
+
+- **TypeScript**: Strict mode. Prefer `type` over `interface` for data shapes.
+- **GraphQL**: CSDMv5 CRUD goes through GraphQL Yoga at `/graphql`.
+- **Neo4j**: Use parameterized Cypher. Never interpolate user input. Relationship types are validated against an allowlist.
+- **ConfigurationItem attributes**: Stored as JSON strings in Neo4j because Neo4j properties cannot contain arbitrary nested maps. Always parse via the local `parseNode()` pattern.
+- **Python**: Use `async`/`await` for IO-bound work. Format with black.
+- **Styling**: Tailwind CSS. The UI is dark-first, commonly using `bg-gray-950` and `text-gray-100`.
+- **Frontend UX**: Conversational-first. `Ctrl+K` / `Cmd+K` opens the launcher/assistant entry point; `Ctrl+/` toggles the right-side chat panel.
+- **Secrets**: Do not commit `.env` files.
 
 ## Environment Variables
-| Variable | Used By | Description |
-|----------|---------|-------------|
+
+| Variable | Used by | Description |
+| --- | --- | --- |
 | `NEO4J_URI` | API, Worker | Neo4j Bolt URI |
 | `NEO4J_USER` | API, Worker | Neo4j username |
 | `NEO4J_PASSWORD` | API, Worker | Neo4j password |
-| `DATABASE_URL` | Worker | PostgreSQL connection string |
-| `JWT_SECRET` | API | Signing secret for JWT |
-| `WORKER_GRPC_HOST` | API | gRPC target (e.g., `worker:50051`) |
-| `GRPC_PORT` | Worker | Port for gRPC server |
+| `DATABASE_URL` | API, Worker | PostgreSQL connection string |
+| `JWT_SECRET` | API | JWT signing secret |
+| `WORKER_GRPC_HOST` | API | Worker gRPC target, for example `worker:50051` |
+| `GRPC_PORT` | Worker | Worker gRPC server port |
 | `NEXT_PUBLIC_API_URL` | Web | GraphQL endpoint URL |
-| `OPENAI_API_KEY` | API | OpenAI API key for chat (fallback if Provara not set) |
-| `PROVARA_URL` | API | Provara API endpoint for model routing |
+| `PROVARA_URL` | API | Provara API endpoint for LLM routing |
 | `PROVARA_API_KEY` | API | Provara API key |
-| `PROVARA_TENANT_ID` | API | Provara tenant ID for multi-tenant mode (optional) |
-| `PATHLIGHT_URL` | Worker | Pathlight trace collector URL (optional) |
-| `REDIS_URL` | API | Redis connection string for multi-instance pub/sub (default: `redis://localhost:6379`) |
-| `UPLOAD_DIR` | API | Local directory for uploaded discovery files (default: `./uploads`) |
+| `PROVARA_TENANT_ID` | API | Optional Provara tenant ID |
+| `OPENAI_API_KEY` | API | Direct OpenAI fallback for chat |
+| `PATHLIGHT_URL` | Worker | Optional Pathlight trace collector URL |
+| `REDIS_URL` | API | Redis connection string for multi-instance pub/sub, default `redis://localhost:6379` |
+| `UPLOAD_DIR` | API | Local discovery upload directory, default `./uploads` |
 
 ## Common Commands
-- `pnpm install` — Install all dependencies.
-- `pnpm dev` — Start all apps in development mode.
-- `pnpm --filter @specora/db seed` — Seed Neo4j with CSDMv5 schema and sample data.
-- `pnpm proto:generate` — Regenerate gRPC stubs from `.proto` files.
+
+- `pnpm install` — Install dependencies.
 - `docker-compose up -d neo4j postgres` — Start local infrastructure.
+- `pnpm --filter @specora/db seed` — Seed Neo4j with CSDMv5 schema and sample data.
+- `pnpm dev` — Start all apps in development mode.
+- `pnpm proto:generate` — Regenerate gRPC stubs from `.proto` files.
 
-## App Ecosystem (Specora Arc)
-- Built-in apps live in `apps/web/src/apps/<id>/` and are registered in `BUILT_IN_COMPONENTS` (`AppContainers.tsx`) and `seedBuiltInApps` (`sdk/index.ts`).
-- External apps are loaded dynamically via ESM `import(/* webpackIgnore: true */ url)` with an iframe sandbox fallback on failure.
-- The `ShellAPI` passed to every app is permission-filtered based on the app's declared `permissions` array.
-- The marketplace backend uses the `marketplace_apps` PostgreSQL table (migrations `006`/`007`).
-- Admin users can approve/reject submitted apps via the "Review" tab in the Arc app.
+Known dev-server caveat: if the web dev server crashes under `turbo run dev`, start Next directly with `node ./node_modules/next/dist/bin/next dev` from the web app context.
 
-## Important Notes
-- The UI is conversational-first. **Ctrl+K** opens the chat overlay from anywhere.
-- Relationship types in Neo4j are validated against an allowlist in the API resolver.
-- Attributes on ConfigurationItems are stored as JSON strings in Neo4j due to property map limitations; always parse with `parseNode()`.
-- The worker uses dynamic gRPC stubs generated from `packages/protobuf/itops.proto`.
-- Do not commit `.env` files.
+## Specora Arc App Ecosystem
+
+- Built-in apps live in `apps/web/src/apps/<id>/`.
+- Built-in app registration is handled through the app container registry and SDK seeding paths.
+- External apps load dynamically through ESM `import(/* webpackIgnore: true */ url)`.
+- If dynamic import fails, the shell falls back to an iframe sandbox.
+- `ShellAPI` is permission-filtered from the app manifest `permissions` array.
+- Marketplace data uses the `marketplace_apps` PostgreSQL table.
+- Admin users approve or reject submitted apps in the Arc app review flow.
+- App manifests can declare `chatTools` and `events`; chat routes tool calls through the unified tool registry.
+
+## Documentation Map
+
+- `README.md` — Human-facing product overview and setup.
+- `AGENTS.md` — This file; compact implementation context for agents.
+- `ROADMAP.md` — Released work, next work, technical debt, and decisions.
+- `CHANGELOG.md` — Release-level change history.
+- `docs/llm-routing.md` — Current LLM routing, Provara behavior, and OpenAI fallback.
+- `CLAUDE.md`, `CURSOR.md`, `README-KARPATHY.md`, `README.zh.md`, `EXAMPLES.md`, `skills/karpathy-guidelines/SKILL.md` — Imported coding-agent behavior guidance, not product architecture.

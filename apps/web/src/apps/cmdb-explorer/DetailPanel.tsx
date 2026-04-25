@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { graphqlClient } from "@/lib/api";
 import { X, Network } from "lucide-react";
+import { useClassDisplayNames } from "@/hooks/useClassDisplayNames";
 
 interface CI {
   id: string;
@@ -32,6 +33,7 @@ export function DetailPanel({
 }) {
   const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [loading, setLoading] = useState(true);
+  const { attributeNames: displayNames, classDisplayName } = useClassDisplayNames(ci.class);
 
   useEffect(() => {
     async function load() {
@@ -74,7 +76,7 @@ export function DetailPanel({
           </div>
           <div className="flex items-center justify-between text-sm">
             <span className="text-gray-500">Class</span>
-            <span className="text-gray-300">{ci.class}</span>
+            <span className="text-gray-300">{classDisplayName || ci.class}</span>
           </div>
           {ci.environment && (
             <div className="flex items-center justify-between text-sm">
@@ -99,7 +101,7 @@ export function DetailPanel({
             <div className="space-y-1.5">
               {Object.entries(ci.attributes).map(([key, value]) => (
                 <div key={key} className="flex items-center justify-between text-sm">
-                  <span className="text-gray-500 capitalize">{key}</span>
+                  <span className="text-gray-500">{displayNames[key] || key}</span>
                   <span className="text-gray-300 truncate max-w-[120px]">
                     {typeof value === "object" ? JSON.stringify(value) : String(value)}
                   </span>

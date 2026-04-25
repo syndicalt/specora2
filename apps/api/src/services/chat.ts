@@ -10,7 +10,7 @@ function getOpenAI(): OpenAI | null {
   return new OpenAI({ apiKey: key });
 }
 
-function getProvaraConfig(): { url: string; key: string; tenantId: string | null } | null {
+export function getProvaraConfig(): { url: string; key: string; tenantId: string | null } | null {
   const url = process.env.PROVARA_URL;
   const key = process.env.PROVARA_API_KEY;
   if (!url || !key) return null;
@@ -39,6 +39,7 @@ async function callProvara(
       tools,
       tool_choice: "auto",
       temperature: 0.3,
+      requires_structured_output: true,
     }),
   });
   if (!response.ok) {
@@ -722,11 +723,27 @@ async function callLlm(
   round?: number,
   includeTools = true
 ): Promise<OpenAI.Chat.ChatCompletion> {
+  const tools = includeTools ? getAllTools() : [];
+  const model = usedProvara ? "provara-router" : "gpt-4o-mini";
+  const provider = usedProvara ? "provara" : "openai";
+  const toolChoice = (includeTools && round === 0) ? "required" : (tools.length > 0 ? "auto" : undefined);
+
   const span = trace?.span(`llm.chat${round !== undefined ? `.r${round}` : ""}`, "llm", {
-    input: { messageCount: messages.length },
+    model,
+    provider,
+    input: {
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content?.slice?.(0, 2000) ?? m.content,
+        ...(m.tool_calls ? { tool_calls: m.tool_calls.map((t: any) => ({ id: t.id, name: t.function?.name })) } : {}),
+        ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+      })),
+      temperature: 0.3,
+      toolChoice,
+      toolCount: tools.length,
+    },
   });
   try {
-    const tools = includeTools ? getAllTools() : [];
     let completion: OpenAI.Chat.ChatCompletion;
     if (usedProvara) {
       _fastify.log.info("[LLM] Routing through Provara");
@@ -738,11 +755,9 @@ async function callLlm(
       ]);
     } else {
       _fastify.log.info("[LLM] Routing through OpenAI directly");
-      // Force tool usage on the first round to prevent the model from hallucinating
-      const toolChoice = (includeTools && round === 0) ? "required" : (tools.length > 0 ? "auto" : undefined);
       completion = await Promise.race([
         openai!.chat.completions.create({
-          model: "gpt-4o-mini",
+          model,
           messages,
           ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
           temperature: 0.3,
@@ -752,7 +767,17 @@ async function callLlm(
         ),
       ]);
     }
-    await span?.end({ status: "completed", output: { toolCalls: completion.choices[0].message.tool_calls?.length ?? 0 } });
+    const msg = completion.choices[0].message;
+    await span?.end({
+      status: "completed",
+      output: {
+        role: msg.role,
+        content: msg.content?.slice?.(0, 2000) ?? msg.content,
+        toolCalls: msg.tool_calls?.map((t: any) => ({ id: t.id, name: t.function?.name })) ?? [],
+      },
+      inputTokens: completion.usage?.prompt_tokens,
+      outputTokens: completion.usage?.completion_tokens,
+    });
     return completion;
   } catch (err: any) {
     await span?.end({ status: "failed", error: err.message });
@@ -779,12 +804,26 @@ async function callLlmStream(
   trace?: Trace | SessionTrace,
   includeTools = true
 ): Promise<{ content: string; toolCalls?: any[] }> {
+  const tools = includeTools ? getAllTools() : [];
+  const model = usedProvara ? "provara-router" : "gpt-4o-mini";
+  const provider = usedProvara ? "provara" : "openai";
+
   const span = trace?.span("llm.chat.stream", "llm", {
-    input: { messageCount: messages.length },
+    model,
+    provider,
+    input: {
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content?.slice?.(0, 2000) ?? m.content,
+        ...(m.tool_calls ? { tool_calls: m.tool_calls.map((t: any) => ({ id: t.id, name: t.function?.name })) } : {}),
+        ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+      })),
+      temperature: 0.3,
+      toolCount: tools.length,
+    },
   });
 
   try {
-    const tools = includeTools ? getAllTools() : [];
     let accumulatedContent = "";
     let toolCalls: any[] | undefined;
 
@@ -816,6 +855,7 @@ async function callLlmStream(
           tools: tools.length > 0 ? tools : undefined,
           tool_choice: tools.length > 0 ? "auto" : undefined,
           temperature: 0.3,
+          requires_structured_output: true,
           stream: true,
         }),
       });
@@ -923,7 +963,13 @@ async function callLlmStream(
       }
     }
 
-    await span?.end({ status: "completed", output: { contentLength: accumulatedContent.length, toolCalls: toolCalls?.length ?? 0 } });
+    await span?.end({
+      status: "completed",
+      output: {
+        content: accumulatedContent.slice(0, 2000),
+        toolCalls: toolCalls?.map((t: any) => ({ id: t.id, name: t.function?.name })) ?? [],
+      },
+    });
     return { content: accumulatedContent, toolCalls };
   } catch (err: any) {
     await span?.end({ status: "failed", error: err.message });

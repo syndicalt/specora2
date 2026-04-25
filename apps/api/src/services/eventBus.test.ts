@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import Fastify from "fastify";
-import { eventBusRoutes } from "./eventBus";
+import { emit, eventBusRoutes, safeStringify, subscribe, initializeEventBus } from "./eventBus";
+import { broadcast } from "./websocket";
 
 vi.mock("./websocket", () => ({
   broadcast: vi.fn(),
@@ -70,5 +71,29 @@ describe("eventBus routes", () => {
     const body = JSON.parse(res.payload);
     expect(Array.isArray(body)).toBe(true);
     expect(body[0].type).toBe("test.event");
+  });
+
+  it("dispatches local subscribers and websocket broadcasts", async () => {
+    const handler = vi.fn();
+    const unsubscribe = subscribe("local.event", handler);
+
+    emit("local.event", { value: 1 });
+    unsubscribe();
+    emit("local.event", { value: 2 });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith({ value: 1 });
+    expect(broadcast).toHaveBeenCalledWith("local.event", { value: 1 });
+  });
+
+  it("safeStringify handles circular payloads", () => {
+    const payload: any = { name: "root" };
+    payload.self = payload;
+
+    expect(safeStringify(payload)).toContain("[Circular]");
+  });
+
+  it("initializeEventBus exits when Redis subscriber is unavailable", () => {
+    expect(() => initializeEventBus()).not.toThrow();
   });
 });

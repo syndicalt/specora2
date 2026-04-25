@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { X, GripHorizontal } from "lucide-react";
 import { REL_COLORS } from "./index";
+import { useClassDisplayNames } from "@/hooks/useClassDisplayNames";
 
 interface SidebarPanelProps {
   ci: {
@@ -53,6 +54,7 @@ export function SidebarPanel({ ci, onClose }: SidebarPanelProps) {
 
   const attrs = ci.attributes || {};
   const hasAttrs = Object.keys(attrs).length > 0;
+  const { attributeNames: displayNames, classDisplayName } = useClassDisplayNames(ci.class);
 
   return (
     <div
@@ -80,7 +82,7 @@ export function SidebarPanel({ ci, onClose }: SidebarPanelProps) {
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-gray-500">Class</span>
-            <span className="text-gray-300">{ci.class}</span>
+            <span className="text-gray-300">{classDisplayName || ci.class}</span>
           </div>
           {ci.environment && (
             <div className="flex justify-between text-sm">
@@ -98,7 +100,7 @@ export function SidebarPanel({ ci, onClose }: SidebarPanelProps) {
               <div className="space-y-1">
                 {Object.entries(attrs).map(([key, value]) => (
                   <div key={key} className="flex justify-between text-sm">
-                    <span className="text-gray-500">{key}</span>
+                    <span className="text-gray-500">{displayNames[key] || key}</span>
                     <span className="text-gray-300 text-xs">{String(value)}</span>
                   </div>
                 ))}

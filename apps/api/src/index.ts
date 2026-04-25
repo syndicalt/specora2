@@ -22,8 +22,7 @@ import { initializeAuditLog } from "./services/auditLog";
 import { websocketRoutes } from "./services/websocket";
 import { initializeEventBus } from "./services/eventBus";
 import { seedCIClasses } from "./services/ciClassSeed";
-// Explicit app tool registration (side-effect import — must run before chatRoutes)
-import "./services/appTools";
+import { registerAllAppTools } from "./services/appTools";
 
 const fastify = Fastify({ logger: { transport: { target: "pino-pretty" } } });
 
@@ -68,6 +67,9 @@ async function main() {
 
   // Initialize Redis-backed event bus for multi-instance scale
   initializeEventBus();
+
+  // Explicit app tool registration (must happen before chatRoutes)
+  registerAllAppTools();
 
   await fastify.register(chatRoutes);
   await fastify.register(authRoutes);
