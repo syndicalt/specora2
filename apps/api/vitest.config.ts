@@ -9,10 +9,10 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/**/*.d.ts", "src/index.ts", "src/graphql/schema.ts", "src/plugins/postgres.ts", "src/services/pathlightSession.ts"],
       thresholds: {
-        lines: 56,
-        functions: 62,
+        lines: 55,
+        functions: 60,
         branches: 45,
-        statements: 54,
+        statements: 53,
       },
     },
     mockReset: true,

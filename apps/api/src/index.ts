@@ -20,6 +20,7 @@ import { jobQueueRoutes } from "./routes/jobQueue";
 import { adminRoutes } from "./routes/admin";
 import { initializeAuditLog } from "./services/auditLog";
 import { websocketRoutes } from "./services/websocket";
+import { initializeEventBus } from "./services/eventBus";
 // Explicit app tool registration (side-effect import — must run before chatRoutes)
 import "./services/appTools";
 
@@ -59,6 +60,10 @@ async function main() {
 
   await fastify.register(require("@fastify/websocket"));
   await fastify.register(websocketRoutes);
+
+  // Initialize Redis-backed event bus for multi-instance scale
+  initializeEventBus();
+
   await fastify.register(chatRoutes);
   await fastify.register(authRoutes);
   await fastify.register(discoveryRoutes);

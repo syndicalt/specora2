@@ -6,6 +6,12 @@ vi.mock("./websocket", () => ({
   broadcast: vi.fn(),
 }));
 
+vi.mock("./redis", () => ({
+  getRedis: vi.fn(() => null),
+  getRedisSubscriber: vi.fn(() => null),
+  isRedisAvailable: vi.fn(() => false),
+}));
+
 describe("eventBus routes", () => {
   async function buildApp() {
     const events: any[] = [];

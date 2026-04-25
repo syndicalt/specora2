@@ -35,6 +35,7 @@ Specora is an open-source, AI-native ITSM platform. This document provides conte
 | `PROVARA_API_KEY` | API | Provara API key |
 | `PROVARA_TENANT_ID` | API | Provara tenant ID for multi-tenant mode (optional) |
 | `PATHLIGHT_URL` | Worker | Pathlight trace collector URL (optional) |
+| `REDIS_URL` | API | Redis connection string for multi-instance pub/sub (default: `redis://localhost:6379`) |
 | `UPLOAD_DIR` | API | Local directory for uploaded discovery files (default: `./uploads`) |
 
 ## Common Commands

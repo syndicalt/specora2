@@ -1,11 +1,15 @@
 import { FastifyInstance } from "fastify";
 import { broadcast } from "./websocket";
+import { getRedis, getRedisSubscriber, isRedisAvailable } from "./redis";
 
 export type EventPayload = Record<string, unknown>;
 
 export type EventHandler = (payload: EventPayload) => void | Promise<void>;
 
 const subscriptions = new Map<string, Set<EventHandler>>();
+const REDIS_CHANNEL = "specora:events";
+
+let redisSubscribed = false;
 
 function safeStringify(obj: unknown): string {
   const seen = new WeakSet();
@@ -18,8 +22,42 @@ function safeStringify(obj: unknown): string {
   });
 }
 
+/** Initialize Redis subscriber for cross-instance event broadcast */
+export function initializeEventBus() {
+  if (redisSubscribed) return;
+  const subscriber = getRedisSubscriber();
+  if (!subscriber) return;
+
+  subscriber.subscribe(REDIS_CHANNEL, (err) => {
+    if (err) {
+      console.warn("Failed to subscribe to Redis event channel:", err.message);
+    }
+  });
+
+  subscriber.on("message", (_channel, message) => {
+    try {
+      const { type, payload } = JSON.parse(message);
+      // Dispatch to local in-memory subscribers
+      const handlers = subscriptions.get(type);
+      if (handlers) {
+        for (const handler of handlers) {
+          Promise.resolve(handler(payload)).catch((err) => {
+            console.error(`Event handler for ${type} failed:`, err);
+          });
+        }
+      }
+      // Broadcast to local WebSocket clients
+      broadcast(type, payload);
+    } catch {
+      // ignore malformed messages
+    }
+  });
+
+  redisSubscribed = true;
+}
+
 export function emit(type: string, payload: EventPayload) {
-  // In-memory dispatch for immediate subscribers
+  // In-memory dispatch for immediate local subscribers
   const handlers = subscriptions.get(type);
   if (handlers) {
     for (const handler of handlers) {
@@ -29,8 +67,16 @@ export function emit(type: string, payload: EventPayload) {
     }
   }
 
-  // Broadcast to WebSocket subscribers
+  // Broadcast to local WebSocket subscribers
   broadcast(type, payload);
+
+  // Publish to Redis for cross-instance delivery
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    redis.publish(REDIS_CHANNEL, safeStringify({ type, payload })).catch(() => {
+      // ignore publish errors
+    });
+  }
 }
 
 export { safeStringify };
@@ -58,7 +104,7 @@ export async function eventBusRoutes(fastify: FastifyInstance) {
       [type, JSON.stringify(payload || {})]
     );
 
-    // In-memory dispatch
+    // In-memory + Redis dispatch
     emit(type, payload || {});
 
     return { success: true };

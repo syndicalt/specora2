@@ -1,3 +1,5 @@
+import { getRedis, isRedisAvailable } from "./redis";
+
 interface PermissionCheck {
   role: string;
   resource: string;
@@ -5,9 +7,10 @@ interface PermissionCheck {
 }
 
 const MAX_CACHE_SIZE = 1000;
+const CACHE_TTL_SECONDS = 30;
 const permissionCache = new Map<string, boolean>();
 
-function setCache(key: string, value: boolean): void {
+function localSetCache(key: string, value: boolean): void {
   if (permissionCache.size >= MAX_CACHE_SIZE && !permissionCache.has(key)) {
     const firstKey = permissionCache.keys().next().value;
     if (firstKey !== undefined) {
@@ -17,8 +20,43 @@ function setCache(key: string, value: boolean): void {
   permissionCache.set(key, value);
 }
 
+async function redisSetCache(key: string, value: boolean): Promise<void> {
+  const redis = getRedis();
+  if (!redis || !isRedisAvailable()) return;
+  try {
+    await redis.setex(`specora:perm:${key}`, CACHE_TTL_SECONDS, value ? "1" : "0");
+  } catch {
+    // fallback to local cache on Redis error
+  }
+}
+
+async function redisGetCache(key: string): Promise<boolean | null> {
+  const redis = getRedis();
+  if (!redis || !isRedisAvailable()) return null;
+  try {
+    const value = await redis.get(`specora:perm:${key}`);
+    if (value === "1") return true;
+    if (value === "0") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function setCache(key: string, value: boolean): void {
+  localSetCache(key, value);
+  // Fire-and-forget Redis cache update
+  redisSetCache(key, value).catch(() => {});
+}
+
 export function clearPermissionCache(): void {
   permissionCache.clear();
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    // Best-effort: clear matching keys. In production with many keys,
+    // use a Redis Lua script or SCAN + DEL.
+    redis.del("specora:perm:*").catch(() => {});
+  }
 }
 
 interface PgClient {
@@ -30,8 +68,17 @@ export async function hasPermission(
   { role, resource, action }: PermissionCheck
 ): Promise<boolean> {
   const key = `${role}:${resource}:${action}`;
+
+  // Check local cache first (fastest)
   if (permissionCache.has(key)) {
     return permissionCache.get(key)!;
+  }
+
+  // Check Redis cache second (cross-instance)
+  const redisValue = await redisGetCache(key);
+  if (redisValue !== null) {
+    localSetCache(key, redisValue); // warm local cache
+    return redisValue;
   }
 
   // security_admin = universal access (highest privilege)
