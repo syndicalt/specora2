@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.6.0] — Intelligence
+
+### Added
+
+#### Impact Analysis — Blast Radius Scoring
+- **Deterministic risk scoring engine** (`impactScoring.ts`) — computes a 0-100 risk score for every RFC based on CMDB topology.
+  - Base criticality from primary CI class + environment multiplier
+  - Weighted contribution per affected CI (class × env × decay × direction)
+  - Downstream CIs score 1.5×, upstream 0.8×
+  - Health penalty: up to +20 for unhealthy CIs
+  - Conflict penalty: up to +15 for overlapping RFCs
+- **Auto-computed on RFC creation** — `create_rfc` triggers async scoring, stores `risk_score`, `blast_radius`, `priority` in Postgres.
+- **Recalculated on edit** — `edit_rfc` with changed affected CIs recomputes the score.
+- **Per-CI impact metadata** — `distance`, `direction`, `contribution` stored in `change_request_cis`.
+
+#### What If Preview Mode
+- **`preview_impact` chat tool** — preview the risk score for a proposed change WITHOUT creating an RFC.
+- Perfect for planning: "What if I include the cache cluster?"
+
+#### Dependency-Aware Conflict Detection
+- Enhanced `check_change_conflicts`:
+  - **Direct conflicts** — other RFCs affecting the same CI (existing behavior)
+  - **Dependency conflicts** — RFCs on different CIs within 3 hops in the Neo4j graph
+- Returns separate counts: `directConflicts` and `dependencyConflicts`.
+
+#### Critical Path Highlighting
+- **`find_critical_path` chat tool** — traces the highest-weight path from primary CI to a downstream BusinessService.
+- Returns every node in the path + total weight. Frontend can highlight "the one thing that breaks everything."
+
+#### Risk Score History
+- Migration 023: `change_request_risk_history` table with indexes.
+- Every computed score stored with timestamp and actor.
+- **`get_rfc_risk_history` chat tool** — returns history + trend delta.
+
+#### Frontend Impact Analysis UI
+- **Risk Summary card** on RFC detail view — score badge, blast radius, affected count, downstream count.
+- **Priority badges** (critical/high/medium/low) on RFC list cards.
+- **Affected CIs list** shows hop distance and direction.
+
+### Changed
+- `get_rfc_details` now returns `riskScore`, `blastRadius`, `priority`, and enhanced `affectedCis` with `distance`, `direction`, `contribution`.
+- `list_rfcs` includes `risk_score` and `priority`.
+- `grade_change_rfc` returns stored computed scores instead of raw count.
+
+---
+
 ## [0.3.0] — Graph Power
 
 ### Added
