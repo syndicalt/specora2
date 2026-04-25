@@ -8,6 +8,15 @@ export interface HealthRule {
   cypher: string;
 }
 
+export interface SuggestedFix {
+  type: "create_relationship";
+  description: string;
+  sourceId: string;
+  targetId?: string;
+  targetClass?: string;
+  relType: string;
+}
+
 export interface RuleViolation {
   ruleId: string;
   ruleName: string;
@@ -16,6 +25,7 @@ export interface RuleViolation {
   ciId: string;
   ciName: string;
   ciClass: string;
+  suggestedFix?: SuggestedFix;
 }
 
 export const HARDCODED_RULES: HealthRule[] = [
@@ -109,6 +119,127 @@ export const HARDCODED_RULES: HealthRule[] = [
   },
 ];
 
+async function findFixTarget(
+  session: any,
+  ruleId: string,
+  ciId: string,
+  _ciClass: string
+): Promise<SuggestedFix | undefined> {
+  try {
+    switch (ruleId) {
+      case "bs-missing-app": {
+        // Suggest finding an ApplicationService to link via PART_OF
+        const result = await session.run(
+          `MATCH (app:ApplicationService) RETURN app.id as id, app.name as name LIMIT 1`
+        );
+        if (result.records.length) {
+          return {
+            type: "create_relationship",
+            description: `Link BusinessService to ApplicationService "${result.records[0].get("name")}" via PART_OF`,
+            sourceId: result.records[0].get("id"),
+            targetId: ciId,
+            relType: "PART_OF",
+          };
+        }
+        break;
+      }
+      case "app-missing-tech": {
+        const result = await session.run(
+          `MATCH (ts:TechnicalService) RETURN ts.id as id, ts.name as name LIMIT 1`
+        );
+        if (result.records.length) {
+          return {
+            type: "create_relationship",
+            description: `Link ApplicationService to TechnicalService "${result.records[0].get("name")}" via DEPENDS_ON`,
+            sourceId: ciId,
+            targetId: result.records[0].get("id"),
+            relType: "DEPENDS_ON",
+          };
+        }
+        break;
+      }
+      case "db-not-hosted": {
+        const result = await session.run(
+          `MATCH (s:Server) RETURN s.id as id, s.name as name LIMIT 1`
+        );
+        if (result.records.length) {
+          return {
+            type: "create_relationship",
+            description: `Host Database on Server "${result.records[0].get("name")}" via HOSTED_ON`,
+            sourceId: ciId,
+            targetId: result.records[0].get("id"),
+            relType: "HOSTED_ON",
+          };
+        }
+        break;
+      }
+      case "app-not-hosted": {
+        const result = await session.run(
+          `MATCH (s:Server) RETURN s.id as id, s.name as name LIMIT 1`
+        );
+        if (result.records.length) {
+          return {
+            type: "create_relationship",
+            description: `Host Application on Server "${result.records[0].get("name")}" via HOSTED_ON`,
+            sourceId: ciId,
+            targetId: result.records[0].get("id"),
+            relType: "HOSTED_ON",
+          };
+        }
+        break;
+      }
+      case "server-unmanaged": {
+        const result = await session.run(
+          `MATCH (u:User) RETURN u.id as id, u.name as name LIMIT 1`
+        );
+        if (result.records.length) {
+          return {
+            type: "create_relationship",
+            description: `Assign User "${result.records[0].get("name")}" as manager via MANAGED_BY`,
+            sourceId: ciId,
+            targetId: result.records[0].get("id"),
+            relType: "MANAGED_BY",
+          };
+        }
+        break;
+      }
+      case "bs-no-owner": {
+        const result = await session.run(
+          `MATCH (u:User) RETURN u.id as id, u.name as name LIMIT 1`
+        );
+        if (result.records.length) {
+          return {
+            type: "create_relationship",
+            description: `Assign User "${result.records[0].get("name")}" as owner via OWNED_BY`,
+            sourceId: ciId,
+            targetId: result.records[0].get("id"),
+            relType: "OWNED_BY",
+          };
+        }
+        break;
+      }
+      case "network-gear-no-location": {
+        const result = await session.run(
+          `MATCH (loc:Location) RETURN loc.id as id, loc.name as name LIMIT 1`
+        );
+        if (result.records.length) {
+          return {
+            type: "create_relationship",
+            description: `Place NetworkGear at Location "${result.records[0].get("name")}" via LOCATED_AT`,
+            sourceId: ciId,
+            targetId: result.records[0].get("id"),
+            relType: "LOCATED_AT",
+          };
+        }
+        break;
+      }
+    }
+  } catch {
+    // Silently skip if fix lookup fails
+  }
+  return undefined;
+}
+
 export async function runHardcodedRules(fastify: FastifyInstance): Promise<RuleViolation[]> {
   const violations: RuleViolation[] = [];
   const session = fastify.neo4j.session();
@@ -118,14 +249,19 @@ export async function runHardcodedRules(fastify: FastifyInstance): Promise<RuleV
       try {
         const result = await session.run(rule.cypher);
         for (const record of result.records) {
+          const ciId = record.get("ciId");
+          const ciName = record.get("ciName");
+          const ciClass = record.get("ciClass");
+          const suggestedFix = await findFixTarget(session, rule.id, ciId, ciClass);
           violations.push({
             ruleId: rule.id,
             ruleName: rule.name,
             severity: rule.severity,
             message: rule.description,
-            ciId: record.get("ciId"),
-            ciName: record.get("ciName"),
-            ciClass: record.get("ciClass"),
+            ciId,
+            ciName,
+            ciClass,
+            suggestedFix,
           });
         }
       } catch (err: any) {

@@ -83,6 +83,9 @@ CRITICAL: Do NOT say "I will open it" or "The map is now open." The map only ope
 Available CI classes: BusinessService, ApplicationService, TechnicalService, Server, Database, Application, NetworkGear, User, Group, Location.
 Relationship types: PART_OF, DEPENDS_ON, HOSTED_ON, MANAGED_BY, OWNED_BY, LOCATED_AT.
 
+NATURAL LANGUAGE SEARCH:
+When the user asks a free-form question about the CMDB (e.g., "Which databases are not hosted on a server?" or "Show me all production CIs owned by Alice"), translate their question into a Cypher query and call the nl_search tool. The query MUST only use MATCH and RETURN — no CREATE, DELETE, SET, or MERGE.
+
 When a user wants to create or edit a change request, use a step-by-step conversational approach:
 1. Ask which CI they want to change, one question at a time.
 2. Use search_cis to help them find the right CI if they don't know the ID.
@@ -233,6 +236,23 @@ const CORE_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "nl_search",
+      description: "Execute a natural-language CMDB search by running a Cypher query. Only MATCH and RETURN are allowed — no mutations.",
+      parameters: {
+        type: "object",
+        properties: {
+          cypher: {
+            type: "string",
+            description: "A read-only Cypher query using MATCH and RETURN only. No CREATE, DELETE, SET, or MERGE allowed.",
+          },
+        },
+        required: ["cypher"],
       },
     },
   },
@@ -418,6 +438,39 @@ async function executeCoreTool(
           const props = r.get("n").properties;
           return { id: props.id, name: props.name, class: props.class, environment: props.environment };
         });
+      }
+      case "nl_search": {
+        const cypher = (args.cypher || "").trim();
+        // Safety guard: reject mutation keywords
+        const upper = cypher.toUpperCase();
+        const forbidden = ["CREATE", "DELETE", "SET", "MERGE", "DROP", "REMOVE", "CALL", "LOAD"];
+        if (forbidden.some((kw) => upper.includes(kw))) {
+          return { error: "Query contains forbidden keywords. Only MATCH and RETURN are allowed." };
+        }
+        // Additional guard: must start with MATCH
+        if (!/^\s*MATCH/i.test(cypher)) {
+          return { error: "Query must start with MATCH." };
+        }
+        try {
+          const result = await session.run(cypher);
+          const rows = result.records.map((record: any) => {
+            const obj: Record<string, any> = {};
+            for (const key of record.keys) {
+              const val = record.get(key);
+              if (val && typeof val === "object" && val.properties) {
+                obj[key] = val.properties;
+              } else if (Array.isArray(val)) {
+                obj[key] = val.map((v: any) => (v && v.properties ? v.properties : v));
+              } else {
+                obj[key] = val;
+              }
+            }
+            return obj;
+          });
+          return { rows: rows.slice(0, 50), count: rows.length };
+        } catch (err: any) {
+          return { error: `Cypher execution failed: ${err.message}` };
+        }
       }
       default:
         return { error: `Unknown tool: ${name}` };

@@ -24,6 +24,14 @@ interface HealthScore {
   relationshipCount: number;
 }
 
+interface SuggestedFix {
+  type: string;
+  description: string;
+  sourceId: string;
+  targetId?: string;
+  relType: string;
+}
+
 interface RuleViolation {
   ruleId: string;
   ruleName: string;
@@ -32,6 +40,7 @@ interface RuleViolation {
   ciId: string;
   ciName: string;
   ciClass: string;
+  suggestedFix?: SuggestedFix;
 }
 
 interface GeneratedRule {
@@ -41,7 +50,7 @@ interface GeneratedRule {
 }
 
 export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
-  const [activeTab, setActiveTab] = useState<"orphaned" | "stale" | "cycles" | "score" | "completeness" | "ai">("orphaned");
+  const [activeTab, setActiveTab] = useState<"orphaned" | "stale" | "cycles" | "score" | "completeness" | "remediate" | "ai">("orphaned");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<AnomalyResult[]>([]);
   const [scoreResult, setScoreResult] = useState<HealthScore | null>(null);
@@ -55,19 +64,37 @@ export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
   // Subscribe to real-time events
   useEffect(() => {
     const unsubCi = shell.eventBus.subscribe("ci.created", () => {
-      if (["orphaned", "stale", "cycles", "completeness"].includes(activeTab)) {
+      if (["orphaned", "stale", "cycles", "completeness", "remediate"].includes(activeTab)) {
+        runCheck();
+      }
+    });
+    const unsubUpdated = shell.eventBus.subscribe("ci.updated", () => {
+      if (["orphaned", "stale", "cycles", "completeness", "remediate"].includes(activeTab)) {
+        runCheck();
+      }
+    });
+    const unsubDeleted = shell.eventBus.subscribe("ci.deleted", () => {
+      if (["orphaned", "stale", "cycles", "completeness", "remediate"].includes(activeTab)) {
         runCheck();
       }
     });
     const unsubDiscovery = shell.eventBus.subscribe("discovery.completed", () => {
       shell.notify("Discovery completed. Health data may have changed.", "info");
-      if (["orphaned", "stale", "cycles", "completeness"].includes(activeTab)) {
+      if (["orphaned", "stale", "cycles", "completeness", "remediate"].includes(activeTab)) {
+        runCheck();
+      }
+    });
+    const unsubRelCreated = shell.eventBus.subscribe("relationship.created", () => {
+      if (["completeness", "remediate"].includes(activeTab)) {
         runCheck();
       }
     });
     return () => {
       unsubCi();
+      unsubUpdated();
+      unsubDeleted();
       unsubDiscovery();
+      unsubRelCreated();
     };
   }, [shell, activeTab]);
 
@@ -94,12 +121,19 @@ export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
         } else {
           setScoreResult(data);
         }
-      } else if (activeTab === "completeness") {
-        const res = await fetch(`${API_URL}/api/health/rules`, {
+      } else if (activeTab === "completeness" || activeTab === "remediate") {
+        const endpoint = activeTab === "remediate"
+          ? `${API_URL}/api/apps/health-monitor/tools/get_remediation_suggestions`
+          : `${API_URL}/api/health/rules`;
+        const res = await fetch(endpoint, {
           headers: { Authorization: `Bearer ${getToken() || ""}` },
         });
         const data = await res.json();
-        setViolations(data.violations || []);
+        if (activeTab === "remediate") {
+          setViolations(data || []);
+        } else {
+          setViolations(data.violations || []);
+        }
       } else if (activeTab === "ai") {
         const res = await fetch(`${API_URL}/api/health/rules/generate`, {
           method: "POST",
@@ -143,6 +177,34 @@ export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function applyFix(fix: SuggestedFix) {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/apps/health-monitor/tools/apply_remediation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken() || ""}` },
+        body: JSON.stringify({
+          sourceId: fix.sourceId,
+          targetId: fix.targetId,
+          relType: fix.relType,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        shell.notify(data.message, "success");
+        // Refresh the list
+        runCheck();
+      } else {
+        shell.notify(data.message || "Fix failed", "error");
+      }
+    } catch (err) {
+      console.error("Apply fix failed:", err);
+      shell.notify("Apply fix failed", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function executeRule(rule: GeneratedRule) {
     setLoading(true);
     try {
@@ -172,6 +234,7 @@ export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
     { key: "cycles" as const, label: "Circular Dependencies" },
     { key: "score" as const, label: "CI Health Score" },
     { key: "completeness" as const, label: "Synthetic Completeness" },
+    { key: "remediate" as const, label: "Remediate" },
     { key: "ai" as const, label: "AI Rule Generator" },
   ];
 
@@ -227,7 +290,7 @@ export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
           </div>
         )}
 
-        {activeTab !== "ai" && activeTab !== "completeness" && (
+        {activeTab !== "ai" && activeTab !== "completeness" && activeTab !== "remediate" && (
           <button
             onClick={runCheck}
             disabled={loading}
@@ -237,13 +300,13 @@ export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
           </button>
         )}
 
-        {activeTab === "completeness" && (
+        {(activeTab === "completeness" || activeTab === "remediate") && (
           <button
             onClick={runCheck}
             disabled={loading}
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
           >
-            {loading ? "Checking..." : "Run Synthetic Completeness Rules"}
+            {loading ? "Checking..." : activeTab === "remediate" ? "Find Fixable Violations" : "Run Synthetic Completeness Rules"}
           </button>
         )}
 
@@ -323,11 +386,13 @@ export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
           </div>
         )}
 
-        {/* Synthetic completeness violations */}
-        {violations.length > 0 && activeTab === "completeness" && (
+        {/* Synthetic completeness violations + Remediate tab */}
+        {violations.length > 0 && (activeTab === "completeness" || activeTab === "remediate") && (
           <div className="space-y-2">
             <h3 className="text-sm font-medium text-gray-300">
-              {violations.length} structural violations found
+              {activeTab === "remediate"
+                ? `${violations.length} fixable violations`
+                : `${violations.length} structural violations found`}
             </h3>
             <div className="space-y-2">
               {violations.map((v, idx) => (
@@ -346,18 +411,38 @@ export default function HealthMonitorApp({ shell }: { shell: ShellAPI }) {
                     <span className="text-sm font-medium text-gray-200">{v.ruleName}</span>
                   </div>
                   <p className="text-xs text-gray-400">{v.message}</p>
-                  <div className="mt-2 text-xs text-gray-500">
-                    CI: <span className="text-gray-300">{v.ciName}</span> ({v.ciClass}) {v.ciId}
+                  <div className="mt-2 text-xs text-gray-500 flex items-center justify-between">
+                    <span>
+                      CI: <span className="text-gray-300">{v.ciName}</span> ({v.ciClass}) {v.ciId}
+                    </span>
+                    {v.suggestedFix && activeTab === "remediate" && (
+                      <button
+                        onClick={() => applyFix(v.suggestedFix!)}
+                        disabled={loading}
+                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-md text-xs text-white transition-colors"
+                      >
+                        {loading ? "Applying..." : "Apply Fix"}
+                      </button>
+                    )}
                   </div>
+                  {v.suggestedFix && (
+                    <div className="mt-1.5 text-[11px] text-emerald-400">
+                      Suggested: {v.suggestedFix.description}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {violations.length === 0 && !loading && activeTab === "completeness" && (
+        {violations.length === 0 && !loading && (activeTab === "completeness" || activeTab === "remediate") && (
           <div className="p-4 bg-green-900/20 border border-green-800/50 rounded-xl">
-            <p className="text-sm text-green-300">All synthetic completeness rules passed. No structural violations found.</p>
+            <p className="text-sm text-green-300">
+              {activeTab === "remediate"
+                ? "No fixable violations found. Great job!"
+                : "All synthetic completeness rules passed. No structural violations found."}
+            </p>
           </div>
         )}
 

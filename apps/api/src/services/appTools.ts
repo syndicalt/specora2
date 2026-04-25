@@ -1394,6 +1394,46 @@ registerTool<FastifyInstance>("health-monitor", {
   return executeGeneratedRule(fastify, args.cypher as string);
 });
 
+// ─────────────────────────────────────────────────────────────
+// Auto-remediation tools
+// ─────────────────────────────────────────────────────────────
+
+registerTool<FastifyInstance>("health-monitor", {
+  name: "get_remediation_suggestions",
+  description: "Get a list of health rule violations that have suggested auto-remediation fixes. Each suggestion includes the violation details and a proposed fix action.",
+  parameters: {
+    type: "object",
+    properties: {},
+  },
+}, async (_args, fastify) => {
+  const { getRemediationSuggestions } = await import("./remediation");
+  return getRemediationSuggestions(fastify);
+});
+
+registerTool<FastifyInstance>("health-monitor", {
+  name: "apply_remediation",
+  description: "Apply a suggested remediation fix to the CMDB. Currently supports creating relationships. Returns success or error.",
+  parameters: {
+    type: "object",
+    properties: {
+      sourceId: { type: "string", description: "ID of the source CI" },
+      targetId: { type: "string", description: "ID of the target CI" },
+      relType: { type: "string", description: "Relationship type to create (PART_OF, DEPENDS_ON, HOSTED_ON, MANAGED_BY, OWNED_BY, LOCATED_AT)" },
+    },
+    required: ["sourceId", "targetId", "relType"],
+  },
+}, async (args, fastify) => {
+  const { applyRemediation } = await import("./remediation");
+  const a = args as any;
+  return applyRemediation(fastify, {
+    type: "create_relationship",
+    description: `Create ${a.relType} from ${a.sourceId} to ${a.targetId}`,
+    sourceId: a.sourceId,
+    targetId: a.targetId,
+    relType: a.relType,
+  });
+});
+
 export function getAllAppToolDefinitions() {
   const { getToolsForSession } = require("@specora/sdk");
   return getToolsForSession("system");

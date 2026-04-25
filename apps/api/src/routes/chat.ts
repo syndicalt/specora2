@@ -32,6 +32,7 @@ const BUILTIN_CHAT_CAPABILITIES = [
     appName: "CMDB Explorer",
     capabilities: [
       { id: "cmdb.search", label: "Search CMDB", description: "Find CIs by name, class, or property", prompt: "Search the CMDB", icon: "Database" },
+      { id: "cmdb.nl-search", label: "Ask CMDB (natural language)", description: "Search the CMDB using plain English questions", prompt: "Ask the CMDB a question", icon: "MessageCircleQuestion" },
       { id: "cmdb.list-servers", label: "List all servers", description: "Show every Server-class CI", prompt: "List all servers in the CMDB", icon: "Server" },
     ],
   },
@@ -55,6 +56,7 @@ const BUILTIN_CHAT_CAPABILITIES = [
     capabilities: [
       { id: "health-monitor.orphaned", label: "Find orphaned CIs", description: "Show CIs with no relationships", prompt: "Find orphaned CIs", icon: "HeartPulse" },
       { id: "health-monitor.stale", label: "Find stale CIs", description: "Show CIs not updated recently", prompt: "Find stale CIs", icon: "HeartPulse" },
+      { id: "health-monitor.remediate", label: "Get remediation suggestions", description: "Show fixable health violations with one-click fixes", prompt: "Show me remediation suggestions", icon: "Wrench" },
     ],
   },
   {

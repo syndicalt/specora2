@@ -149,6 +149,28 @@ export function ChatOverlay() {
     loadCapabilities();
   }, []);
 
+  // Subscribe to real-time events for toast notifications
+  useEffect(() => {
+    const unsubCreated = shell.eventBus.subscribe("ci.created", (_payload: any) => {
+      shell.dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "CI created", type: "success" } });
+    });
+    const unsubUpdated = shell.eventBus.subscribe("ci.updated", (_payload: any) => {
+      shell.dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "CI updated", type: "info" } });
+    });
+    const unsubDeleted = shell.eventBus.subscribe("ci.deleted", (_payload: any) => {
+      shell.dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "CI deleted", type: "info" } });
+    });
+    const unsubRelCreated = shell.eventBus.subscribe("relationship.created", (_payload: any) => {
+      shell.dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "Relationship created", type: "success" } });
+    });
+    return () => {
+      unsubCreated();
+      unsubUpdated();
+      unsubDeleted();
+      unsubRelCreated();
+    };
+  }, [shell]);
+
   // Close dropdown on outside click or Escape
   useEffect(() => {
     if (!dropdownOpen) return;

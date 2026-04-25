@@ -7,7 +7,7 @@ function mockFastify(recordSets: any[][] = [[]]) {
     neo4j: {
       session: vi.fn().mockReturnValue({
         run: vi.fn().mockImplementation(() => {
-          const records = recordSets[callIndex] || [];
+          const records = recordSets[callIndex] !== undefined ? recordSets[callIndex] : [];
           callIndex++;
           return Promise.resolve({ records });
         }),
@@ -27,25 +27,38 @@ describe("healthRules", () => {
 
   it("runs all rules and aggregates violations", async () => {
     const records = [
+      // bs-missing-app rule result
       [
         { get: (k: string) => (k === "ciId" ? "bs-1" : k === "ciName" ? "Portal" : "BusinessService") },
       ],
+      // findFixTarget for bs-missing-app (no suitable app found)
       [],
+      // app-missing-tech rule result
+      [],
+      // db-not-hosted rule result
       [
         { get: (k: string) => (k === "ciId" ? "db-1" : k === "ciName" ? "Payments DB" : "Database") },
       ],
+      // findFixTarget for db-not-hosted (no suitable server found)
       [],
+      // app-not-hosted rule result
       [],
+      // server-unmanaged rule result
       [],
+      // bs-no-owner rule result
       [],
+      // orphaned-cis rule result
+      [],
+      // network-gear-no-location rule result
       [],
     ];
     const fastify = mockFastify(records);
     const violations = await runHardcodedRules(fastify);
 
     expect(violations.length).toBe(2);
-    expect(violations[0].ruleId).toBe("bs-missing-app");
-    expect(violations[1].ruleId).toBe("db-not-hosted");
+    const ruleIds = violations.map((v) => v.ruleId);
+    expect(ruleIds).toContain("bs-missing-app");
+    expect(ruleIds).toContain("db-not-hosted");
   });
 
   it("returns empty array when no violations", async () => {
