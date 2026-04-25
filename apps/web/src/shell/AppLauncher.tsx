@@ -11,15 +11,19 @@ import { filterRegistryByRole } from "./AppContainers";
 export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
   const { state, dispatch } = useShell();
 
-  if (!state.launcherOpen) return null;
-
+  // Hooks must be called unconditionally — move the guard after all hooks
   const role = useMemo(() => getUserRole(), []);
-  const visibleRegistry = filterRegistryByRole(registry, role);
+  const visibleRegistry = useMemo(
+    () => filterRegistryByRole(registry, role),
+    [registry, role]
+  );
 
   const openAppIds = useMemo(
     () => new Set(state.instances.map((i) => i.id)),
     [state.instances]
   );
+
+  if (!state.launcherOpen) return null;
 
   const handleOpen = (entry: RegistryEntry) => {
     dispatch({
