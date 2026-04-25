@@ -167,7 +167,7 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
   const endItem = Math.min(offset + PAGE_SIZE, total);
 
   const handleViewInMap = (id: string) => {
-    shell.dispatch({ type: "OPEN_APP", id: "service-map", installKey: "service-map", mode: "canvas" });
+    shell.dispatch({ type: "OPEN_APP", id: "service-map", installKey: "service-map", mode: "canvas", permissions: ["read:cmdb", "read:relationships"] });
     setTimeout(() => {
       shell.messageBus.publish({ type: "SET_ROOT_CI", from: "cmdb-explorer", to: "service-map", payload: { rootId: id } });
     }, 500);

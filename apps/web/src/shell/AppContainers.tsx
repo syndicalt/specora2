@@ -61,7 +61,7 @@ async function loadExternalComponent(entry: RegistryEntry): Promise<React.Compon
 }
 
 const PERMISSION_CAPABILITIES: Record<string, string[]> = {
-  "read:cmdb": ["sendMessage", "onMessage", "notify"],
+  "read:cmdb": ["sendMessage", "onMessage", "notify", "dispatch"],
   "write:cmdb": ["sendMessage", "onMessage", "notify"],
   "read:relationships": ["sendMessage", "onMessage", "notify"],
   "read:discovery": ["sendMessage", "onMessage", "notify"],
@@ -125,7 +125,7 @@ function buildShellAPI(
   eventBus: { subscribe: (type: string, handler: any) => () => void; connected: boolean }
 ): ShellAPI {
   const allowed = new Set(
-    instance.permissions.flatMap((p) => PERMISSION_CAPABILITIES[p] || [])
+    (instance.permissions || []).flatMap((p) => PERMISSION_CAPABILITIES[p] || [])
   );
 
   return {
