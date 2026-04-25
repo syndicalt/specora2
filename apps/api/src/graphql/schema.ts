@@ -120,6 +120,63 @@ const typeDefs = `
     createdAt: String!
   }
 
+  type CIClassAttribute {
+    id: ID!
+    name: String!
+    displayName: String!
+    description: String
+    attrType: String!
+    isMandatory: Boolean!
+    isHealthRequired: Boolean!
+    isKeyAttribute: Boolean!
+    defaultValue: String
+    validationRegex: String
+    enumValues: [String!]
+    referenceClass: String
+    sortOrder: Int!
+  }
+
+  type CIClass {
+    id: ID!
+    name: String!
+    displayName: String!
+    description: String
+    parentClass: String
+    icon: String
+    color: String
+    isSystem: Boolean!
+    createdByAppId: String
+    attributes: [CIClassAttribute!]!
+    inheritedAttributes: [CIClassAttribute!]!
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  input CIClassAttributeInput {
+    name: String!
+    displayName: String!
+    description: String
+    attrType: String!
+    isMandatory: Boolean
+    isHealthRequired: Boolean
+    isKeyAttribute: Boolean
+    defaultValue: String
+    validationRegex: String
+    enumValues: [String!]
+    referenceClass: String
+    sortOrder: Int
+  }
+
+  input CreateCIClassInput {
+    name: String!
+    displayName: String!
+    description: String
+    parentClass: String
+    icon: String
+    color: String
+    attributes: [CIClassAttributeInput!]!
+  }
+
   input CIFilterInput {
     class: String
     environment: String
@@ -167,6 +224,8 @@ const typeDefs = `
     savedView(id: ID!): SavedView
     auditLog(entityType: String, entityId: String, limit: Int, offset: Int): [AuditLogEntry!]!
     auditLogForCI(ciId: ID!, limit: Int): [AuditLogEntry!]!
+    ciClasses: [CIClass!]!
+    ciClass(name: String!): CIClass
   }
 
   type Mutation {
@@ -186,6 +245,9 @@ const typeDefs = `
     createSavedView(name: String!, rootId: String!, classFilter: [String!], environmentFilter: [String!], relationshipFilter: [String!], cameraX: Float, cameraY: Float, cameraZoom: Float): SavedView!
     updateSavedView(id: ID!, name: String, rootId: String, classFilter: [String!], environmentFilter: [String!], relationshipFilter: [String!], cameraX: Float, cameraY: Float, cameraZoom: Float): SavedView!
     deleteSavedView(id: ID!): Boolean!
+    createCIClass(input: CreateCIClassInput!): CIClass!
+    updateCIClass(id: ID!, input: CreateCIClassInput!): CIClass!
+    deleteCIClass(id: ID!): Boolean!
   }
 `;
 

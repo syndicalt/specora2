@@ -15,6 +15,7 @@ import DiscoveryInsightsApp from "@/apps/discovery-insights";
 import HealthMonitorApp from "@/apps/health-monitor";
 import AuditLogApp from "@/apps/audit-log";
 import AdminConsoleApp from "@/apps/admin-console";
+import CIClassManagerApp from "@/apps/ci-class-manager";
 
 const BUILT_IN_COMPONENTS: Record<string, React.ComponentType<{ shell: ShellAPI }>> = {
   "service-map": ServiceMapApp,
@@ -27,6 +28,7 @@ const BUILT_IN_COMPONENTS: Record<string, React.ComponentType<{ shell: ShellAPI 
   "health-monitor": HealthMonitorApp,
   "audit-log": AuditLogApp,
   "admin-console": AdminConsoleApp,
+  "ci-class-manager": CIClassManagerApp,
 };
 
 const externalCache = new Map<string, React.ComponentType<{ shell: ShellAPI }>>();

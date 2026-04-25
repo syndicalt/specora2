@@ -12,8 +12,6 @@ import ReactFlow, {
   Connection,
   ReactFlowProvider,
   useReactFlow,
-  Handle,
-  Position,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { graphqlClient } from "@/lib/api";
@@ -24,8 +22,21 @@ import { ContextMenu } from "./ContextMenu";
 import { CIEditModal } from "./CIEditModal";
 import { RelTypePicker } from "./RelTypePicker";
 import { SidebarPanel } from "./SidebarPanel";
+import { ServiceMapNode, NodeData } from "./ServiceMapNode";
 
-type APINode = { id: string; name: string; class: string; environment?: string; attributes?: Record<string, any> };
+type APINode = {
+  id: string;
+  name: string;
+  class: string;
+  environment?: string;
+  attributes?: Record<string, any>;
+  health?: {
+    overall: number;
+    freshness: number;
+    completeness: number;
+    relationshipValidity: number;
+  } | null;
+};
 type APIEdge = { id: string; type: string; sourceId: string; targetId: string };
 
 export const REL_COLORS: Record<string, { stroke: string; bg: string }> = {
@@ -43,11 +54,11 @@ function getRelColor(type: string) {
 
 function computeLayout(nodes: APINode[], edges: APIEdge[], highlightId?: string | null) {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "TB", nodesep: 80, ranksep: 140, edgesep: 40, marginx: 20, marginy: 20 });
+  g.setGraph({ rankdir: "TB", nodesep: 90, ranksep: 160, edgesep: 40, marginx: 20, marginy: 20 });
   g.setDefaultEdgeLabel(() => ({}));
 
-  const nodeWidth = 240;
-  const nodeHeight = 90;
+  const nodeWidth = 260;
+  const nodeHeight = 100;
 
   nodes.forEach((node) => {
     g.setNode(node.id, { label: node.name, width: nodeWidth, height: nodeHeight });
@@ -64,16 +75,35 @@ function computeLayout(nodes: APINode[], edges: APIEdge[], highlightId?: string 
 
   dagre.layout(g);
 
+  // Compute relationship counts per node
+  const relCountMap = new Map<string, number>();
+  edges.forEach((ed) => {
+    relCountMap.set(ed.sourceId, (relCountMap.get(ed.sourceId) || 0) + 1);
+    relCountMap.set(ed.targetId, (relCountMap.get(ed.targetId) || 0) + 1);
+  });
+
   const flowNodes: FlowNode[] = nodes.map((node) => {
     const dagreNode = g.node(node.id);
+    const nodeData: NodeData = {
+      id: node.id,
+      name: node.name,
+      class: node.class,
+      environment: node.environment,
+      attributes: node.attributes,
+      health: node.health,
+      relationshipCount: relCountMap.get(node.id) || 0,
+    };
     return {
       id: node.id,
-      data: { label: `${node.name}\n(${node.class})`, ...node },
+      data: nodeData,
       position: { x: dagreNode.x - dagreNode.width / 2, y: dagreNode.y - dagreNode.height / 2 },
       style: {
-        background: "#1f2937", color: "#f3f4f6", border: "1px solid #374151",
-        borderRadius: "8px", padding: "12px", fontSize: "13px",
-        width: nodeWidth, textAlign: "center", whiteSpace: "pre-line",
+        width: nodeWidth,
+        height: nodeHeight,
+        background: "transparent",
+        border: "none",
+        borderRadius: "8px",
+        padding: 0,
       },
       className: node.id === highlightId ? "node-highlight" : undefined,
     };
@@ -101,18 +131,6 @@ function computeLayout(nodes: APINode[], edges: APIEdge[], highlightId?: string 
 }
 
 const REL_TYPES = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"];
-
-function ServiceMapNode({ data }: any) {
-  const node = data as APINode;
-  return (
-    <div className="relative w-full h-full flex flex-col items-center justify-center">
-      <Handle type="target" position={Position.Top} style={{ background: "#6366f1", width: 8, height: 8 }} />
-      <div className="text-sm font-medium text-gray-100 leading-tight">{node.name}</div>
-      <div className="text-xs text-gray-400 mt-0.5">{node.class}</div>
-      <Handle type="source" position={Position.Bottom} style={{ background: "#6366f1", width: 8, height: 8 }} />
-    </div>
-  );
-}
 
 const nodeTypes = { serviceMapNode: ServiceMapNode };
 
@@ -162,6 +180,19 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const [addCiResults, setAddCiResults] = useState<APINode[]>([]);
   const addCiRef = useRef<HTMLDivElement>(null);
 
+  // New CI modal state
+  const [newCiModalOpen, setNewCiModalOpen] = useState(false);
+  const [newCiName, setNewCiName] = useState("");
+  const [newCiClass, setNewCiClass] = useState("");
+  const [newCiEnvironment, setNewCiEnvironment] = useState("Production");
+  const newCiRef = useRef<HTMLDivElement>(null);
+
+  // Change relationship type modal state
+  const [changeRelModalOpen, setChangeRelModalOpen] = useState(false);
+  const [changeRelEdge, setChangeRelEdge] = useState<{ source: string; target: string; currentType: string } | null>(null);
+  const [changeRelNewType, setChangeRelNewType] = useState("");
+  const changeRelRef = useRef<HTMLDivElement>(null);
+
   // CRUD state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: any[] } | null>(null);
   const [editCi, setEditCi] = useState<APINode | null>(null);
@@ -170,6 +201,9 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const [toast, setToast] = useState<string>("");
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+
+  // Plugin decorator state — apps can register to add badges to nodes
+  const [nodeDecorators, setNodeDecorators] = useState<Record<string, NodeData["decorators"]>>({});
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -181,7 +215,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       const data = await graphqlClient.request(
         `query GetServiceMap($rootId: ID!, $classFilter: [String], $environmentFilter: [String], $relationshipFilter: [String]) {
           serviceMap(rootId: $rootId, classFilter: $classFilter, environmentFilter: $environmentFilter, relationshipFilter: $relationshipFilter) {
-            nodes { id name class environment attributes }
+            nodes { id name class environment attributes health { overall freshness completeness relationshipValidity } }
             edges { id type sourceId targetId }
           }
         }`,
@@ -194,7 +228,15 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       );
       const map = (data as any).serviceMap;
       const layout = computeLayout(map.nodes, map.edges, highlightId);
-      setNodes(layout.nodes);
+      // Merge plugin decorators into node data
+      const nodesWithDecorators = layout.nodes.map((n) => ({
+        ...n,
+        data: {
+          ...n.data,
+          decorators: nodeDecorators[n.id],
+        },
+      }));
+      setNodes(nodesWithDecorators);
       setEdges(layout.edges);
       const rootNode = map.nodes.find((n: APINode) => n.id === targetRootId);
       setRootName(rootNode?.name || targetRootId);
@@ -203,9 +245,22 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     } finally {
       setLoading(false);
     }
-  }, [setNodes, setEdges, classFilters, environmentFilters, relationshipFilters]);
+  }, [setNodes, setEdges, classFilters, environmentFilters, relationshipFilters, nodeDecorators]);
 
   useEffect(() => { fetchData(rootId, highlightedNodeId); }, [rootId, fetchData, highlightedNodeId]);
+
+  // Re-merge decorators into existing nodes when decorators change (without refetching)
+  useEffect(() => {
+    setNodes((prev) =>
+      prev.map((n) => ({
+        ...n,
+        data: {
+          ...n.data,
+          decorators: nodeDecorators[n.id],
+        },
+      }))
+    );
+  }, [nodeDecorators, setNodes]);
 
   useEffect(() => {
     shell.sendMessage({ type: "SET_ROOT_CI", to: "*", payload: { rootId } });
@@ -268,11 +323,51 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     };
   }, [shell, rootId, fetchData]);
 
+  // Plugin decorator system — allows other apps to register node badges
+  useEffect(() => {
+    // Announce that Service Map is ready to accept decorators
+    shell.sendMessage({ type: "SERVICE_MAP_READY", to: "*", payload: { appId: "service-map" } });
+
+    const unsub = shell.messageBus.subscribe((msg) => {
+      if (msg.type === "REGISTER_NODE_DECORATOR") {
+        // An app is registering interest in decorating nodes
+        const { appId, decoratorType, label } = msg.payload || {};
+        if (appId && decoratorType) {
+          showToast(`${label || decoratorType} decorations registered`);
+        }
+      }
+      if (msg.type === "NODE_DECORATOR_UPDATE") {
+        // Batch update of decorators for specific nodes
+        const { decorators } = msg.payload || {};
+        if (decorators && typeof decorators === "object") {
+          setNodeDecorators((prev) => ({ ...prev, ...decorators }));
+        }
+      }
+      if (msg.type === "CLEAR_NODE_DECORATORS") {
+        const { appId } = msg.payload || {};
+        if (appId) {
+          setNodeDecorators((prev) => {
+            const next: Record<string, NodeData["decorators"]> = {};
+            Object.entries(prev).forEach(([nodeId, decs]) => {
+              const filtered = decs?.filter((d) => d.id !== appId);
+              if (filtered && filtered.length > 0) {
+                next[nodeId] = filtered;
+              }
+            });
+            return next;
+          });
+        }
+      }
+    });
+
+    return unsub;
+  }, [shell, showToast]);
+
   useEffect(() => {
     let cancelled = false;
     async function loadRoots() {
       try {
-        let data = await graphqlClient.request(`query { cis(filter: { class: "BusinessService" }) { id name class } }`);
+        let data = await graphqlClient.request(`query { cis(filter: { class: "BusinessService" }) { id name class health { overall } } }`);
         let results: APINode[] = ((data as any).cis || []);
         if (results.length === 0) {
           data = await graphqlClient.request(`query { cis { id name class } }`);
@@ -316,7 +411,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     if (!query.trim()) { setSearchResults([]); setShowResults(false); return; }
     try {
       const data = await graphqlClient.request(
-        `query SearchCIs($name: String) { cis(filter: { name: $name }) { id name class } }`,
+        `query SearchCIs($name: String) { cis(filter: { name: $name }) { id name class health { overall } } }`,
         { name: query }
       );
       setSearchResults(((data as any).cis || []).slice(0, 8));
@@ -329,7 +424,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     if (!query.trim()) { setAddCiResults([]); return; }
     try {
       const data = await graphqlClient.request(
-        `query SearchCIs($name: String) { cis(filter: { name: $name }) { id name class environment attributes } }`,
+        `query SearchCIs($name: String) { cis(filter: { name: $name }) { id name class environment attributes health { overall freshness completeness relationshipValidity } } }`,
         { name: query }
       );
       setAddCiResults(((data as any).cis || []).slice(0, 8));
@@ -348,12 +443,22 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       }
       const newNode: FlowNode = {
         id: ci.id,
-        data: { label: `${ci.name}\n(${ci.class})`, ...ci },
+        data: {
+          id: ci.id,
+          name: ci.name,
+          class: ci.class,
+          environment: ci.environment,
+          health: (ci as any).health,
+          relationshipCount: 0,
+        } as NodeData,
         position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 200 },
         style: {
-          background: "#1f2937", color: "#f3f4f6", border: "1px solid #374151",
-          borderRadius: "8px", padding: "12px", fontSize: "13px",
-          width: 240, textAlign: "center", whiteSpace: "pre-line",
+          width: 260,
+          height: 100,
+          background: "transparent",
+          border: "none",
+          borderRadius: "8px",
+          padding: 0,
         },
       };
       showToast(`${ci.name} added to map`);
@@ -448,7 +553,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       const data = await graphqlClient.request(
         `query GetNeighbors($nodeId: ID!) {
           neighbors(nodeId: $nodeId, limit: 20) {
-            nodes { id name class environment attributes }
+            nodes { id name class environment attributes health { overall freshness completeness relationshipValidity } }
             edges { id type sourceId targetId }
           }
         }`,
@@ -466,12 +571,22 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
           .filter((n: APINode) => !existingIds.has(n.id))
           .map((n: APINode) => ({
             id: n.id,
-            data: { label: `${n.name}\n(${n.class})`, ...n },
+            data: {
+              id: n.id,
+              name: n.name,
+              class: n.class,
+              environment: n.environment,
+              health: n.health,
+              relationshipCount: 0,
+            } as NodeData,
             position: { x: 100 + Math.random() * 400, y: 100 + Math.random() * 400 },
             style: {
-              background: "#1f2937", color: "#f3f4f6", border: "1px solid #374151",
-              borderRadius: "8px", padding: "12px", fontSize: "13px",
-              width: 240, textAlign: "center", whiteSpace: "pre-line",
+              width: 260,
+              height: 100,
+              background: "transparent",
+              border: "none",
+              borderRadius: "8px",
+              padding: 0,
             },
           }));
         return [...prev, ...newNodes];
@@ -588,13 +703,44 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
 
   const createCI = async (input: { name: string; class: string; environment?: string; attributes?: Record<string, any> }) => {
     try {
-      await graphqlClient.request(
+      const data = await graphqlClient.request(
         `mutation CreateCI($input: CreateCIInput!) {
           createCI(input: $input) { id name class }
         }`,
         { input }
       );
-      await fetchData(rootId);
+      const newCi = (data as any).createCI;
+      if (newCi) {
+        // Add the new CI directly to the graph so it appears immediately.
+        // Do not call fetchData here because a disconnected CI won't be
+        // returned by the serviceMap query and would disappear.
+        setNodes((prev) => {
+          if (prev.some((n) => n.id === newCi.id)) return prev;
+          return [
+            ...prev,
+            {
+              id: newCi.id,
+              data: {
+                id: newCi.id,
+                name: newCi.name,
+                class: newCi.class,
+                environment: newCi.environment,
+                health: null,
+                relationshipCount: 0,
+              } as NodeData,
+              position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 200 },
+              style: {
+                width: 260,
+                height: 100,
+                background: "transparent",
+                border: "none",
+                borderRadius: "8px",
+                padding: 0,
+              },
+            },
+          ];
+        });
+      }
       showToast("CI created");
     } catch (err: any) {
       showToast(err.response?.errors?.[0]?.message || "Failed to create CI");
@@ -605,7 +751,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     try {
       const data = await graphqlClient.request(
         `query GetCI($id: ID!) {
-          ci(id: $id) { id name class environment attributes
+          ci(id: $id) { id name class environment attributes health { overall freshness completeness relationshipValidity }
             relationships { id type target { id name class } }
           }
         }`,
@@ -676,10 +822,9 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       y: event.clientY,
       items: [
         { label: "Change Type", onClick: () => {
-          const newType = prompt("Enter new relationship type (PART_OF, DEPENDS_ON, HOSTED_ON, MANAGED_BY, OWNED_BY, LOCATED_AT):");
-          if (newType && ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"].includes(newType)) {
-            updateRelationshipType(edge.source, edge.target, edge.label as string, newType);
-          }
+          setChangeRelEdge({ source: edge.source, target: edge.target, currentType: edge.label as string });
+          setChangeRelNewType(edge.label as string);
+          setChangeRelModalOpen(true);
         }},
         { label: "Delete Relationship", danger: true, onClick: () => {
           if (confirm("Delete this relationship?")) {
@@ -688,7 +833,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }},
       ],
     });
-  }, [updateRelationshipType, deleteRelationship]);
+  }, [deleteRelationship]);
 
   const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -697,16 +842,15 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       y: event.clientY,
       items: [
         { label: "New CI", onClick: () => {
-          const name = prompt("CI Name:");
-          if (!name) return;
-          const cls = prompt("Class (BusinessService, Server, Database, etc.):");
-          if (!cls) return;
-          createCI({ name, class: cls, environment: "Production" });
+          setNewCiName("");
+          setNewCiClass("");
+          setNewCiEnvironment("Production");
+          setNewCiModalOpen(true);
         }},
         { label: "Add Existing CI", onClick: () => setAddCiModalOpen(true) },
       ],
     });
-  }, [createCI]);
+  }, []);
 
   // Close context menu on click outside
   useEffect(() => {
@@ -714,6 +858,8 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) setShowResults(false);
       if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false);
       if (addCiRef.current && !addCiRef.current.contains(e.target as Node)) setAddCiModalOpen(false);
+      if (newCiRef.current && !newCiRef.current.contains(e.target as Node)) setNewCiModalOpen(false);
+      if (changeRelRef.current && !changeRelRef.current.contains(e.target as Node)) setChangeRelModalOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -1067,6 +1213,117 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
                   </button>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New CI Modal */}
+      {newCiModalOpen && (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setNewCiModalOpen(false)}>
+          <div ref={newCiRef} className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-100 mb-4">Create New CI</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Name</label>
+                <input
+                  type="text"
+                  value={newCiName}
+                  onChange={(e) => setNewCiName(e.target.value)}
+                  placeholder="Enter CI name..."
+                  autoFocus
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Class</label>
+                <select
+                  value={newCiClass}
+                  onChange={(e) => setNewCiClass(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="">Select a class...</option>
+                  {availableClasses.map((cls) => (
+                    <option key={cls} value={cls}>{cls}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Environment</label>
+                <select
+                  value={newCiEnvironment}
+                  onChange={(e) => setNewCiEnvironment(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-indigo-500"
+                >
+                  {availableEnvironments.map((env) => (
+                    <option key={env} value={env}>{env}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 mt-6">
+              <button
+                onClick={() => setNewCiModalOpen(false)}
+                className="flex-1 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (newCiName.trim() && newCiClass) {
+                    createCI({ name: newCiName.trim(), class: newCiClass, environment: newCiEnvironment });
+                    setNewCiModalOpen(false);
+                  }
+                }}
+                disabled={!newCiName.trim() || !newCiClass}
+                className="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 text-sm text-white transition-colors"
+              >
+                Create CI
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change Relationship Type Modal */}
+      {changeRelModalOpen && changeRelEdge && (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setChangeRelModalOpen(false)}>
+          <div ref={changeRelRef} className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-100 mb-4">Change Relationship Type</h3>
+            <p className="text-sm text-gray-400 mb-4">
+              Current type: <span className="text-gray-200 font-medium">{changeRelEdge.currentType}</span>
+            </p>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">New Type</label>
+              <select
+                value={changeRelNewType}
+                onChange={(e) => setChangeRelNewType(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-indigo-500"
+              >
+                {REL_TYPES.map((type) => (
+                  <option key={type} value={type}>{type}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-2 mt-6">
+              <button
+                onClick={() => setChangeRelModalOpen(false)}
+                className="flex-1 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (changeRelNewType && changeRelNewType !== changeRelEdge.currentType) {
+                    updateRelationshipType(changeRelEdge.source, changeRelEdge.target, changeRelEdge.currentType, changeRelNewType);
+                  }
+                  setChangeRelModalOpen(false);
+                }}
+                disabled={!changeRelNewType || changeRelNewType === changeRelEdge.currentType}
+                className="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 text-sm text-white transition-colors"
+              >
+                Change Type
+              </button>
             </div>
           </div>
         </div>

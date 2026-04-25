@@ -21,6 +21,7 @@ import { adminRoutes } from "./routes/admin";
 import { initializeAuditLog } from "./services/auditLog";
 import { websocketRoutes } from "./services/websocket";
 import { initializeEventBus } from "./services/eventBus";
+import { seedCIClasses } from "./services/ciClassSeed";
 // Explicit app tool registration (side-effect import — must run before chatRoutes)
 import "./services/appTools";
 
@@ -42,6 +43,10 @@ async function main() {
   await fastify.register(jwt, { secret: process.env.JWT_SECRET || "change-me" });
   await fastify.register(neo4jPlugin);
   await fastify.register(postgresPlugin);
+
+  // Seed built-in CI classes if empty
+  await seedCIClasses(fastify.pg);
+
   await fastify.register(multipart);
   await fastify.register(authPlugin);
 

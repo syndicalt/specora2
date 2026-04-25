@@ -14,6 +14,103 @@ function parseNode(node: any) {
   return { ...node, attributes: attrs };
 }
 
+async function getClassDefinition(pg: any, className: string) {
+  const classResult = await pg.query("SELECT * FROM ci_classes WHERE name = $1", [className]);
+  if (!classResult.rows.length) return null;
+  const cls = classResult.rows[0];
+
+  // Fetch own attributes + inherited attributes via recursive CTE
+  const attrsResult = await pg.query(
+    `WITH RECURSIVE class_tree AS (
+       SELECT id, name, parent_class, 0 AS depth
+       FROM ci_classes WHERE name = $1
+       UNION ALL
+       SELECT c.id, c.name, c.parent_class, ct.depth + 1
+       FROM ci_classes c JOIN class_tree ct ON c.name = ct.parent_class
+     )
+     SELECT a.*, ct.depth
+     FROM class_tree ct
+     JOIN ci_class_attributes a ON a.class_id = ct.id
+     ORDER BY ct.depth DESC, a.sort_order, a.name`,
+    [className]
+  );
+
+  // Deduplicate: child attributes override parent attributes by name
+  const attrMap = new Map();
+  for (const row of attrsResult.rows) {
+    attrMap.set(row.name, row);
+  }
+  const attributes = Array.from(attrMap.values());
+
+  // Split into own vs inherited
+  const ownAttrs = attributes.filter((a: any) => {
+    const own = attrsResult.rows.find((r: any) => r.name === a.name && r.depth === 0);
+    return !!own;
+  });
+  const inheritedAttrs = attributes.filter((a: any) => {
+    const own = attrsResult.rows.find((r: any) => r.name === a.name && r.depth === 0);
+    return !own;
+  });
+
+  return { ...cls, attributes: ownAttrs, inheritedAttributes: inheritedAttrs, allAttributes: attributes };
+}
+
+async function validateCIAgainstClass(pg: any, className: string, ciData: any, mode: "create" | "update") {
+  const def = await getClassDefinition(pg, className);
+  if (!def) {
+    throw new GraphQLError(`Unknown CI class: ${className}`, { extensions: { code: "BAD_USER_INPUT" } });
+  }
+
+  const attrs = ciData.attributes || {};
+  const allData = { ...ciData, ...attrs };
+
+  for (const attr of def.allAttributes) {
+    const val = allData[attr.name];
+
+    if (mode === "create" && attr.is_mandatory && (val === undefined || val === null || val === "")) {
+      throw new GraphQLError(
+        `Missing mandatory attribute '${attr.display_name || attr.name}' for class ${className}`,
+        { extensions: { code: "BAD_USER_INPUT" } }
+      );
+    }
+
+    if (val !== undefined && val !== null && val !== "") {
+      // Type validation
+      if (attr.attr_type === "number" && typeof val !== "number") {
+        throw new GraphQLError(`Attribute '${attr.name}' must be a number`, { extensions: { code: "BAD_USER_INPUT" } });
+      }
+      if (attr.attr_type === "boolean" && typeof val !== "boolean") {
+        throw new GraphQLError(`Attribute '${attr.name}' must be a boolean`, { extensions: { code: "BAD_USER_INPUT" } });
+      }
+      if (attr.attr_type === "enum" && attr.enum_values && !attr.enum_values.includes(String(val))) {
+        throw new GraphQLError(
+          `Attribute '${attr.name}' must be one of: ${attr.enum_values.join(", ")}`,
+          { extensions: { code: "BAD_USER_INPUT" } }
+        );
+      }
+      if (attr.attr_type === "date" && isNaN(Date.parse(String(val)))) {
+        throw new GraphQLError(`Attribute '${attr.name}' must be a valid date`, { extensions: { code: "BAD_USER_INPUT" } });
+      }
+      if (attr.validation_regex && !new RegExp(attr.validation_regex).test(String(val))) {
+        throw new GraphQLError(
+          `Attribute '${attr.name}' failed validation: ${attr.validation_regex}`,
+          { extensions: { code: "BAD_USER_INPUT" } }
+        );
+      }
+    }
+  }
+
+  // Apply default values for missing optional attributes
+  const defaults: Record<string, any> = {};
+  for (const attr of def.allAttributes) {
+    if (allData[attr.name] === undefined && attr.default_value !== null && attr.default_value !== undefined) {
+      defaults[attr.name] = attr.default_value;
+    }
+  }
+
+  return { def, defaults };
+}
+
 async function checkPermission(context: any, resource: string, action: string) {
   const user = context.user as { role?: string } | null;
   if (!user?.role) {
@@ -99,17 +196,6 @@ export const resolvers = {
         await session.close();
       }
     },
-    async ciClasses(_parent: any, _args: any, context: any) {
-      const session = context.neo4j.session();
-      try {
-        const result = await session.run(
-          `MATCH (n:ConfigurationItem) RETURN DISTINCT n.class as class ORDER BY class`
-        );
-        return result.records.map((r: any) => r.get("class")).filter(Boolean);
-      } finally {
-        await session.close();
-      }
-    },
     async ciEnvironments(_parent: any, _args: any, context: any) {
       const session = context.neo4j.session();
       try {
@@ -120,6 +206,30 @@ export const resolvers = {
       } finally {
         await session.close();
       }
+    },
+    async ciClasses(_parent: any, _args: any, context: any) {
+      await checkPermission(context, "cmdb", "read");
+      const result = await context.pg.query(
+        `SELECT id, name, display_name, description, parent_class, icon, color, is_system, created_by_app_id, created_at, updated_at
+         FROM ci_classes ORDER BY name`
+      );
+      return result.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        displayName: row.display_name,
+        description: row.description,
+        parentClass: row.parent_class,
+        icon: row.icon,
+        color: row.color,
+        isSystem: row.is_system,
+        createdByAppId: row.created_by_app_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+    },
+    async ciClass(_parent: any, args: { name: string }, context: any) {
+      await checkPermission(context, "cmdb", "read");
+      return getClassDefinition(context.pg, args.name);
     },
     async serviceMap(_parent: any, args: { rootId: string; classFilter?: string[]; environmentFilter?: string[]; relationshipFilter?: string[] }, context: any) {
       const session = context.neo4j.session();
@@ -491,9 +601,37 @@ LIMIT 50`;
     async health(parent: any, _args: any, context: any) {
       const session = context.neo4j.session();
       try {
-        const required = ["name", "class"];
-        const populated = required.filter((f) => parent[f]).length;
-        const completeness = populated / required.length;
+        // Per-class health scoring
+        const def = await getClassDefinition(context.pg, parent.class);
+        let completeness = 1.0;
+
+        if (def && def.allAttributes.length > 0) {
+          const healthAttrs = def.allAttributes.filter((a: any) => a.is_health_required);
+          if (healthAttrs.length > 0) {
+            const populated = healthAttrs.filter((a: any) => {
+              const val = parent[a.name] !== undefined ? parent[a.name] : parent.attributes?.[a.name];
+              return val !== undefined && val !== null && val !== "";
+            }).length;
+            completeness = populated / healthAttrs.length;
+
+            // Penalize completeness for regex/enum violations on health-required attrs
+            let violations = 0;
+            for (const attr of healthAttrs) {
+              const val = parent[attr.name] !== undefined ? parent[attr.name] : parent.attributes?.[attr.name];
+              if (val !== undefined && val !== null && val !== "") {
+                if (attr.attr_type === "enum" && attr.enum_values && !attr.enum_values.includes(String(val))) {
+                  violations++;
+                }
+                if (attr.validation_regex && !new RegExp(attr.validation_regex).test(String(val))) {
+                  violations++;
+                }
+              }
+            }
+            if (violations > 0) {
+              completeness = Math.max(0, completeness - (violations / healthAttrs.length) * 0.5);
+            }
+          }
+        }
 
         const relResult = await session.run(
           `MATCH (n:ConfigurationItem {id: $id})-[r]-(target:ConfigurationItem)
@@ -522,6 +660,35 @@ LIMIT 50`;
       return parent.target;
     },
   },
+  CIClass: {
+    async attributes(parent: any, _args: any, context: any) {
+      const result = await context.pg.query(
+        `SELECT id, name, display_name, description, attr_type, is_mandatory, is_health_required, is_key_attribute, default_value, validation_regex, enum_values, reference_class, sort_order
+         FROM ci_class_attributes WHERE class_id = $1 ORDER BY sort_order, name`,
+        [parent.id]
+      );
+      return result.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        displayName: row.display_name,
+        description: row.description,
+        attrType: row.attr_type,
+        isMandatory: row.is_mandatory,
+        isHealthRequired: row.is_health_required,
+        isKeyAttribute: row.is_key_attribute,
+        defaultValue: row.default_value,
+        validationRegex: row.validation_regex,
+        enumValues: row.enum_values,
+        referenceClass: row.reference_class,
+        sortOrder: row.sort_order,
+      }));
+    },
+    async inheritedAttributes(parent: any, _args: any, context: any) {
+      if (!parent.parentClass) return [];
+      const def = await getClassDefinition(context.pg, parent.name);
+      return def?.inheritedAttributes || [];
+    },
+  },
   Mutation: {
     async createCI(_parent: any, args: { input: any }, context: any) {
       await checkPermission(context, "cmdb", "write");
@@ -529,13 +696,48 @@ LIMIT 50`;
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
       }
+
+      // Validate against class schema and get defaults
+      const { defaults } = await validateCIAgainstClass(context.pg, validated.data.class, validated.data, "create");
+
       const session = context.neo4j.session();
       try {
         const id = validated.data.id || crypto.randomUUID();
+
+        // Merge defaults into attributes
+        const attrs = { ...validated.data.attributes, ...defaults };
+
+        // Build dynamic property set for top-level attributes from class definition
+        const def = await getClassDefinition(context.pg, validated.data.class);
+        const topLevelProps: Record<string, any> = {};
+        const attrProps: Record<string, any> = {};
+
+        for (const attr of def?.allAttributes || []) {
+          const val = attrs[attr.name];
+          if (val !== undefined) {
+            topLevelProps[attr.name] = val;
+          }
+        }
+
+        // Keep any extra attributes not in class definition
+        for (const [key, val] of Object.entries(attrs)) {
+          if (!topLevelProps[key]) {
+            attrProps[key] = val;
+          }
+        }
+
         const result = await session.run(
           `CREATE (n:ConfigurationItem {id: $id, name: $name, class: $class, environment: $environment, attributes: $attributes})
+           SET n += $topLevelProps
            RETURN n`,
-          { ...validated.data, id, attributes: JSON.stringify(validated.data.attributes || {}) }
+          {
+            id,
+            name: validated.data.name,
+            class: validated.data.class,
+            environment: validated.data.environment || null,
+            attributes: JSON.stringify(attrProps),
+            topLevelProps,
+          }
         );
         const node = parseNode(result.records[0].get("n").properties);
         if (context.emit) {
@@ -562,6 +764,11 @@ LIMIT 50`;
         if (!oldResult.records.length) throw new GraphQLError("CI not found");
         const oldNode = parseNode(oldResult.records[0].get("n").properties);
 
+        // Validate against class schema if class or attributes are changing
+        const className = validated.data.class || oldNode.class;
+        const mergedAttrs = { ...oldNode.attributes, ...(validated.data.attributes || {}) };
+        await validateCIAgainstClass(context.pg, className, { ...oldNode, ...validated.data, attributes: mergedAttrs }, "update");
+
         const sets: string[] = [];
         const params: any = { id: args.id };
         if (validated.data.name !== undefined) {
@@ -576,10 +783,30 @@ LIMIT 50`;
           sets.push("n.environment = $environment");
           params.environment = validated.data.environment;
         }
+
+        // Handle attributes: merge class-defined top-level properties with remaining attrs JSON
         if (validated.data.attributes !== undefined) {
+          const def = await getClassDefinition(context.pg, className);
+          const topLevelProps: Record<string, any> = {};
+          const attrProps: Record<string, any> = {};
+
+          for (const [key, val] of Object.entries(mergedAttrs)) {
+            const isClassAttr = def?.allAttributes.some((a: any) => a.name === key);
+            if (isClassAttr) {
+              topLevelProps[key] = val;
+            } else {
+              attrProps[key] = val;
+            }
+          }
+
+          if (Object.keys(topLevelProps).length > 0) {
+            sets.push("n += $topLevelProps");
+            params.topLevelProps = topLevelProps;
+          }
           sets.push("n.attributes = $attributes");
-          params.attributes = JSON.stringify(validated.data.attributes);
+          params.attributes = JSON.stringify(attrProps);
         }
+
         if (!sets.length) throw new GraphQLError("No fields to update");
         const result = await session.run(
           `MATCH (n:ConfigurationItem {id: $id}) SET ${sets.join(", ")} RETURN n`,
@@ -951,6 +1178,237 @@ LIMIT 50`;
         [args.id, context.user.id]
       );
       return result.rows.length > 0;
+    },
+    async createCIClass(_parent: any, args: { input: any }, context: any) {
+      await checkPermission(context, "cmdb", "admin");
+      const { name, displayName, description, parentClass, icon, color, attributes } = args.input;
+
+      // Validate name is PascalCase
+      if (!/^[A-Z][a-zA-Z0-9]*$/.test(name)) {
+        throw new GraphQLError("Class name must be PascalCase", { extensions: { code: "BAD_USER_INPUT" } });
+      }
+
+      const client = await context.pg.connect();
+      try {
+        await client.query("BEGIN");
+
+        // Check for duplicate
+        const existing = await client.query("SELECT id FROM ci_classes WHERE name = $1", [name]);
+        if (existing.rows.length) {
+          throw new GraphQLError(`Class '${name}' already exists`, { extensions: { code: "BAD_USER_INPUT" } });
+        }
+
+        // Validate parent class exists if specified
+        if (parentClass) {
+          const parent = await client.query("SELECT id FROM ci_classes WHERE name = $1", [parentClass]);
+          if (!parent.rows.length) {
+            throw new GraphQLError(`Parent class '${parentClass}' not found`, { extensions: { code: "BAD_USER_INPUT" } });
+          }
+        }
+
+        // Insert class
+        const classResult = await client.query(
+          `INSERT INTO ci_classes (name, display_name, description, parent_class, icon, color, created_by_app_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING id, name, display_name, description, parent_class, icon, color, is_system, created_by_app_id, created_at, updated_at`,
+          [name, displayName, description || null, parentClass || null, icon || null, color || null, context.appId || null]
+        );
+        const cls = classResult.rows[0];
+
+        // Insert attributes
+        if (attributes && attributes.length > 0) {
+          const seenNames = new Set<string>();
+          for (const attr of attributes) {
+            if (seenNames.has(attr.name)) {
+              throw new GraphQLError(`Duplicate attribute name: ${attr.name}`, { extensions: { code: "BAD_USER_INPUT" } });
+            }
+            seenNames.add(attr.name);
+            await client.query(
+              `INSERT INTO ci_class_attributes
+               (class_id, name, display_name, description, attr_type, is_mandatory, is_health_required, is_key_attribute, default_value, validation_regex, enum_values, reference_class, sort_order)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+              [
+                cls.id, attr.name, attr.displayName, attr.description || null,
+                attr.attrType, attr.isMandatory || false, attr.isHealthRequired || false,
+                attr.isKeyAttribute || false, attr.defaultValue || null,
+                attr.validationRegex || null, attr.enumValues || null,
+                attr.referenceClass || null, attr.sortOrder || 0,
+              ]
+            );
+          }
+        }
+
+        await client.query("COMMIT");
+
+        if (context.emit) {
+          context.emit("ci_class.created", { className: cls.name, createdByAppId: cls.created_by_app_id });
+        }
+
+        return {
+          id: cls.id,
+          name: cls.name,
+          displayName: cls.display_name,
+          description: cls.description,
+          parentClass: cls.parent_class,
+          icon: cls.icon,
+          color: cls.color,
+          isSystem: cls.is_system,
+          createdByAppId: cls.created_by_app_id,
+          createdAt: cls.created_at,
+          updatedAt: cls.updated_at,
+        };
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    async updateCIClass(_parent: any, args: { id: string; input: any }, context: any) {
+      await checkPermission(context, "cmdb", "admin");
+      const { name, displayName, description, parentClass, icon, color, attributes } = args.input;
+
+      const client = await context.pg.connect();
+      try {
+        await client.query("BEGIN");
+
+        // Fetch existing class
+        const existing = await client.query("SELECT * FROM ci_classes WHERE id = $1", [args.id]);
+        if (!existing.rows.length) {
+          throw new GraphQLError("Class not found", { extensions: { code: "NOT_FOUND" } });
+        }
+        const oldClass = existing.rows[0];
+
+        // Block modification of system classes unless caller is admin UI
+        if (oldClass.is_system) {
+          throw new GraphQLError("System classes cannot be modified", { extensions: { code: "FORBIDDEN" } });
+        }
+
+        // Check name uniqueness if changing
+        if (name !== oldClass.name) {
+          const dup = await client.query("SELECT id FROM ci_classes WHERE name = $1 AND id != $2", [name, args.id]);
+          if (dup.rows.length) {
+            throw new GraphQLError(`Class name '${name}' already exists`, { extensions: { code: "BAD_USER_INPUT" } });
+          }
+        }
+
+        // Validate parent class
+        if (parentClass) {
+          const parent = await client.query("SELECT id FROM ci_classes WHERE name = $1", [parentClass]);
+          if (!parent.rows.length) {
+            throw new GraphQLError(`Parent class '${parentClass}' not found`, { extensions: { code: "BAD_USER_INPUT" } });
+          }
+        }
+
+        // Update class
+        const classResult = await client.query(
+          `UPDATE ci_classes
+           SET name = $1, display_name = $2, description = $3, parent_class = $4, icon = $5, color = $6, updated_at = NOW()
+           WHERE id = $7
+           RETURNING id, name, display_name, description, parent_class, icon, color, is_system, created_by_app_id, created_at, updated_at`,
+          [name, displayName, description || null, parentClass || null, icon || null, color || null, args.id]
+        );
+        const cls = classResult.rows[0];
+
+        // Delete old attributes and insert new ones
+        await client.query("DELETE FROM ci_class_attributes WHERE class_id = $1", [args.id]);
+        if (attributes && attributes.length > 0) {
+          const seenNames = new Set<string>();
+          for (const attr of attributes) {
+            if (seenNames.has(attr.name)) {
+              throw new GraphQLError(`Duplicate attribute name: ${attr.name}`, { extensions: { code: "BAD_USER_INPUT" } });
+            }
+            seenNames.add(attr.name);
+            await client.query(
+              `INSERT INTO ci_class_attributes
+               (class_id, name, display_name, description, attr_type, is_mandatory, is_health_required, is_key_attribute, default_value, validation_regex, enum_values, reference_class, sort_order)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+              [
+                cls.id, attr.name, attr.displayName, attr.description || null,
+                attr.attrType, attr.isMandatory || false, attr.isHealthRequired || false,
+                attr.isKeyAttribute || false, attr.defaultValue || null,
+                attr.validationRegex || null, attr.enumValues || null,
+                attr.referenceClass || null, attr.sortOrder || 0,
+              ]
+            );
+          }
+        }
+
+        await client.query("COMMIT");
+
+        if (context.emit) {
+          context.emit("ci_class.updated", { className: cls.name, createdByAppId: cls.created_by_app_id });
+        }
+
+        return {
+          id: cls.id,
+          name: cls.name,
+          displayName: cls.display_name,
+          description: cls.description,
+          parentClass: cls.parent_class,
+          icon: cls.icon,
+          color: cls.color,
+          isSystem: cls.is_system,
+          createdByAppId: cls.created_by_app_id,
+          createdAt: cls.created_at,
+          updatedAt: cls.updated_at,
+        };
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    async deleteCIClass(_parent: any, args: { id: string }, context: any) {
+      await checkPermission(context, "cmdb", "admin");
+
+      const client = await context.pg.connect();
+      try {
+        await client.query("BEGIN");
+
+        const existing = await client.query("SELECT * FROM ci_classes WHERE id = $1", [args.id]);
+        if (!existing.rows.length) {
+          throw new GraphQLError("Class not found", { extensions: { code: "NOT_FOUND" } });
+        }
+        const cls = existing.rows[0];
+
+        if (cls.is_system) {
+          throw new GraphQLError("System classes cannot be deleted", { extensions: { code: "FORBIDDEN" } });
+        }
+
+        // Check if any CIs exist in Neo4j with this class
+        const session = context.neo4j.session();
+        try {
+          const ciResult = await session.run(
+            `MATCH (n:ConfigurationItem {class: $className}) RETURN count(n) as ciCount`,
+            { className: cls.name }
+          );
+          const ciCount = ciResult.records[0]?.get("ciCount")?.toNumber() || 0;
+          if (ciCount > 0) {
+            throw new GraphQLError(
+              `Cannot delete class '${cls.name}': ${ciCount} CIs exist. Migrate or delete them first.`,
+              { extensions: { code: "BAD_USER_INPUT" } }
+            );
+          }
+        } finally {
+          await session.close();
+        }
+
+        await client.query("DELETE FROM ci_classes WHERE id = $1", [args.id]);
+        await client.query("COMMIT");
+
+        if (context.emit) {
+          context.emit("ci_class.deleted", { className: cls.name, createdByAppId: cls.created_by_app_id });
+        }
+
+        return true;
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
     },
   },
 };
