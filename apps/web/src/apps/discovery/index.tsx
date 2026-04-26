@@ -1478,6 +1478,11 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
               onDuplicate={duplicateSelectedNode}
               onDelete={deleteSelectedNode}
               edgeCount={selectedNode ? edges.filter((item) => item.source === selectedNode.id || item.target === selectedNode.id).length : 0}
+              currentPipelineId={currentPipelineId}
+              schedule={schedule}
+              onScheduleChange={setSchedule}
+              onSaveSchedule={() => saveSchedule()}
+              saving={loading}
             />
 
             <div className="mb-4 flex items-center gap-2">
@@ -1611,6 +1616,11 @@ function NodeInspector({
   onDuplicate,
   onDelete,
   edgeCount,
+  currentPipelineId,
+  schedule,
+  onScheduleChange,
+  onSaveSchedule,
+  saving,
 }: {
   selectedNode: Node<DiscoveryFlowNodeData> | null;
   onChange: (patch: Partial<DiscoveryFlowNodeData>) => void;
@@ -1618,6 +1628,11 @@ function NodeInspector({
   onDuplicate: () => void;
   onDelete: () => void;
   edgeCount: number;
+  currentPipelineId: string | null;
+  schedule: PipelineSchedule;
+  onScheduleChange: (schedule: PipelineSchedule) => void;
+  onSaveSchedule: () => void;
+  saving: boolean;
 }) {
   if (!selectedNode) {
     return (
@@ -1690,6 +1705,65 @@ function NodeInspector({
           onChange={(event) => onChange({ detail: event.target.value })}
           className="h-20 w-full resize-none rounded-md border border-cyan-500/20 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-400"
         />
+
+        {selectedNode.data.kind === "schedule" && (
+          <div className="rounded-lg border border-cyan-500/20 bg-gray-950 p-3">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-cyan-50">Pipeline trigger</div>
+                <div className="mt-1 text-xs leading-5 text-cyan-100/60">
+                  {currentPipelineId ? "Configure when this saved pipeline should run." : "Save the pipeline before enabling a recurring trigger."}
+                </div>
+              </div>
+              <label className="flex shrink-0 items-center gap-2 text-xs text-cyan-100/80">
+                <input
+                  type="checkbox"
+                  checked={schedule.enabled}
+                  onChange={(event) => onScheduleChange({ ...schedule, enabled: event.target.checked })}
+                  disabled={!currentPipelineId}
+                />
+                Enabled
+              </label>
+            </div>
+
+            <label className="block text-xs text-cyan-100/60">Frequency</label>
+            <select
+              value={schedule.interval}
+              onChange={(event) => onScheduleChange({ ...schedule, interval: event.target.value })}
+              disabled={!currentPipelineId}
+              className="mt-1 w-full rounded-md border border-cyan-500/20 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-400 disabled:opacity-50"
+            >
+              <option value="manual">Manual only</option>
+              <option value="hourly">Hourly</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+
+            <label className="mt-3 block text-xs text-cyan-100/60">Next run</label>
+            <input
+              type="datetime-local"
+              value={schedule.next_run_at ? schedule.next_run_at.slice(0, 16) : ""}
+              onChange={(event) => onScheduleChange({ ...schedule, next_run_at: event.target.value ? new Date(event.target.value).toISOString() : null })}
+              disabled={!currentPipelineId || schedule.interval === "manual"}
+              className="mt-1 w-full rounded-md border border-cyan-500/20 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-400 disabled:opacity-50"
+            />
+
+            <button
+              onClick={onSaveSchedule}
+              disabled={!currentPipelineId || saving}
+              className="mt-3 w-full rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Save trigger
+            </button>
+
+            <div className="mt-3 space-y-1 text-xs text-cyan-100/60">
+              {schedule.last_run_at && <div>Last run {new Date(schedule.last_run_at).toLocaleString()}</div>}
+              {schedule.last_status && <div>Last status {schedule.last_status}{schedule.last_discovery_job_id ? ` · ${schedule.last_discovery_job_id.slice(0, 8)}` : ""}</div>}
+              {schedule.last_error && <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-rose-200">{schedule.last_error}</div>}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-2">
           <button onClick={() => onRun(selectedNode.data.kind)} className="flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-300">
