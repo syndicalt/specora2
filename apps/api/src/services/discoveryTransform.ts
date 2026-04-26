@@ -36,7 +36,7 @@ export type PipelinePreview = {
   summary: { rows: number; stagedRecords: number; relationshipCandidates: number; errors: number; warnings: number };
   records: Array<{
     row: number;
-    action: "create" | "review";
+    action: "create" | "update" | "review";
     targetClass: string;
     name: string;
     environment?: string;
@@ -53,8 +53,20 @@ export type PipelinePreview = {
     sourceField: string;
     targetHint: string;
     confidence: number;
+    status?: "unchecked" | "ready" | "will_create_target" | "missing_target";
+    message?: string;
   }>;
 };
+
+export function stableDiscoveryCiId(targetClass: string, name: string, environment?: string) {
+  const slug = [targetClass, environment || "global", name]
+    .join("-")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 180);
+  return `disc-${slug}`;
+}
 
 type AiConfig =
   | { provider: "provara"; url: string; key: string; tenantId?: string; model: string }
@@ -125,7 +137,7 @@ function applyTransform(value: unknown, transform: string): unknown {
   return text;
 }
 
-export function previewPipeline(definition: PipelineDefinition, targetClasses: TargetClass[] = []): PipelinePreview {
+export function previewPipeline(definition: PipelineDefinition, targetClasses: TargetClass[] = [], existingCiIds = new Set<string>()): PipelinePreview {
   const proposal = definition.proposal;
   const rows = definition.sample?.rows || proposal?.sourceProfile?.sampleRows || [];
   const classMap = new Map(targetClasses.map((cls) => [cls.name, cls]));
@@ -170,7 +182,7 @@ export function previewPipeline(definition: PipelineDefinition, targetClasses: T
 
       records.push({
         row: rowIndex + 1,
-        action: errors.length ? "review" : "create",
+        action: errors.length ? "review" : existingCiIds.has(stableDiscoveryCiId(targetClass, name || `${targetClass} row ${rowIndex + 1}`, environment)) ? "update" : "create",
         targetClass,
         name: name || `${targetClass} row ${rowIndex + 1}`,
         environment,
@@ -191,12 +203,14 @@ export function previewPipeline(definition: PipelineDefinition, targetClasses: T
         sourceField: rule.sourceField,
         targetHint,
         confidence: rule.confidence,
+        status: "unchecked",
       });
     }
   });
 
   const errors = records.reduce((total, record) => total + record.errors.length, 0);
-  const warnings = records.reduce((total, record) => total + record.warnings.length, 0);
+  const warnings = records.reduce((total, record) => total + record.warnings.length, 0)
+    + relationships.filter((relationship) => relationship.status === "missing_target").length;
   return {
     summary: { rows: rows.length, stagedRecords: records.length, relationshipCandidates: relationships.length, errors, warnings },
     records,

@@ -36,6 +36,12 @@ function fastifyWithPg(pg: any = {}) {
       connect: vi.fn(),
       ...pg,
     },
+    neo4j: {
+      session: vi.fn(() => ({
+        run: vi.fn(async () => ({ records: [] })),
+        close: vi.fn(async () => {}),
+      })),
+    },
     log: { info: vi.fn(), error: vi.fn() },
     addHook: vi.fn(),
   } as any;

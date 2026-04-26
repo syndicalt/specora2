@@ -1,28 +1,134 @@
 import type { FastifyInstance } from "fastify";
-import { previewPipeline, type PipelineDefinition, type TargetClass } from "./discoveryTransform";
+import { previewPipeline, stableDiscoveryCiId, type PipelineDefinition, type PipelinePreview, type TargetClass } from "./discoveryTransform";
 
 const ALLOWED_RELATIONSHIPS = new Set(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]);
-
-function stableCiId(targetClass: string, name: string, environment?: string) {
-  const slug = [targetClass, environment || "global", name]
-    .join("-")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 180);
-  return `disc-${slug}`;
-}
 
 function relType(type: string) {
   if (type === "RUNS_ON") return "HOSTED_ON";
   return ALLOWED_RELATIONSHIPS.has(type) ? type : null;
 }
 
+async function findExistingPreviewCiIds(fastify: FastifyInstance, preview: PipelinePreview) {
+  const candidates = preview.records
+    .filter((record) => !record.errors.length)
+    .map((record) => ({
+      ciId: stableDiscoveryCiId(record.targetClass, record.name, record.environment),
+      targetClass: record.targetClass,
+      name: record.name,
+      environment: record.environment || null,
+      attributes: record.attributes || {},
+      matchKeys: record.matchKeys || [],
+    }));
+  if (!candidates.length) return new Set<string>();
+
+  const session = fastify.neo4j.session();
+  try {
+    const result = await session.run(
+      `UNWIND $candidates AS candidate
+       MATCH (n:ConfigurationItem)
+       WHERE n.id = candidate.ciId
+          OR (
+            n.class = candidate.targetClass
+            AND size(candidate.matchKeys) > 0
+            AND all(key IN candidate.matchKeys WHERE
+              CASE key
+                WHEN 'name' THEN toLower(coalesce(n.name, '')) = toLower(coalesce(candidate.name, ''))
+                WHEN 'environment' THEN coalesce(n.environment, '') = coalesce(candidate.environment, '')
+                ELSE toLower(coalesce(toString(n[key]), '')) = toLower(coalesce(toString(candidate.attributes[key]), ''))
+              END
+            )
+          )
+       RETURN DISTINCT candidate.ciId AS ciId`,
+      { candidates }
+    );
+    return new Set(
+      result.records
+        .map((record: any) => record.get("ciId"))
+        .filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+function relationshipKey(relationship: PipelinePreview["relationships"][number], index: number) {
+  return `${index}:${relationship.row}:${relationship.toClass}:${relationship.targetHint}`;
+}
+
+function plannedTargetExists(preview: PipelinePreview, relationship: PipelinePreview["relationships"][number]) {
+  const targetHint = relationship.targetHint.toLowerCase();
+  return preview.records.some((record) => (
+    record.targetClass === relationship.toClass
+    && !record.errors.length
+    && (record.name.toLowerCase() === targetHint || stableDiscoveryCiId(record.targetClass, record.name, record.environment) === relationship.targetHint)
+  ));
+}
+
+async function findExistingRelationshipTargets(fastify: FastifyInstance, preview: PipelinePreview) {
+  const candidates = preview.relationships
+    .map((relationship, index) => ({
+      key: relationshipKey(relationship, index),
+      toClass: relationship.toClass,
+      targetHint: relationship.targetHint,
+    }))
+    .filter((candidate) => candidate.targetHint);
+  if (!candidates.length) return new Set<string>();
+
+  const session = fastify.neo4j.session();
+  try {
+    const result = await session.run(
+      `UNWIND $candidates AS candidate
+       MATCH (target:ConfigurationItem)
+       WHERE target.class = candidate.toClass
+         AND (toLower(coalesce(target.name, '')) = toLower(candidate.targetHint) OR target.id = candidate.targetHint)
+       RETURN DISTINCT candidate.key AS key`,
+      { candidates }
+    );
+    return new Set(
+      result.records
+        .map((record: any) => record.get("key"))
+        .filter((key: unknown): key is string => typeof key === "string" && key.length > 0)
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+async function enrichRelationshipTargets(fastify: FastifyInstance, preview: PipelinePreview): Promise<PipelinePreview> {
+  const existingTargets = await findExistingRelationshipTargets(fastify, preview);
+  const relationships = preview.relationships.map((relationship, index) => {
+    if (!relationship.targetHint) {
+      return { ...relationship, status: "missing_target" as const, message: `No target value was found in ${relationship.sourceField}` };
+    }
+    if (existingTargets.has(relationshipKey(relationship, index))) {
+      return { ...relationship, status: "ready" as const, message: `${relationship.toClass} ${relationship.targetHint} exists` };
+    }
+    if (plannedTargetExists(preview, relationship)) {
+      return { ...relationship, status: "will_create_target" as const, message: `${relationship.toClass} ${relationship.targetHint} will be created by this run` };
+    }
+    return { ...relationship, status: "missing_target" as const, message: `${relationship.toClass} ${relationship.targetHint} does not exist` };
+  });
+  const warnings = preview.records.reduce((total, record) => total + record.warnings.length, 0)
+    + relationships.filter((relationship) => relationship.status === "missing_target").length;
+  return { ...preview, relationships, summary: { ...preview.summary, warnings } };
+}
+
+export async function previewDiscoveryPipelineWithReconciliation(
+  fastify: FastifyInstance,
+  definition: PipelineDefinition,
+  targetClasses: TargetClass[] = []
+) {
+  const preview = previewPipeline(definition, targetClasses);
+  const existingCiIds = await findExistingPreviewCiIds(fastify, preview);
+  const reconciledPreview = existingCiIds.size ? previewPipeline(definition, targetClasses, existingCiIds) : preview;
+  return enrichRelationshipTargets(fastify, reconciledPreview);
+}
+
 export async function stageDiscoveryPipeline(
   fastify: FastifyInstance,
   input: { pipelineId: string; pipelineName: string; definition: PipelineDefinition; targetClasses: TargetClass[]; pipelineVersion?: number; triggerSource?: "manual" | "scheduled" }
 ) {
-  const preview = previewPipeline(input.definition, input.targetClasses);
+  const preview = await previewDiscoveryPipelineWithReconciliation(fastify, input.definition, input.targetClasses);
   if (preview.summary.errors > 0 || preview.summary.stagedRecords === 0) {
     return { ready: false as const, preview };
   }
@@ -41,7 +147,7 @@ export async function stageDiscoveryPipeline(
   const job = jobResult.rows[0];
 
   for (const record of preview.records) {
-    const ciId = stableCiId(record.targetClass, record.name, record.environment);
+    const ciId = stableDiscoveryCiId(record.targetClass, record.name, record.environment);
     await fastify.pg.query(
       `INSERT INTO discovery_staged_records
        (discovery_job_id, row_number, action, target_class, ci_id, name, environment, attributes, match_keys, errors, warnings, status)
@@ -78,8 +184,8 @@ export async function stageDiscoveryPipeline(
         relationship.sourceField,
         relationship.targetHint || null,
         relationship.confidence,
-        normalizedType ? "staged" : "blocked",
-        normalizedType ? null : `Unsupported relationship type ${relationship.type}`,
+        normalizedType && relationship.status !== "missing_target" ? "staged" : "blocked",
+        normalizedType ? relationship.message || null : `Unsupported relationship type ${relationship.type}`,
       ]
     );
   }
@@ -185,12 +291,13 @@ export async function commitStagedDiscoveryJob(fastify: FastifyInstance, jobId: 
     for (const relationship of staged.relationships.filter((rel: any) => ["staged", "approved"].includes(rel.status))) {
       const source = commitRecords.find((record: any) => record.row_number === relationship.row_number && record.target_class === relationship.from_class);
       if (!source || !relationship.target_hint) continue;
-      await session.run(
+      const result = await session.run(
         `MATCH (source:ConfigurationItem {id: $sourceId})
          MATCH (target:ConfigurationItem)
          WHERE target.class = $toClass AND (target.name = $targetHint OR target.id = $targetHint)
          MERGE (source)-[r:${relationship.rel_type}]->(target)
-         SET r.attributes = $attributes`,
+         SET r.attributes = $attributes
+         RETURN count(r) as count`,
         {
           sourceId: source.ci_id,
           toClass: relationship.to_class,
@@ -198,6 +305,8 @@ export async function commitStagedDiscoveryJob(fastify: FastifyInstance, jobId: 
           attributes: JSON.stringify({ source: "discovery", discoveryJobId: jobId, confidence: Number(relationship.confidence || 0) }),
         }
       );
+      const createdRelationship = (result.records[0]?.get("count")?.toNumber?.() ?? Number(result.records[0]?.get("count") || 0)) > 0;
+      if (!createdRelationship) continue;
       relationships += 1;
       await fastify.pg.query(
         `UPDATE discovery_staged_relationships SET status = 'committed', updated_at = NOW() WHERE id = $1`,

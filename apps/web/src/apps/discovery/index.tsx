@@ -136,7 +136,7 @@ type PipelineDefinition = {
 type PipelinePreview = {
   summary: { rows: number; stagedRecords: number; relationshipCandidates: number; errors: number; warnings: number };
   records: Array<{ row: number; action: string; targetClass: string; name: string; environment?: string; attributes: Record<string, unknown>; matchKeys: string[]; errors: string[]; warnings: string[] }>;
-  relationships: Array<{ row: number; fromClass: string; toClass: string; type: string; sourceField: string; targetHint: string; confidence: number }>;
+  relationships: Array<{ row: number; fromClass: string; toClass: string; type: string; sourceField: string; targetHint: string; confidence: number; status?: "unchecked" | "ready" | "will_create_target" | "missing_target"; message?: string }>;
 };
 
 type DiscoveryNodeKind = "source" | "profile" | "transform" | "router" | "validator" | "linker" | "reconcile" | "stage" | "target" | "schedule";
@@ -286,6 +286,7 @@ const NODE_CATALOG: Array<{
   color: string;
   icon: LucideIcon;
 }> = [
+  { kind: "schedule", title: "Trigger / Schedule", detail: "Run manually, interval-based, or integration-triggered", color: "#94a3b8", icon: Clock },
   { kind: "source", title: "Source", detail: "Read rows from CSV, API, DB, or cloud inventory", color: "#38bdf8", icon: FileSpreadsheet },
   { kind: "profile", title: "Profile", detail: "Infer schema, keys, cardinality, and data quality", color: "#a78bfa", icon: FileCheck2 },
   { kind: "transform", title: "Transform", detail: "Normalize fields, map attributes, and enrich rows", color: "#6366f1", icon: MapIcon },
@@ -295,7 +296,6 @@ const NODE_CATALOG: Array<{
   { kind: "reconcile", title: "Reconcile", detail: "Match existing CIs and decide create/update strategy", color: "#eab308", icon: GitCommitHorizontal },
   { kind: "stage", title: "Stage", detail: "Preview safe changes before commit", color: "#22c55e", icon: Eye },
   { kind: "target", title: "Target", detail: "Commit into CMDB classes and relationship types", color: "#10b981", icon: Database },
-  { kind: "schedule", title: "Schedule", detail: "Run manually, interval-based, or integration-triggered", color: "#94a3b8", icon: Clock },
 ];
 
 function catalogFor(kind: DiscoveryNodeKind) {
@@ -1281,7 +1281,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                     <button onClick={() => approveAllSafe(staged.job.id)} disabled={loading} className="rounded-md border border-cyan-300/50 px-3 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
                       Approve Safe
                     </button>
-                    <button onClick={() => commitStagedJob(staged.job.id)} disabled={loading || staged.records.some((record) => record.status === "blocked")} className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">
+                    <button onClick={() => commitStagedJob(staged.job.id)} disabled={loading || staged.records.some((record) => record.status === "blocked") || staged.relationships.some((relationship) => relationship.status === "blocked")} className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">
                       Commit
                     </button>
                   </div>
@@ -1299,6 +1299,16 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                           Skip
                         </button>
                       )}
+                    </div>
+                  ))}
+                  {staged.relationships.filter((relationship) => relationship.status === "blocked").slice(0, 8).map((relationship) => (
+                    <div key={relationship.id} className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate text-sm text-amber-100">{relationship.rel_type}: {relationship.target_hint || "missing target"}</span>
+                        <span className="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-200">blocked</span>
+                      </div>
+                      <div className="mt-1 text-xs text-amber-100/70">row {relationship.row_number} · {relationship.from_class} to {relationship.to_class}</div>
+                      {relationship.message && <div className="mt-1 text-xs text-amber-100/80">{relationship.message}</div>}
                     </div>
                   ))}
                 </div>
@@ -1542,6 +1552,18 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                           </div>
                           <div className="mt-1 text-xs text-gray-500">row {record.row} · keys {record.matchKeys.join(", ")}</div>
                           {[...record.errors, ...record.warnings].map((issue) => <div key={issue} className="mt-1 text-xs text-amber-200">{issue}</div>)}
+                        </div>
+                      ))}
+                      {preview.relationships.filter((relationship) => relationship.status === "missing_target").slice(0, 6).map((relationship, index) => (
+                        <div key={`${relationship.row}-${relationship.type}-${relationship.targetHint}-${index}`} className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate text-sm text-amber-100">{relationship.type}: {relationship.targetHint || "missing target"}</span>
+                            <span className="shrink-0 rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-200">missing target</span>
+                          </div>
+                          <div className="mt-1 text-xs text-amber-100/70">
+                            row {relationship.row} · {relationship.fromClass} to {relationship.toClass}
+                          </div>
+                          {relationship.message && <div className="mt-1 text-xs text-amber-100/80">{relationship.message}</div>}
                         </div>
                       ))}
                     </div>

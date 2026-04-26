@@ -5,8 +5,8 @@ import { randomUUID } from "crypto";
 import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
 import { enqueueJob } from "../services/jobQueue";
-import { previewPipeline, proposeTransform } from "../services/discoveryTransform";
-import { approveAllSafeStagedRecords, commitStagedDiscoveryJob, getStagedDiscoveryJob, updateStagedDiscoveryRecords } from "../services/discoveryExecution";
+import { proposeTransform } from "../services/discoveryTransform";
+import { approveAllSafeStagedRecords, commitStagedDiscoveryJob, getStagedDiscoveryJob, previewDiscoveryPipelineWithReconciliation, updateStagedDiscoveryRecords } from "../services/discoveryExecution";
 import { nextDiscoveryRunAt, normalizeScheduleInterval, runSavedDiscoveryPipeline } from "../services/discoveryScheduler";
 import { hasPermission, resolveUserRole } from "../services/rbac";
 import { recordRouteAudit } from "./auditHelpers";
@@ -206,7 +206,7 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
       definition?: any;
       targetClasses?: Array<{ name: string; displayName?: string; attributes?: Array<{ name: string; isMandatory?: boolean; isKeyAttribute?: boolean }> }>;
     };
-    return previewPipeline(body.definition || {}, body.targetClasses || []);
+    return previewDiscoveryPipelineWithReconciliation(fastify, body.definition || {}, body.targetClasses || []);
   });
 
   fastify.post("/discovery/pipelines/:id/preview", { onRequest: [fastify.authenticate] }, async (request, reply) => {
@@ -217,7 +217,7 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     };
     const result = await fastify.pg.query("SELECT definition FROM discovery_pipelines WHERE id = $1", [id]);
     if (!result.rows.length) return reply.status(404).send({ error: "Pipeline not found" });
-    return previewPipeline(result.rows[0].definition || {}, body.targetClasses || []);
+    return previewDiscoveryPipelineWithReconciliation(fastify, result.rows[0].definition || {}, body.targetClasses || []);
   });
 
   fastify.post("/discovery/pipelines/:id/run", { onRequest: [fastify.authenticate] }, async (request, reply) => {

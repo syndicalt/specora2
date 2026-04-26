@@ -4,7 +4,7 @@ import multipart from "@fastify/multipart";
 import { discoveryRoutes } from "./discovery";
 
 describe("discoveryRoutes", () => {
-  async function buildApp() {
+  async function buildApp(neo4jRun?: (sql: string, params?: any) => Promise<any>) {
     const app = Fastify();
     await app.register(multipart);
     const queuedResults: any[] = [];
@@ -18,7 +18,8 @@ describe("discoveryRoutes", () => {
     });
     app.decorate("neo4j", {
       session: vi.fn(() => ({
-        run: vi.fn(async (sql: string) => {
+        run: vi.fn(async (sql: string, params?: any) => {
+          if (neo4jRun) return neo4jRun(sql, params);
           if (sql.includes("RETURN count(n)")) return { records: [{ get: () => ({ toNumber: () => 0 }) }] };
           return { records: [{ get: () => ({ properties: { id: "disc-server-web01" } }) }] };
         }),
@@ -251,6 +252,67 @@ describe("discoveryRoutes", () => {
     const body = JSON.parse(response.body);
     expect(body.summary.stagedRecords).toBe(1);
     expect(body.records[0]).toMatchObject({ name: "web01", environment: "Production" });
+  });
+
+  it("marks preview records as updates when reconciliation finds an existing CI", async () => {
+    const app = await buildApp(async () => ({
+      records: [{ get: (key: string) => key === "ciId" ? "disc-server-production-api01" : null }],
+    }));
+    const response = await app.inject({
+      method: "POST",
+      url: "/discovery/pipelines/preview",
+      payload: {
+        targetClasses: [{ name: "Server" }],
+        definition: {
+          sample: { rows: [{ hostname: "API01", environment: "prod" }] },
+          proposal: {
+            classRoutes: [{ targetClass: "Server", sourcePattern: "columns", confidence: 0.8, rationale: "host" }],
+            fieldMappings: [
+              { sourceField: "hostname", targetClass: "Server", targetField: "name", transform: "trim_lowercase", confidence: 0.9 },
+              { sourceField: "environment", targetClass: "Server", targetField: "environment", transform: "normalize_environment", confidence: 0.9 },
+            ],
+            relationshipRules: [],
+            reconciliationRules: [{ targetClass: "Server", matchKeys: ["name", "environment"], strategy: "create_or_update" }],
+          },
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).records[0]).toMatchObject({ name: "api01", environment: "Production", action: "update" });
+  });
+
+  it("surfaces missing relationship targets during preview", async () => {
+    const app = await buildApp(async () => ({ records: [] }));
+    const response = await app.inject({
+      method: "POST",
+      url: "/discovery/pipelines/preview",
+      payload: {
+        targetClasses: [{ name: "Server" }, { name: "Database" }],
+        definition: {
+          sample: { rows: [{ hostname: "WEB01", db_host: "sql01", environment: "prod" }] },
+          proposal: {
+            classRoutes: [{ targetClass: "Server", sourcePattern: "columns", confidence: 0.8, rationale: "host" }],
+            fieldMappings: [
+              { sourceField: "hostname", targetClass: "Server", targetField: "name", transform: "trim_lowercase", confidence: 0.9 },
+              { sourceField: "environment", targetClass: "Server", targetField: "environment", transform: "normalize_environment", confidence: 0.9 },
+            ],
+            relationshipRules: [{ fromClass: "Server", toClass: "Database", type: "DEPENDS_ON", sourceField: "db_host", confidence: 0.8 }],
+            reconciliationRules: [{ targetClass: "Server", matchKeys: ["name", "environment"], strategy: "create_or_update" }],
+          },
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.summary.warnings).toBe(1);
+    expect(body.relationships[0]).toMatchObject({
+      toClass: "Database",
+      targetHint: "sql01",
+      status: "missing_target",
+      message: "Database sql01 does not exist",
+    });
   });
 
   it("runs a saved pipeline by staging records and enqueueing worker processing", async () => {
