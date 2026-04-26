@@ -7,7 +7,7 @@ import { getToken } from "@/lib/auth";
 
 export default function HomePage() {
   const router = useRouter();
-  const [authorized, setAuthorized] = useState(() => Boolean(getToken()));
+  const [authorized, setAuthorized] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (!getToken()) {
