@@ -7,9 +7,11 @@ import ReactFlow, {
   Handle,
   MarkerType,
   Position,
+  addEdge,
   applyNodeChanges,
   useEdgesState,
   useNodesState,
+  type Connection,
   type Edge,
   type Node,
   type NodeChange,
@@ -23,17 +25,26 @@ import {
   CheckCircle2,
   Clock,
   Database,
+  FileCheck2,
   Eye,
   FileSpreadsheet,
   GitBranch,
+  GitCommitHorizontal,
   Link2,
+  Map as MapIcon,
+  MousePointer2,
   Play,
+  Plus,
   RefreshCw,
+  Route,
   Save,
   Sparkles,
+  Trash2,
   Upload,
+  Workflow,
   Wand2,
   XCircle,
+  type LucideIcon,
 } from "lucide-react";
 
 type DiscoveryJob = {
@@ -122,9 +133,16 @@ type PipelinePreview = {
   relationships: Array<{ row: number; fromClass: string; toClass: string; type: string; sourceField: string; targetHint: string; confidence: number }>;
 };
 
+type DiscoveryNodeKind = "source" | "profile" | "transform" | "router" | "validator" | "linker" | "reconcile" | "stage" | "target" | "schedule";
+
 type DiscoveryFlowNodeData = {
-  label: string;
+  kind: DiscoveryNodeKind;
+  title: string;
+  detail: string;
   color: string;
+  metric?: string;
+  status?: "idle" | "ready" | "warning" | "error" | "success";
+  label?: string;
 };
 
 type StagedDiscoveryJob = {
@@ -234,12 +252,44 @@ function statusIcon(status: string) {
   }
 }
 
-function node(id: string, label: string, detail: string, x: number, y: number, color = "#6366f1"): Node {
+const NODE_CATALOG: Array<{
+  kind: DiscoveryNodeKind;
+  title: string;
+  detail: string;
+  color: string;
+  icon: LucideIcon;
+}> = [
+  { kind: "source", title: "Source", detail: "Read rows from CSV, API, DB, or cloud inventory", color: "#38bdf8", icon: FileSpreadsheet },
+  { kind: "profile", title: "Profile", detail: "Infer schema, keys, cardinality, and data quality", color: "#a78bfa", icon: FileCheck2 },
+  { kind: "transform", title: "Transform", detail: "Normalize fields, map attributes, and enrich rows", color: "#6366f1", icon: MapIcon },
+  { kind: "router", title: "Class Router", detail: "Route records to CI classes with rules or AI rationale", color: "#f59e0b", icon: Route },
+  { kind: "validator", title: "Validate", detail: "Block bad rows before they reach staging", color: "#fb7185", icon: AlertTriangle },
+  { kind: "linker", title: "Linker", detail: "Create CSDM relationships and dependency edges", color: "#14b8a6", icon: Link2 },
+  { kind: "reconcile", title: "Reconcile", detail: "Match existing CIs and decide create/update strategy", color: "#eab308", icon: GitCommitHorizontal },
+  { kind: "stage", title: "Stage", detail: "Preview safe changes before commit", color: "#22c55e", icon: Eye },
+  { kind: "target", title: "Target", detail: "Commit into CMDB classes and relationship types", color: "#10b981", icon: Database },
+  { kind: "schedule", title: "Schedule", detail: "Run manually, interval-based, or integration-triggered", color: "#94a3b8", icon: Clock },
+];
+
+function catalogFor(kind: DiscoveryNodeKind) {
+  return NODE_CATALOG.find((item) => item.kind === kind) || NODE_CATALOG[0];
+}
+
+function node(
+  id: string,
+  label: string,
+  detail: string,
+  x: number,
+  y: number,
+  color = "#6366f1",
+  kind: DiscoveryNodeKind = "transform",
+  metric?: string
+): Node<DiscoveryFlowNodeData> {
   return {
     id,
     type: "discoveryNode",
     position: { x, y },
-    data: { label: `${label}\n${detail}`, color },
+    data: { kind, title: label, detail, color, metric, status: metric ? "ready" : "idle" },
     style: {
       width: 190,
       minHeight: 72,
@@ -300,22 +350,22 @@ function proposalToFlow(proposal: TransformProposal | null, sourceName: string):
     return {
       nodes: [
         node("source", "1. Source", sourceName || "Paste or upload sample data", 20, 120, "#38bdf8"),
-        node("profile", "2. Profile", "Detect columns, quality, keys", 260, 120, "#a78bfa"),
-        node("ai", "3. AI Draft", "Generate mappings and routes", 500, 120, "#f59e0b"),
-        node("stage", "4. Stage", "Preview create/update/link", 740, 120, "#22c55e"),
+        node("profile", "2. Profile", "Detect columns, quality, keys", 260, 120, "#a78bfa", "profile"),
+        node("ai", "3. AI Draft", "Generate mappings and routes", 500, 120, "#f59e0b", "transform"),
+        node("stage", "4. Stage", "Preview create/update/link", 740, 120, "#22c55e", "stage"),
       ],
       edges: [edge("e1", "source", "profile"), edge("e2", "profile", "ai"), edge("e3", "ai", "stage")],
     };
   }
 
   const nodes: Node[] = [
-    node("source", "Source", sourceName, 20, 140, "#38bdf8"),
-    node("profile", "Profile", `${proposal.fieldMappings.length} mapped fields`, 250, 140, "#a78bfa"),
-    node("classify", "Classify", proposal.classRoutes.map((r) => r.targetClass).join(", "), 480, 60, "#f59e0b"),
-    node("map", "Transform", `${proposal.fieldMappings.length} field rules`, 480, 220, "#6366f1"),
-    node("link", "Link", `${proposal.relationshipRules.length} relationship rules`, 710, 60, "#14b8a6"),
-    node("reconcile", "Reconcile", proposal.reconciliationRules.map((r) => r.matchKeys.join("+")).join(", "), 710, 220, "#eab308"),
-    node("stage", "Stage", `Confidence ${pct(proposal.confidence)}`, 940, 140, "#22c55e"),
+    node("source", "Source", sourceName, 20, 140, "#38bdf8", "source", `${proposal.classRoutes.length} routes`),
+    node("profile", "Profile", `${proposal.fieldMappings.length} mapped fields`, 250, 140, "#a78bfa", "profile", `${proposal.fieldMappings.length} fields`),
+    node("classify", "Class Router", proposal.classRoutes.map((r) => r.targetClass).join(", "), 480, 60, "#f59e0b", "router", pct(Math.max(...proposal.classRoutes.map((r) => r.confidence), proposal.confidence))),
+    node("map", "Transform", `${proposal.fieldMappings.length} field rules`, 480, 220, "#6366f1", "transform", `${proposal.fieldMappings.length} rules`),
+    node("link", "Linker", `${proposal.relationshipRules.length} relationship rules`, 710, 60, "#14b8a6", "linker", `${proposal.relationshipRules.length} links`),
+    node("reconcile", "Reconcile", proposal.reconciliationRules.map((r) => r.matchKeys.join("+")).join(", "), 710, 220, "#eab308", "reconcile", `${proposal.reconciliationRules.length} keys`),
+    node("stage", "Stage", `Confidence ${pct(proposal.confidence)}`, 940, 140, "#22c55e", "stage", pct(proposal.confidence)),
   ];
 
   return {
@@ -340,11 +390,21 @@ function keepPositions(nextNodes: Node[], currentNodes: Node[]) {
 const nodeTypes = { discoveryNode: DiscoveryFlowNode };
 
 function DiscoveryFlowNode({ data, selected }: NodeProps<DiscoveryFlowNodeData>) {
-  const [title, ...details] = data.label.split("\n");
+  const fallback = data.label?.split("\n") || [];
+  const title = data.title || fallback[0] || "Pipeline step";
+  const detail = data.detail || fallback.slice(1).join(" ");
+  const catalog = catalogFor(data.kind || "transform");
+  const Icon = catalog.icon;
   const handleClass = "!h-2 !w-2 !border !border-gray-950 !bg-cyan-300";
+  const statusClass =
+    data.status === "success" ? "bg-emerald-400" :
+    data.status === "warning" ? "bg-amber-300" :
+    data.status === "error" ? "bg-rose-400" :
+    data.status === "ready" ? "bg-cyan-300" :
+    "bg-gray-600";
   return (
     <div
-      className={`relative rounded-lg border bg-gray-900 px-3 py-3 text-gray-100 shadow-xl ${selected ? "ring-2 ring-cyan-300/70" : ""}`}
+      className={`relative rounded-lg border bg-gray-900 px-3 py-3 text-gray-100 shadow-xl transition-shadow ${selected ? "ring-2 ring-cyan-300/70" : ""}`}
       style={{ width: 190, minHeight: 72, borderColor: data.color }}
     >
       <Handle id="top" type="target" position={Position.Top} className={handleClass} />
@@ -355,8 +415,21 @@ function DiscoveryFlowNode({ data, selected }: NodeProps<DiscoveryFlowNodeData>)
       <Handle id="bottom" type="source" position={Position.Bottom} className={handleClass} />
       <Handle id="left" type="target" position={Position.Left} className={handleClass} />
       <Handle id="left" type="source" position={Position.Left} className={handleClass} />
-      <div className="text-sm font-semibold leading-5">{title}</div>
-      {details.length > 0 && <div className="mt-1 text-xs leading-5 text-gray-400">{details.join(" ")}</div>}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-950" style={{ color: data.color }}>
+            <Icon className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 truncate text-sm font-semibold leading-5">{title}</div>
+        </div>
+        <span className={`h-2 w-2 shrink-0 rounded-full ${statusClass}`} />
+      </div>
+      {detail && <div className="line-clamp-2 text-xs leading-5 text-gray-400">{detail}</div>}
+      {data.metric && (
+        <div className="mt-2 inline-flex rounded bg-gray-950 px-2 py-0.5 text-[11px] font-medium text-cyan-200">
+          {data.metric}
+        </div>
+      )}
     </div>
   );
 }
@@ -378,6 +451,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [sourceForm, setSourceForm] = useState<SourceForm>({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "" });
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<"builder" | "pipelines" | "runs" | "sources">("builder");
   const loadErrorRef = useRef("");
@@ -390,6 +464,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [edges, setEdges, onEdgesChange] = useEdgesState(generatedFlow.edges);
   const risks = proposal?.risks || [];
   const currentPipeline = useMemo(() => pipelines.find((pipeline) => pipeline.id === currentPipelineId) || null, [pipelines, currentPipelineId]);
+  const selectedNode = useMemo(() => nodes.find((item) => item.id === selectedNodeId) || null, [nodes, selectedNodeId]);
   const isPublished = currentPipeline?.status === "published" || !!(currentPipeline?.last_published_at || currentPipeline?.lastPublishedAt);
   const readyStep = proposal ? preview ? currentPipelineId ? isPublished ? staged ? "Commit" : "Run" : "Publish" : "Preview" : "Map" : "Source";
 
@@ -408,6 +483,62 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       return next;
     });
   }, [setEdges, setNodes]);
+
+  const onConnect = useCallback((connection: Connection) => {
+    setEdges((current) => withDynamicEdgeHandles(addEdge({
+      ...connection,
+      id: `e-${connection.source}-${connection.target}-${Date.now()}`,
+      type: "smoothstep",
+      animated: true,
+      markerEnd: { type: MarkerType.ArrowClosed },
+      style: { stroke: "#818cf8" },
+    }, current), nodes));
+    setPreview(null);
+    setStaged(null);
+  }, [nodes, setEdges]);
+
+  function addCanvasNode(kind: DiscoveryNodeKind) {
+    const catalog = catalogFor(kind);
+    const id = `${kind}-${Date.now().toString(36)}`;
+    const x = 160 + (nodes.length % 4) * 210;
+    const y = 120 + Math.floor(nodes.length / 4) * 130;
+    const next = node(id, catalog.title, catalog.detail, x, y, catalog.color, kind);
+    setNodes((current) => [...current, next]);
+    setSelectedNodeId(id);
+    setPreview(null);
+    setStaged(null);
+  }
+
+  function updateCanvasNode(id: string, patch: Partial<DiscoveryFlowNodeData>) {
+    setNodes((current) => current.map((item) => item.id === id ? { ...item, data: { ...item.data, ...patch } } : item));
+    setPreview(null);
+    setStaged(null);
+  }
+
+  function duplicateSelectedNode() {
+    if (!selectedNode) return;
+    const id = `${selectedNode.data.kind}-${Date.now().toString(36)}`;
+    setNodes((current) => [
+      ...current,
+      {
+        ...selectedNode,
+        id,
+        selected: false,
+        position: { x: selectedNode.position.x + 36, y: selectedNode.position.y + 36 },
+        data: { ...selectedNode.data, title: `${selectedNode.data.title} copy` },
+      },
+    ]);
+    setSelectedNodeId(id);
+  }
+
+  function deleteSelectedNode() {
+    if (!selectedNodeId) return;
+    setNodes((current) => current.filter((item) => item.id !== selectedNodeId));
+    setEdges((current) => current.filter((item) => item.source !== selectedNodeId && item.target !== selectedNodeId));
+    setSelectedNodeId(null);
+    setPreview(null);
+    setStaged(null);
+  }
 
   const definition = useCallback((): PipelineDefinition => ({
     source: selectedSource ? { id: selectedSource.id, name: selectedSource.name, type: selectedSource.type } : { name: sourceName, type: "manual" },
@@ -819,6 +950,32 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setPreview(null);
   }
 
+  async function runNodeAction(kind: DiscoveryNodeKind) {
+    switch (kind) {
+      case "source":
+      case "profile":
+        if (!profile.columns.length) shell.notify("Paste or select a source with a header row first", "error");
+        else shell.notify(`Profiled ${profile.columns.length} columns across ${profile.rows.length} sample rows`, "success");
+        return;
+      case "transform":
+      case "router":
+        await draftTransform();
+        return;
+      case "validator":
+      case "stage":
+        await previewPipeline();
+        return;
+      case "schedule":
+        await saveSchedule();
+        return;
+      case "target":
+        await runPipeline();
+        return;
+      default:
+        shell.notify("Select a downstream action from the inspector", "success");
+    }
+  }
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-gray-950 text-gray-100">
       <header className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3">
@@ -1126,7 +1283,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
           </aside>
 
           <section className="relative min-h-[460px] bg-gray-950 xl:min-h-0">
-            <div className="absolute left-4 top-4 z-10 flex gap-2">
+            <div className="absolute left-4 top-4 z-10 flex flex-wrap gap-2">
               <button onClick={draftTransform} disabled={loading} className="flex items-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-400 disabled:opacity-60">
                 <Wand2 className="h-4 w-4" />
                 {loading ? "Drafting..." : "AI Draft Transform"}
@@ -1148,13 +1305,65 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 Run
               </button>
             </div>
-            <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} nodesDraggable fitView proOptions={{ hideAttribution: true }}>
+            <div className="absolute bottom-4 left-4 z-10 w-[min(720px,calc(100%-7rem))] rounded-lg border border-gray-800 bg-gray-900/95 p-3 shadow-2xl backdrop-blur">
+              <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                <Workflow className="h-3.5 w-3.5 text-cyan-300" />
+                Add pipeline step
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {NODE_CATALOG.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.kind}
+                      onClick={() => addCanvasNode(item.kind)}
+                      className="flex min-w-32 items-center gap-2 rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-left text-xs text-gray-300 hover:border-cyan-500/50 hover:bg-cyan-500/10"
+                      title={item.detail}
+                    >
+                      <Icon className="h-4 w-4 shrink-0" style={{ color: item.color }} />
+                      <span className="truncate">{item.title}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="pointer-events-none absolute right-4 top-4 z-10 max-w-xs rounded-lg border border-gray-800 bg-gray-900/95 p-3 text-xs text-gray-400 shadow-2xl backdrop-blur">
+              <div className="mb-1 flex items-center gap-2 font-medium text-gray-200">
+                <MousePointer2 className="h-3.5 w-3.5 text-cyan-300" />
+                Canvas is the builder
+              </div>
+              Drag nodes, connect handles, select a step to configure it, and run node-scoped previews.
+            </div>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onNodeClick={(_, clickedNode) => setSelectedNodeId(clickedNode.id)}
+              onPaneClick={() => setSelectedNodeId(null)}
+              nodesDraggable
+              nodesConnectable
+              edgesUpdatable
+              fitView
+              proOptions={{ hideAttribution: true }}
+            >
               <Background color="#374151" gap={18} />
               <Controls position="bottom-right" showInteractive={false} />
             </ReactFlow>
           </section>
 
           <aside className="min-h-0 overflow-auto border-t border-gray-800 bg-gray-950 p-4 pb-24 xl:border-l xl:border-t-0">
+            <NodeInspector
+              selectedNode={selectedNode}
+              onChange={(patch) => selectedNode && updateCanvasNode(selectedNode.id, patch)}
+              onRun={(kind) => runNodeAction(kind)}
+              onDuplicate={duplicateSelectedNode}
+              onDelete={deleteSelectedNode}
+              edgeCount={selectedNode ? edges.filter((item) => item.source === selectedNode.id || item.target === selectedNode.id).length : 0}
+            />
+
             <div className="mb-4 flex items-center gap-2">
               <Bot className="h-5 w-5 text-cyan-300" />
               <div>
@@ -1263,6 +1472,108 @@ function ReviewBlock({ icon, title, children }: { icon: React.ReactNode; title: 
         {title}
       </div>
       <div className="space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function NodeInspector({
+  selectedNode,
+  onChange,
+  onRun,
+  onDuplicate,
+  onDelete,
+  edgeCount,
+}: {
+  selectedNode: Node<DiscoveryFlowNodeData> | null;
+  onChange: (patch: Partial<DiscoveryFlowNodeData>) => void;
+  onRun: (kind: DiscoveryNodeKind) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  edgeCount: number;
+}) {
+  if (!selectedNode) {
+    return (
+      <section className="mb-4 rounded-lg border border-dashed border-gray-800 bg-gray-900/60 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-gray-200">
+          <MousePointer2 className="h-4 w-4 text-cyan-300" />
+          Select a canvas step
+        </div>
+        <p className="mt-2 text-sm text-gray-500">Click a node to configure its role, run its local action, duplicate it, or remove it from the pipeline definition.</p>
+      </section>
+    );
+  }
+
+  const catalog = catalogFor(selectedNode.data.kind);
+  const Icon = catalog.icon;
+  const titleId = `discovery-node-title-${selectedNode.id}`;
+  const detailId = `discovery-node-detail-${selectedNode.id}`;
+  const kindId = `discovery-node-kind-${selectedNode.id}`;
+  const actionLabel =
+    selectedNode.data.kind === "transform" || selectedNode.data.kind === "router" ? "AI draft from here" :
+    selectedNode.data.kind === "validator" || selectedNode.data.kind === "stage" ? "Preview through here" :
+    selectedNode.data.kind === "target" ? "Run published target" :
+    selectedNode.data.kind === "schedule" ? "Save schedule" :
+    "Run step check";
+
+  return (
+    <section className="mb-4 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-950" style={{ color: selectedNode.data.color }}>
+            <Icon className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-semibold text-cyan-50">Canvas Inspector</h2>
+            <p className="text-xs text-cyan-100/60">{edgeCount} connected edge{edgeCount === 1 ? "" : "s"}</p>
+          </div>
+        </div>
+        <button onClick={onDelete} className="rounded-md p-2 text-cyan-100/70 hover:bg-rose-500/20 hover:text-rose-200" title="Delete node">
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        <label htmlFor={kindId} className="block text-xs text-cyan-100/60">Step type</label>
+        <select
+          id={kindId}
+          value={selectedNode.data.kind}
+          onChange={(event) => {
+            const kind = event.target.value as DiscoveryNodeKind;
+            const next = catalogFor(kind);
+            onChange({ kind, title: next.title, detail: next.detail, color: next.color });
+          }}
+          className="w-full rounded-md border border-cyan-500/20 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-400"
+        >
+          {NODE_CATALOG.map((item) => <option key={item.kind} value={item.kind}>{item.title}</option>)}
+        </select>
+
+        <label htmlFor={titleId} className="block text-xs text-cyan-100/60">Title</label>
+        <input
+          id={titleId}
+          value={selectedNode.data.title}
+          onChange={(event) => onChange({ title: event.target.value })}
+          className="w-full rounded-md border border-cyan-500/20 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-400"
+        />
+
+        <label htmlFor={detailId} className="block text-xs text-cyan-100/60">Behavior note</label>
+        <textarea
+          id={detailId}
+          value={selectedNode.data.detail}
+          onChange={(event) => onChange({ detail: event.target.value })}
+          className="h-20 w-full resize-none rounded-md border border-cyan-500/20 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-400"
+        />
+
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={() => onRun(selectedNode.data.kind)} className="flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-300">
+            <Play className="h-4 w-4" />
+            {actionLabel}
+          </button>
+          <button onClick={onDuplicate} className="flex items-center justify-center gap-2 rounded-md border border-cyan-500/30 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/10">
+            <Plus className="h-4 w-4" />
+            Duplicate
+          </button>
+        </div>
+      </div>
     </section>
   );
 }

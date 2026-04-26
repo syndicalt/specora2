@@ -155,6 +155,15 @@ test.describe("demo spine smoke coverage", () => {
 
     await page.getByRole("button", { name: "Builder" }).click();
     await expect(page.locator("textarea")).toHaveValue(new RegExp(host));
+    await expect(page.getByText("Add pipeline step")).toBeVisible();
+    await page.getByRole("button", { name: "Validate" }).click();
+    await expect(page.getByText("Canvas Inspector")).toBeVisible();
+    await page.getByLabel("Title").fill("Schema Gate");
+    await expect(page.getByText("Schema Gate")).toBeVisible();
+    await page.getByRole("button", { name: "Duplicate" }).click();
+    await expect(page.getByText("Schema Gate copy")).toBeVisible();
+    await page.getByTitle("Delete node").click();
+    await expect(page.getByText("Schema Gate copy")).toHaveCount(0);
     await page.getByRole("button", { name: "AI Draft Transform" }).click();
     await expect(page.getByText("Field Mappings")).toBeVisible();
     await page.getByRole("button", { name: "Preview" }).click();
