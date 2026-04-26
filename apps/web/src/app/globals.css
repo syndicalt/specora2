@@ -6,6 +6,15 @@ html, body, #__next {
   height: 100%;
 }
 
+:root {
+  --specora-dock-safe-area: 112px;
+}
+
+.specora-dock-inset-target {
+  padding-bottom: max(var(--specora-original-bottom-padding, 0px), var(--specora-dock-safe-area)) !important;
+  scroll-padding-bottom: var(--specora-dock-safe-area);
+}
+
 /* React Flow controls — pinned top-right, dark theme */
 .react-flow__controls {
   position: absolute !important;
@@ -47,8 +56,13 @@ html, body, #__next {
 }
 
 /* Custom thin scrollbar for dark theme */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #4b5563 transparent;
+}
 .scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
+  width: 6px;
+  height: 6px;
 }
 .scrollbar-thin::-webkit-scrollbar-track {
   background: transparent;
@@ -56,6 +70,8 @@ html, body, #__next {
 .scrollbar-thin::-webkit-scrollbar-thumb {
   background: #4b5563;
   border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
   background: #6b7280;
@@ -77,5 +93,3 @@ html, body, #__next {
   animation: node-highlight-pulse 1.5s ease-in-out 2;
   border: 2px solid #fbbf24 !important;
 }
-
-

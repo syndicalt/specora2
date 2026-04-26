@@ -119,7 +119,12 @@ Core variables:
 | `PROVARA_URL` | API | Provara API endpoint for LLM routing |
 | `PROVARA_API_KEY` | API | Provara API key |
 | `PROVARA_TENANT_ID` | API | Optional Provara tenant ID |
+| `PROVARA_MODEL` | API | Optional default Provara model/router name |
 | `OPENAI_API_KEY` | API | Direct OpenAI fallback for chat |
+| `OPENAI_MODEL` | API | Optional default direct OpenAI fallback model |
+| `DISCOVERY_PROVARA_MODEL` | API | Optional Provara model/router override for Discovery transform drafting |
+| `DISCOVERY_OPENAI_MODEL` | API | Optional direct OpenAI fallback model for Discovery transform drafting |
+| `DISCOVERY_AI_TIMEOUT_MS` | API | Optional timeout for Discovery transform drafting |
 | `REDIS_URL` | API | Redis URL for multi-instance pub/sub, default `redis://localhost:6379` |
 | `UPLOAD_DIR` | API | Discovery upload directory, default `./uploads` |
 
@@ -130,7 +135,13 @@ Do not commit `.env` files.
 - [AGENTS.md](AGENTS.md) is the compact source of truth for coding agents.
 - [ROADMAP.md](ROADMAP.md) tracks released capability, near-term work, technical debt, and decisions.
 - [CHANGELOG.md](CHANGELOG.md) records release-level changes.
+- [docs/README.md](docs/README.md) is the documentation index.
+- [docs/platform-architecture-and-theory.md](docs/platform-architecture-and-theory.md) explains platform architecture and the theories behind major choices.
+- [docs/csdmv5-compliance.md](docs/csdmv5-compliance.md) documents CSDMv5 alignment, implemented subset, and roadmap gaps.
+- [docs/application-catalog.md](docs/application-catalog.md) catalogs the native applications and integration standards.
+- [docs/platform-marking-sheet.md](docs/platform-marking-sheet.md) provides the platform and per-application marking sheet.
 - [docs/llm-routing.md](docs/llm-routing.md) explains current chat model routing and tool-call behavior.
+- [docs/seeding-e2e-and-coverage.md](docs/seeding-e2e-and-coverage.md) documents seed layers, current coverage, E2E direction, and testing lessons learned.
 - [CLAUDE.md](CLAUDE.md), [CURSOR.md](CURSOR.md), [README-KARPATHY.md](README-KARPATHY.md), [README.zh.md](README.zh.md), [EXAMPLES.md](EXAMPLES.md), and [skills/karpathy-guidelines/SKILL.md](skills/karpathy-guidelines/SKILL.md) are imported coding-agent behavior guidelines, not Specora product architecture.
 
 ## User Experience Notes

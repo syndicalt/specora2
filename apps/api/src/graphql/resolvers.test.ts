@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import neo4j from "neo4j-driver";
 import { resolvers } from "./resolvers";
+import { clearPermissionCache } from "../services/rbac";
+
+beforeEach(() => {
+  clearPermissionCache();
+});
 
 function mockNeo4jSession(records: any[] = [], secondRecords?: any[]) {
   const allRecords = secondRecords !== undefined ? [records, secondRecords] : [records];
@@ -113,6 +118,46 @@ describe("Query.cis", () => {
   });
 });
 
+describe("Query.ciClasses", () => {
+  it("maps class metadata from Postgres", async () => {
+    const pg = mockPg([{
+      id: "class-1",
+      name: "BusinessService",
+      display_name: "Business Service",
+      description: "Customer-facing service",
+      parent_class: null,
+      icon: "Briefcase",
+      color: "#22c55e",
+      is_system: true,
+      created_by_app_id: "platform",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }]);
+
+    const result = await resolvers.Query.ciClasses(null, {}, mockContext(mockNeo4jSession(), {}, pg));
+
+    expect(result).toEqual([expect.objectContaining({
+      name: "BusinessService",
+      displayName: "Business Service",
+      parentClass: null,
+      isSystem: true,
+      createdByAppId: "platform",
+    })]);
+  });
+
+  it("rejects callers without CMDB read permission", async () => {
+    const pg = mockPg([]);
+    const context = {
+      ...mockContext(mockNeo4jSession(), {}, pg),
+      user: { id: "u-viewer", email: "viewer@specora.dev", role: "viewer" },
+    };
+
+    await expect(resolvers.Query.ciClasses(null, {}, context)).rejects.toMatchObject({
+      extensions: { code: "FORBIDDEN" },
+    });
+  });
+});
+
 describe("Query.serviceMap", () => {
   it("returns nodes and edges for a root CI", async () => {
     const root = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
@@ -139,6 +184,66 @@ describe("Query.serviceMap", () => {
     );
     const result = await resolvers.Query.serviceMap(null, { rootId: "bs-1" }, mockContext(session));
     expect(result.edges).toHaveLength(1);
+  });
+
+  it("rejects relationship filters outside the allowlist", async () => {
+    const root = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
+    const session = mockNeo4jSession([makeRecord(root)]);
+
+    await expect(
+      resolvers.Query.serviceMap(null, { rootId: "bs-1", relationshipFilter: ["DEPENDS_ON", "BAD_TYPE"] }, mockContext(session))
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+
+    expect(session.run).toHaveBeenCalledTimes(1);
+    expect(session.close).toHaveBeenCalled();
+  });
+});
+
+describe("Query.neighbors", () => {
+  it("returns only directly connected nodes with a safe relationship pattern", async () => {
+    const root = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
+    const related = makeNode({ id: "as-1", name: "API", class: "ApplicationService" });
+    const rel = { type: "DEPENDS_ON", start: "bs-1", end: "as-1" };
+    const session = mockNeo4jSession([makeRecord(root)], [makeRecord(root, rel, related)]);
+
+    const result = await resolvers.Query.neighbors(null, { nodeId: "bs-1", types: ["DEPENDS_ON"], limit: 10 }, mockContext(session));
+
+    expect(result.nodes).toHaveLength(2);
+    expect(result.edges).toHaveLength(1);
+    expect(session.run).toHaveBeenLastCalledWith(
+      expect.stringContaining("-[:DEPENDS_ON*1]-"),
+      expect.objectContaining({ limit: expect.objectContaining({ low: 10, high: 0 }) })
+    );
+  });
+
+  it("rejects invalid relationship types before running the expansion query", async () => {
+    const root = makeNode({ id: "bs-1", name: "Portal", class: "BusinessService" });
+    const session = mockNeo4jSession([makeRecord(root)]);
+
+    await expect(
+      resolvers.Query.neighbors(null, { nodeId: "bs-1", types: ["MATCH (n) DETACH DELETE n"] }, mockContext(session))
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+
+    expect(session.run).toHaveBeenCalledTimes(1);
+    expect(session.close).toHaveBeenCalled();
+  });
+});
+
+describe("Query.dependencyPath", () => {
+  it("returns null when no dependency path exists", async () => {
+    const session = mockNeo4jSession([]);
+    const result = await resolvers.Query.dependencyPath(null, { fromId: "a", toId: "b", maxHops: 3 }, mockContext(session));
+    expect(result).toBeNull();
+    expect(session.run).toHaveBeenCalledWith(expect.stringContaining("*1..3"), { fromId: "a", toId: "b" });
+  });
+
+  it("rejects out-of-range hop counts before running Cypher", async () => {
+    const session = mockNeo4jSession([]);
+    await expect(
+      resolvers.Query.dependencyPath(null, { fromId: "a", toId: "b", maxHops: 99 }, mockContext(session))
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+    expect(session.run).not.toHaveBeenCalled();
+    expect(session.close).toHaveBeenCalled();
   });
 });
 
@@ -170,6 +275,69 @@ describe("Mutation.createCI", () => {
     const result = await resolvers.Mutation.createCI(null, { input: { name: "Test", class: "Server" } }, mockContext(session));
     expect(result.name).toBe("Test");
     expect(session.run).toHaveBeenCalled();
+  });
+
+  it("applies class defaults to typed top-level properties and keeps extra attributes in JSON", async () => {
+    const session = mockNeo4jSession([
+      makeRecord(makeNode({
+        id: "new-1",
+        name: "Web",
+        class: "Server",
+        status: "operational",
+        attributes: "{\"notes\":\"rack 1\"}",
+      })),
+    ]);
+    const pg = mockPgSequence([
+      { rows: [{ id: "class-1", name: "Server", parent_class: null }] },
+      { rows: [
+        { id: "attr-1", class_id: "class-1", name: "status", display_name: "Status", attr_type: "enum", is_mandatory: false, default_value: "operational", enum_values: ["operational"], sort_order: 1, depth: 0 },
+      ] },
+      { rows: [{ id: "class-1", name: "Server", parent_class: null }] },
+      { rows: [
+        { id: "attr-1", class_id: "class-1", name: "status", display_name: "Status", attr_type: "enum", is_mandatory: false, default_value: "operational", enum_values: ["operational"], sort_order: 1, depth: 0 },
+      ] },
+    ]);
+
+    const result = await resolvers.Mutation.createCI(
+      null,
+      { input: { name: "Web", class: "Server", attributes: { notes: "rack 1" } } },
+      mockContext(session, {}, pg)
+    );
+
+    expect(result.status).toBe("operational");
+    expect(result.attributes).toEqual({ notes: "rack 1" });
+    expect(session.run).toHaveBeenCalledWith(
+      expect.stringContaining("SET n += $topLevelProps"),
+      expect.objectContaining({
+        topLevelProps: { status: "operational" },
+        attributes: JSON.stringify({ notes: "rack 1" }),
+      })
+    );
+  });
+
+  it("rejects unknown classes before creating a Neo4j node", async () => {
+    const session = mockNeo4jSession([]);
+    const pg = mockPgSequence([{ rows: [] }]);
+
+    await expect(
+      resolvers.Mutation.createCI(null, { input: { name: "Mystery", class: "UnknownClass" } }, mockContext(session, {}, pg))
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+    expect(session.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing mandatory class attributes", async () => {
+    const session = mockNeo4jSession([]);
+    const pg = mockPgSequence([
+      { rows: [{ id: "class-1", name: "Server", parent_class: null }] },
+      { rows: [
+        { id: "attr-1", class_id: "class-1", name: "asset_tag", display_name: "Asset Tag", attr_type: "string", is_mandatory: true, default_value: null, sort_order: 1, depth: 0 },
+      ] },
+    ]);
+
+    await expect(
+      resolvers.Mutation.createCI(null, { input: { name: "Web", class: "Server" } }, mockContext(session, {}, pg))
+    ).rejects.toThrow("Missing mandatory attribute 'Asset Tag'");
+    expect(session.run).not.toHaveBeenCalled();
   });
 
   it("rejects invalid input", async () => {
@@ -312,6 +480,16 @@ function mockPg(rows: any[] = []) {
   };
 }
 
+function mockPgSequence(results: any[]) {
+  let idx = 0;
+  return {
+    query: vi.fn().mockImplementation(() => {
+      const result = results[idx++] ?? { rows: [] };
+      return Promise.resolve(result);
+    }),
+  };
+}
+
 function mockContextWithPg(session: any, pg: any, worker = {}) {
   return {
     neo4j: { session: () => session },
@@ -354,12 +532,31 @@ describe("Query.discoveryJob", () => {
 
 describe("Mutation.createDiscoverySource", () => {
   it("creates a discovery source", async () => {
-    const pg = mockPg([{ id: "src-1", name: "CSV", type: "file", config: "{}", createdAt: "2024-01-01" }]);
+    const pg = mockPg([{ id: "src-1", name: "CSV", type: "file", config: "{}", created_at: "2024-01-01" }]);
     const result = await resolvers.Mutation.createDiscoverySource(null, { name: "CSV", type: "file" }, mockContextWithPg(mockNeo4jSession(), pg));
     expect(result.name).toBe("CSV");
+    expect(result.createdAt).toBe("2024-01-01");
     expect(pg.query).toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO discovery_sources"),
       expect.anything()
+    );
+  });
+});
+
+describe("Mutation.updateDiscoverySource", () => {
+  it("updates a discovery source and clears stale health status", async () => {
+    const pg = mockPg([{ id: "src-1", name: "Inventory API", type: "api", config: { endpoint: "https://inventory.example/api" }, credential_ref: "vault://inventory", created_at: "2024-01-01", updated_at: "2024-01-02" }]);
+    const result = await resolvers.Mutation.updateDiscoverySource(
+      null,
+      { id: "src-1", name: "Inventory API", type: "api", config: { endpoint: "https://inventory.example/api", credentialRef: "vault://inventory" } },
+      mockContextWithPg(mockNeo4jSession(), pg)
+    );
+
+    expect(result.name).toBe("Inventory API");
+    expect(result.credentialRef).toBe("vault://inventory");
+    expect(pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE discovery_sources"),
+      ["src-1", "Inventory API", "api", JSON.stringify({ endpoint: "https://inventory.example/api", credentialRef: "vault://inventory" }), "vault://inventory"]
     );
   });
 });
@@ -537,5 +734,87 @@ describe("Mutation.updatePreferences", () => {
     await expect(
       resolvers.Mutation.updatePreferences(null, { preferences: {} }, { neo4j: { session: () => mockNeo4jSession() }, pg: mockPg(), user: null })
     ).rejects.toThrow("Unauthorized");
+  });
+});
+
+describe("Saved view resolvers", () => {
+  it("returns only the authenticated user's saved views", async () => {
+    const pg = mockPg([{
+      id: "view-1",
+      name: "Critical Service",
+      root_id: "bs-1",
+      class_filter: ["BusinessService"],
+      environment_filter: ["Production"],
+      relationship_filter: ["DEPENDS_ON"],
+      camera_x: 10,
+      camera_y: 20,
+      camera_zoom: 1.2,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }]);
+
+    const result = await resolvers.Query.savedViews(null, {}, mockContextWithPg(mockNeo4jSession(), pg));
+
+    expect(result).toEqual([expect.objectContaining({
+      id: "view-1",
+      rootId: "bs-1",
+      classFilter: ["BusinessService"],
+      cameraZoom: 1.2,
+    })]);
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("WHERE user_id = $1"), ["550e8400-e29b-41d4-a716-446655440001"]);
+  });
+
+  it("creates saved views with serialized filters and camera state", async () => {
+    const pg = mockPg([{
+      id: "view-1",
+      name: "Critical Service",
+      root_id: "bs-1",
+      class_filter: ["Server"],
+      environment_filter: ["Prod"],
+      relationship_filter: ["HOSTED_ON"],
+      camera_x: 1,
+      camera_y: 2,
+      camera_zoom: 0.75,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+    }]);
+
+    const result = await resolvers.Mutation.createSavedView(null, {
+      name: "Critical Service",
+      rootId: "bs-1",
+      classFilter: ["Server"],
+      environmentFilter: ["Prod"],
+      relationshipFilter: ["HOSTED_ON"],
+      cameraX: 1,
+      cameraY: 2,
+      cameraZoom: 0.75,
+    }, mockContextWithPg(mockNeo4jSession(), pg));
+
+    expect(result.rootId).toBe("bs-1");
+    expect(pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO saved_views"),
+      [
+        "550e8400-e29b-41d4-a716-446655440001",
+        "Critical Service",
+        "bs-1",
+        JSON.stringify(["Server"]),
+        JSON.stringify(["Prod"]),
+        JSON.stringify(["HOSTED_ON"]),
+        1,
+        2,
+        0.75,
+      ]
+    );
+  });
+
+  it("rejects empty saved view updates", async () => {
+    await expect(
+      resolvers.Mutation.updateSavedView(null, { id: "view-1" }, mockContextWithPg(mockNeo4jSession(), mockPg()))
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+  });
+
+  it("returns false when deleting a missing saved view", async () => {
+    const result = await resolvers.Mutation.deleteSavedView(null, { id: "missing" }, mockContextWithPg(mockNeo4jSession(), mockPg([])));
+    expect(result).toBe(false);
   });
 });

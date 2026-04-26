@@ -1,0 +1,853 @@
+import type { FastifyInstance } from "fastify";
+import { randomUUID } from "crypto";
+import neo4j from "neo4j-driver";
+import { hasPermission, resolveUserRole } from "../services/rbac";
+import { assignRecordNumberToRow } from "../services/numberSequences";
+import { recordAuditEvent } from "../services/auditLog";
+
+type TableAction = "read" | "write" | "delete";
+type FilterOperator =
+  | "contains"
+  | "equals"
+  | "notEquals"
+  | "startsWith"
+  | "endsWith"
+  | "empty"
+  | "notEmpty"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte";
+
+type TableFilter = {
+  field: string;
+  operator: FilterOperator;
+  value?: unknown;
+};
+
+type TableDefinition = {
+  id: string;
+  name: string;
+  label: string;
+  provider: "cmdb-class" | "postgres-table";
+  className?: string;
+  tableName?: string;
+  nameField?: string;
+  searchableFields?: string[];
+  auditFields?: string[];
+  hasNumber?: boolean;
+  resource: string;
+  actions: TableAction[];
+  category: "cmdb" | "foundation" | "itsm" | "itam" | "platform";
+  attributes: Array<{
+    name: string;
+    displayName: string;
+    attrType: string;
+    isMandatory: boolean;
+    isHealthRequired: boolean;
+    isKeyAttribute: boolean;
+    enumValues?: string[];
+    referenceClass?: string;
+  }>;
+};
+
+type PostgresTableRegistration = {
+  tableName: string;
+  label: string;
+  category: "itsm" | "itam" | "platform";
+  nameField?: string;
+  searchableFields?: string[];
+};
+
+const FOUNDATION_CLASSES = new Set([
+  "User",
+  "Group",
+  "Location",
+  "Company",
+  "BusinessUnit",
+  "Department",
+  "Contract",
+  "CostCenter",
+  "BusinessProcess",
+  "CMDBGroup",
+  "ProductModel",
+]);
+
+const POSTGRES_TABLES: PostgresTableRegistration[] = [
+  { tableName: "discovery_sources", label: "Discovery Sources", category: "platform", nameField: "name", searchableFields: ["name", "type"] },
+  { tableName: "discovery_jobs", label: "Discovery Jobs", category: "platform", searchableFields: ["status", "file_path"] },
+  { tableName: "discovery_pipelines", label: "Discovery Pipelines", category: "platform", nameField: "name", searchableFields: ["name", "description"] },
+  { tableName: "reconciliation_rules", label: "Reconciliation Rules", category: "platform", nameField: "ci_class", searchableFields: ["ci_class"] },
+  { tableName: "reconciliation_logs", label: "Reconciliation Logs", category: "platform", nameField: "ci_id", searchableFields: ["ci_id", "action"] },
+  { tableName: "change_requests", label: "Change Requests", category: "itsm", nameField: "title", searchableFields: ["title", "description", "status", "ci_id"] },
+  { tableName: "change_request_comments", label: "Change Comments", category: "itsm", nameField: "content", searchableFields: ["content"] },
+  { tableName: "change_request_risk_history", label: "Change Risk History", category: "itsm", nameField: "priority", searchableFields: ["priority", "computed_by"] },
+  { tableName: "incidents", label: "Incidents", category: "itsm", nameField: "title", searchableFields: ["title", "description", "service", "status", "severity", "ci_id"] },
+  { tableName: "incident_events", label: "Incident Events", category: "itsm", nameField: "message", searchableFields: ["type", "message"] },
+  { tableName: "incident_actions", label: "Incident Actions", category: "itsm", nameField: "name", searchableFields: ["name", "kind", "status", "risk_level"] },
+  { tableName: "incident_postmortems", label: "Incident Postmortems", category: "itsm", nameField: "summary", searchableFields: ["summary", "root_cause", "status"] },
+  { tableName: "knowledge_items", label: "Knowledge Items", category: "itsm", nameField: "title", searchableFields: ["title", "summary", "content", "status", "type", "service"] },
+  { tableName: "knowledge_links", label: "Knowledge Links", category: "itsm", nameField: "relationship", searchableFields: ["target_type", "target_id", "relationship"] },
+  { tableName: "knowledge_feedback", label: "Knowledge Feedback", category: "itsm", nameField: "comment", searchableFields: ["outcome", "comment"] },
+  { tableName: "knowledge_gaps", label: "Knowledge Gaps", category: "itsm", nameField: "query", searchableFields: ["query", "status"] },
+  { tableName: "knowledge_events", label: "Knowledge Events", category: "itsm", nameField: "message", searchableFields: ["type", "message"] },
+  { tableName: "prevention_records", label: "Prevention Records", category: "itsm", nameField: "title", searchableFields: ["title", "description", "status", "category", "service", "ci_id"] },
+  { tableName: "prevention_evidence", label: "Prevention Evidence", category: "itsm", nameField: "summary", searchableFields: ["source_type", "source_id", "summary"] },
+  { tableName: "prevention_actions", label: "Prevention Actions", category: "itsm", nameField: "title", searchableFields: ["title", "type", "status", "target_app"] },
+  { tableName: "prevention_events", label: "Prevention Events", category: "itsm", nameField: "message", searchableFields: ["type", "message"] },
+  { tableName: "asset_records", label: "Asset Records", category: "itam", nameField: "name", searchableFields: ["name", "asset_tag", "serial_number", "status", "location", "ci_id"] },
+  { tableName: "asset_contracts", label: "Asset Contracts", category: "itam", nameField: "name", searchableFields: ["name", "vendor", "contract_type", "status", "source_ref"] },
+  { tableName: "software_entitlements", label: "Software Entitlements", category: "itam", nameField: "product", searchableFields: ["publisher", "product", "sku", "metric", "status"] },
+  { tableName: "software_usage", label: "Software Usage", category: "itam", nameField: "product", searchableFields: ["publisher", "product", "normalized_product", "version", "source_ref", "ci_id"] },
+  { tableName: "asset_evidence", label: "Asset Evidence", category: "itam", nameField: "evidence_type", searchableFields: ["evidence_type", "source", "source_ref"] },
+  { tableName: "asset_scan_events", label: "Asset Scan Events", category: "itam", nameField: "value", searchableFields: ["scan_type", "value", "action", "location", "condition"] },
+  { tableName: "asset_reconciliation_runs", label: "Asset Reconciliation Runs", category: "itam", nameField: "summary", searchableFields: ["type", "status", "summary"] },
+  { tableName: "asset_exceptions", label: "Asset Exceptions", category: "itam", nameField: "title", searchableFields: ["title", "detail", "type", "severity", "status"] },
+];
+
+const AUDIT_COLUMNS = new Set(["created_at", "updated_at"]);
+
+function parseAttributes(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function parseNode(node: any) {
+  const props = node.properties || node;
+  return {
+    ...props,
+    attributes: parseAttributes(props.attributes),
+  };
+}
+
+function normalizeEnumValues(value: unknown): string[] | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function displayName(value: string): string {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function quoteIdentifier(value: string): string {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
+    throw new Error("Invalid SQL identifier");
+  }
+  return `"${value.replace(/"/g, "\"\"")}"`;
+}
+
+function postgresAttrType(dataType: string): string {
+  if (["integer", "bigint", "numeric", "double precision", "real"].includes(dataType)) return "number";
+  if (dataType === "boolean") return "boolean";
+  if (dataType.includes("timestamp") || dataType === "date") return "datetime";
+  if (dataType === "json" || dataType === "jsonb" || dataType === "ARRAY") return "json";
+  return "string";
+}
+
+function serializePostgresValue(value: unknown, attrType?: string): unknown {
+  if (value === "" || value === undefined) return null;
+  if (attrType === "json") {
+    if (typeof value === "string") {
+      try {
+        return JSON.stringify(JSON.parse(value));
+      } catch {
+        return value;
+      }
+    }
+    return JSON.stringify(value ?? {});
+  }
+  if (attrType === "number") {
+    const next = Number(value);
+    return Number.isFinite(next) ? next : value;
+  }
+  if (attrType === "boolean") {
+    if (value === true || value === "true") return true;
+    if (value === false || value === "false") return false;
+  }
+  return value;
+}
+
+async function getRole(fastify: FastifyInstance, user: { id?: string; role?: string } | null): Promise<string | null> {
+  return resolveUserRole(fastify.pg, user);
+}
+
+async function canUseTable(fastify: FastifyInstance, role: string | null, action: TableAction): Promise<boolean> {
+  if (!role) return false;
+  if (action === "delete") {
+    return hasPermission(fastify.pg, { role, resource: "tables", action: "write" });
+  }
+  return hasPermission(fastify.pg, { role, resource: "tables", action });
+}
+
+async function getTables(fastify: FastifyInstance): Promise<TableDefinition[]> {
+  const [classes, columns] = await Promise.all([
+    fastify.pg.query(
+    `SELECT c.id, c.name, c.display_name, c.description, c.icon, c.color,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'name', a.name,
+                  'displayName', a.display_name,
+                  'attrType', a.attr_type,
+                  'isMandatory', a.is_mandatory,
+                  'isHealthRequired', a.is_health_required,
+                  'isKeyAttribute', a.is_key_attribute,
+                  'enumValues', a.enum_values,
+                  'referenceClass', a.reference_class
+                )
+                ORDER BY a.sort_order, a.name
+              ) FILTER (WHERE a.id IS NOT NULL),
+              '[]'
+            ) AS attributes
+     FROM ci_classes c
+     LEFT JOIN ci_class_attributes a ON a.class_id = c.id
+     GROUP BY c.id, c.name, c.display_name, c.description, c.icon, c.color
+     ORDER BY c.display_name, c.name`
+    ),
+    fastify.pg.query(
+      `SELECT table_name, column_name, data_type, udt_name, is_nullable, column_default
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = ANY($1)
+       ORDER BY table_name, ordinal_position`,
+      [POSTGRES_TABLES.map((table) => table.tableName)]
+    ),
+  ]);
+
+  const cmdbTables: TableDefinition[] = classes.rows.map((row: any) => {
+    const attrs = Array.isArray(row.attributes) ? row.attributes : JSON.parse(row.attributes || "[]");
+    return {
+      id: `cmdb.${row.name}`,
+      name: `cmdb.${row.name}`,
+      label: row.display_name || row.name,
+      provider: "cmdb-class" as const,
+      className: row.name,
+      resource: "tables",
+      actions: ["read", "write", "delete"] as TableAction[],
+      category: FOUNDATION_CLASSES.has(row.name) ? "foundation" as const : "cmdb" as const,
+      attributes: attrs.map((attr: any) => ({
+        ...attr,
+        enumValues: normalizeEnumValues(attr.enumValues),
+      })),
+    };
+  });
+
+  const columnsByTable = new Map<string, any[]>();
+  for (const column of columns.rows) {
+    if (!columnsByTable.has(column.table_name)) columnsByTable.set(column.table_name, []);
+    columnsByTable.get(column.table_name)?.push(column);
+  }
+
+  const postgresTables: TableDefinition[] = [];
+  for (const registration of POSTGRES_TABLES) {
+      const tableColumns = columnsByTable.get(registration.tableName) || [];
+      if (!tableColumns.length) continue;
+      const hasId = tableColumns.some((column) => column.column_name === "id");
+      const hasNumber = tableColumns.some((column) => column.column_name === "number");
+      if (!hasId) continue;
+      const nameField = registration.nameField && tableColumns.some((column) => column.column_name === registration.nameField)
+        ? registration.nameField
+        : "id";
+      const attrs = tableColumns
+        .filter((column) => column.column_name !== "id" && column.column_name !== "number" && column.column_name !== nameField && !AUDIT_COLUMNS.has(column.column_name))
+        .map((column) => ({
+          name: column.column_name,
+          displayName: displayName(column.column_name),
+          attrType: postgresAttrType(column.data_type === "USER-DEFINED" ? column.udt_name : column.data_type),
+          isMandatory: column.is_nullable === "NO" && column.column_default == null,
+          isHealthRequired: false,
+          isKeyAttribute: registration.searchableFields?.includes(column.column_name) || false,
+        }));
+      postgresTables.push({
+        id: `pg.${registration.tableName}`,
+        name: `pg.${registration.tableName}`,
+        label: registration.label,
+        provider: "postgres-table" as const,
+        tableName: registration.tableName,
+        className: registration.tableName,
+        nameField,
+        hasNumber,
+        searchableFields: (registration.searchableFields || [nameField]).filter((field) => tableColumns.some((column) => column.column_name === field)),
+        auditFields: tableColumns.filter((column) => AUDIT_COLUMNS.has(column.column_name)).map((column) => column.column_name),
+        resource: "tables",
+        actions: ["read", "write", "delete"] as TableAction[],
+        category: registration.category,
+        attributes: attrs,
+      });
+  }
+
+  return [...cmdbTables, ...postgresTables];
+}
+
+async function resolveTable(fastify: FastifyInstance, tableId: string): Promise<TableDefinition | null> {
+  const tables = await getTables(fastify);
+  return tables.find((table) => table.id === tableId || table.name === tableId) || null;
+}
+
+function splitAttrs(input: Record<string, unknown> | undefined): Record<string, unknown> {
+  return input && typeof input === "object" ? input : {};
+}
+
+function escapeProperty(name: string): string {
+  return name.replace(/`/g, "``");
+}
+
+function propertyExpression(field: string): string {
+  return `n.\`${escapeProperty(field)}\``;
+}
+
+function parseFilters(value: unknown): TableFilter[] {
+  if (!value || typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => item && typeof item === "object")
+      .map((item) => item as TableFilter)
+      .filter((item) => typeof item.field === "string" && typeof item.operator === "string");
+  } catch {
+    return [];
+  }
+}
+
+function coerceFilterValue(value: unknown, attrType?: string): unknown {
+  if (value === undefined || value === null) return null;
+  if (attrType === "number") {
+    const next = Number(value);
+    return Number.isFinite(next) ? next : value;
+  }
+  if (attrType === "boolean") {
+    if (value === true || value === "true") return true;
+    if (value === false || value === "false") return false;
+  }
+  return value;
+}
+
+function buildFilterWhere(table: TableDefinition, filters: TableFilter[], params: Record<string, unknown>): string[] {
+  const allowed = new Map<string, { attrType?: string }>();
+  allowed.set("id", { attrType: "string" });
+  allowed.set("name", { attrType: "string" });
+  allowed.set("environment", { attrType: "string" });
+  for (const attr of table.attributes) {
+    allowed.set(attr.name, { attrType: attr.attrType });
+  }
+
+  const clauses: string[] = [];
+  filters.forEach((filter, index) => {
+    const field = allowed.get(filter.field);
+    if (!field) return;
+    const prop = propertyExpression(filter.field);
+    const paramName = `filter_${index}`;
+    const value = coerceFilterValue(filter.value, field.attrType);
+
+    switch (filter.operator) {
+      case "contains":
+        clauses.push(`toLower(toString(${prop})) CONTAINS toLower($${paramName})`);
+        params[paramName] = String(value ?? "");
+        break;
+      case "equals":
+        clauses.push(`${prop} = $${paramName}`);
+        params[paramName] = value;
+        break;
+      case "notEquals":
+        clauses.push(`(${prop} IS NULL OR ${prop} <> $${paramName})`);
+        params[paramName] = value;
+        break;
+      case "startsWith":
+        clauses.push(`toLower(toString(${prop})) STARTS WITH toLower($${paramName})`);
+        params[paramName] = String(value ?? "");
+        break;
+      case "endsWith":
+        clauses.push(`toLower(toString(${prop})) ENDS WITH toLower($${paramName})`);
+        params[paramName] = String(value ?? "");
+        break;
+      case "empty":
+        clauses.push(`(${prop} IS NULL OR toString(${prop}) = "")`);
+        break;
+      case "notEmpty":
+        clauses.push(`(${prop} IS NOT NULL AND toString(${prop}) <> "")`);
+        break;
+      case "gt":
+        clauses.push(`${prop} > $${paramName}`);
+        params[paramName] = value;
+        break;
+      case "gte":
+        clauses.push(`${prop} >= $${paramName}`);
+        params[paramName] = value;
+        break;
+      case "lt":
+        clauses.push(`${prop} < $${paramName}`);
+        params[paramName] = value;
+        break;
+      case "lte":
+        clauses.push(`${prop} <= $${paramName}`);
+        params[paramName] = value;
+        break;
+      default:
+        break;
+    }
+  });
+  return clauses;
+}
+
+function buildPostgresFilterWhere(table: TableDefinition, filters: TableFilter[], params: unknown[]): string[] {
+  const allowed = new Map<string, { column: string; attrType?: string }>();
+  allowed.set("id", { column: "id", attrType: "string" });
+  if (table.nameField) allowed.set("name", { column: table.nameField, attrType: "string" });
+  for (const attr of table.attributes) {
+    allowed.set(attr.name, { column: attr.name, attrType: attr.attrType });
+  }
+
+  const clauses: string[] = [];
+  for (const filter of filters) {
+    const field = allowed.get(filter.field);
+    if (!field) continue;
+    const column = quoteIdentifier(field.column);
+    const value = coerceFilterValue(filter.value, field.attrType);
+    const addParam = (nextValue: unknown) => {
+      params.push(nextValue);
+      return `$${params.length}`;
+    };
+
+    switch (filter.operator) {
+      case "contains":
+        clauses.push(`LOWER(${column}::text) LIKE LOWER(${addParam(`%${String(value ?? "")}%`)})`);
+        break;
+      case "equals":
+        clauses.push(`${column} = ${addParam(serializePostgresValue(value, field.attrType))}`);
+        break;
+      case "notEquals":
+        clauses.push(`(${column} IS NULL OR ${column} <> ${addParam(serializePostgresValue(value, field.attrType))})`);
+        break;
+      case "startsWith":
+        clauses.push(`LOWER(${column}::text) LIKE LOWER(${addParam(`${String(value ?? "")}%`)})`);
+        break;
+      case "endsWith":
+        clauses.push(`LOWER(${column}::text) LIKE LOWER(${addParam(`%${String(value ?? "")}`)})`);
+        break;
+      case "empty":
+        clauses.push(`(${column} IS NULL OR ${column}::text = '')`);
+        break;
+      case "notEmpty":
+        clauses.push(`(${column} IS NOT NULL AND ${column}::text <> '')`);
+        break;
+      case "gt":
+        clauses.push(`${column} > ${addParam(serializePostgresValue(value, field.attrType))}`);
+        break;
+      case "gte":
+        clauses.push(`${column} >= ${addParam(serializePostgresValue(value, field.attrType))}`);
+        break;
+      case "lt":
+        clauses.push(`${column} < ${addParam(serializePostgresValue(value, field.attrType))}`);
+        break;
+      case "lte":
+        clauses.push(`${column} <= ${addParam(serializePostgresValue(value, field.attrType))}`);
+        break;
+      default:
+        break;
+    }
+  }
+  return clauses;
+}
+
+function postgresRecord(table: TableDefinition, row: Record<string, unknown>) {
+  const attributes: Record<string, unknown> = {};
+  for (const attr of table.attributes) {
+    attributes[attr.name] = row[attr.name];
+  }
+  const nameField = table.nameField || "id";
+  return {
+    ...row,
+    id: String(row.id),
+    name: String(row[nameField] ?? row.id),
+    number: row.number ? String(row.number) : null,
+    class: table.tableName,
+    environment: null,
+    attributes,
+  };
+}
+
+async function listPostgresRecords(
+  fastify: FastifyInstance,
+  table: TableDefinition,
+  query: { limit?: string; offset?: string; q?: string; filters?: string }
+) {
+  if (!table.tableName) throw new Error("Missing table name");
+  const tableName = quoteIdentifier(table.tableName);
+  const limit = Math.min(Math.max(Number(query.limit || 50), 1), 200);
+  const offset = Math.max(Number(query.offset || 0), 0);
+  const params: unknown[] = [];
+  const whereParts: string[] = [];
+  if (query.q?.trim()) {
+    const searchable = table.searchableFields?.length ? table.searchableFields : [table.nameField || "id"];
+    params.push(`%${query.q.trim()}%`);
+    whereParts.push(`(${searchable.map((field) => `LOWER(${quoteIdentifier(field)}::text) LIKE LOWER($${params.length})`).join(" OR ")})`);
+  }
+  whereParts.push(...buildPostgresFilterWhere(table, parseFilters(query.filters), params));
+  const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+  const orderColumn = quoteIdentifier(table.nameField || "id");
+  params.push(limit);
+  const limitParam = `$${params.length}`;
+  params.push(offset);
+  const offsetParam = `$${params.length}`;
+  const [rows, count] = await Promise.all([
+    fastify.pg.query(`SELECT * FROM ${tableName} ${where} ORDER BY ${orderColumn} NULLS LAST LIMIT ${limitParam} OFFSET ${offsetParam}`, params),
+    fastify.pg.query(`SELECT COUNT(*)::int AS total FROM ${tableName} ${where}`, params.slice(0, params.length - 2)),
+  ]);
+  return {
+    table,
+    records: rows.rows.map((row: any) => postgresRecord(table, row)),
+    total: count.rows[0]?.total || 0,
+  };
+}
+
+async function getPostgresRecord(fastify: FastifyInstance, table: TableDefinition, id: string) {
+  if (!table.tableName) throw new Error("Missing table name");
+  const result = await fastify.pg.query(`SELECT * FROM ${quoteIdentifier(table.tableName)} WHERE id = $1`, [id]);
+  const row = result.rows[0];
+  return row ? postgresRecord(table, row) : null;
+}
+
+function postgresWriteFields(table: TableDefinition, body: { name?: string; attributes?: Record<string, unknown> }) {
+  const attrs = splitAttrs(body.attributes);
+  const fields: Record<string, unknown> = {};
+  const attrTypes = new Map(table.attributes.map((attr) => [attr.name, attr.attrType]));
+  if (table.nameField && table.nameField !== "id" && body.name !== undefined) {
+    fields[table.nameField] = body.name?.trim() || null;
+  }
+  for (const attr of table.attributes) {
+    if (Object.prototype.hasOwnProperty.call(attrs, attr.name)) {
+      fields[attr.name] = serializePostgresValue(attrs[attr.name], attrTypes.get(attr.name));
+    }
+  }
+  return fields;
+}
+
+async function createPostgresRecord(
+  fastify: FastifyInstance,
+  table: TableDefinition,
+  body: { id?: string; name?: string; attributes?: Record<string, unknown> }
+) {
+  if (!table.tableName) throw new Error("Missing table name");
+  const fields = postgresWriteFields(table, body);
+  const entries = Object.entries(fields);
+  if (!entries.length) throw new Error("No fields to insert");
+  const columns = entries.map(([field]) => quoteIdentifier(field)).join(", ");
+  const placeholders = entries.map((_, index) => `$${index + 1}`).join(", ");
+  const values = entries.map(([, value]) => value);
+  const result = await fastify.pg.query(
+    `INSERT INTO ${quoteIdentifier(table.tableName)} (${columns}) VALUES (${placeholders}) RETURNING *`,
+    values
+  );
+  const row = await assignRecordNumberToRow(fastify, table.tableName, result.rows[0]);
+  return postgresRecord(table, row);
+}
+
+async function updatePostgresRecord(
+  fastify: FastifyInstance,
+  table: TableDefinition,
+  id: string,
+  body: { name?: string; attributes?: Record<string, unknown> }
+) {
+  if (!table.tableName) throw new Error("Missing table name");
+  const fields = postgresWriteFields(table, body);
+  if (table.auditFields?.includes("updated_at")) {
+    fields.updated_at = new Date().toISOString();
+  }
+  const entries = Object.entries(fields);
+  if (!entries.length) throw new Error("No fields to update");
+  const sets = entries.map(([field], index) => `${quoteIdentifier(field)} = $${index + 1}`).join(", ");
+  const values = entries.map(([, value]) => value);
+  values.push(id);
+  const result = await fastify.pg.query(
+    `UPDATE ${quoteIdentifier(table.tableName)} SET ${sets} WHERE id = $${values.length} RETURNING *`,
+    values
+  );
+  const row = result.rows[0];
+  return row ? postgresRecord(table, row) : null;
+}
+
+export async function tableRoutes(fastify: FastifyInstance) {
+  fastify.get("/api/tables", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const tables = await getTables(fastify);
+    return { tables };
+  });
+
+  fastify.get("/api/tables/:table", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const { table: tableId } = request.params as { table: string };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    return { table };
+  });
+
+  fastify.get("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const { table: rawTableId } = request.params as { table: string };
+    const tableId = decodeURIComponent(rawTableId);
+    const query = request.query as { limit?: string; offset?: string; q?: string; filters?: string };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    if (table.provider === "postgres-table") {
+      return listPostgresRecords(fastify, table, query);
+    }
+
+    const limit = Math.min(Math.max(Number(query.limit || 50), 1), 200);
+    const offset = Math.max(Number(query.offset || 0), 0);
+    const params: Record<string, unknown> = { className: table.className, limit: neo4j.int(limit), offset: neo4j.int(offset) };
+    const whereParts = ["n.class = $className"];
+    if (query.q?.trim()) {
+      whereParts.push("(toLower(n.name) CONTAINS toLower($q) OR toLower(n.id) CONTAINS toLower($q) OR toLower(coalesce(n.environment, '')) CONTAINS toLower($q))");
+      params.q = query.q.trim();
+    }
+    whereParts.push(...buildFilterWhere(table, parseFilters(query.filters), params));
+    const where = whereParts.join(" AND ");
+
+    const session = fastify.neo4j.session();
+    try {
+      const result = await session.run(
+        `MATCH (n:ConfigurationItem)
+         WHERE ${where}
+         RETURN n
+         ORDER BY n.name
+         SKIP $offset
+         LIMIT $limit`,
+        params
+      );
+      const countResult = await session.run(
+        `MATCH (n:ConfigurationItem)
+         WHERE ${where}
+         RETURN count(n) AS total`,
+        params
+      );
+      return {
+        table,
+        records: result.records.map((record) => parseNode(record.get("n"))),
+        total: countResult.records[0]?.get("total")?.toNumber?.() ?? Number(countResult.records[0]?.get("total") ?? 0),
+      };
+    } finally {
+      await session.close();
+    }
+  });
+
+  fastify.get("/api/tables/:table/records/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const { table: tableId, id } = request.params as { table: string; id: string };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    if (table.provider === "postgres-table") {
+      const record = await getPostgresRecord(fastify, table, id);
+      if (!record) return reply.status(404).send({ error: "Record not found" });
+      return { table, record };
+    }
+
+    const session = fastify.neo4j.session();
+    try {
+      const result = await session.run(
+        `MATCH (n:ConfigurationItem {id: $id})
+         WHERE n.class = $className
+         RETURN n`,
+        { id, className: table.className }
+      );
+      const record = result.records[0]?.get("n");
+      if (!record) return reply.status(404).send({ error: "Record not found" });
+      return { table, record: parseNode(record) };
+    } finally {
+      await session.close();
+    }
+  });
+
+  fastify.post("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot write tables" });
+    }
+    const { table: tableId } = request.params as { table: string };
+    const body = request.body as { id?: string; name?: string; environment?: string; attributes?: Record<string, unknown> };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    if (!body.name?.trim()) return reply.status(400).send({ error: "name is required" });
+    if (table.provider === "postgres-table") {
+      const record = await createPostgresRecord(fastify, table, body);
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "table.record.created",
+        entityType: table.id,
+        entityId: record.id,
+        newValues: record,
+        metadata: { source: "api.tables", provider: table.provider, tableName: table.tableName },
+      });
+      return reply.status(201).send({ table, record });
+    }
+
+    const attrs = splitAttrs(body.attributes);
+    const record = {
+      id: body.id || randomUUID(),
+      name: body.name.trim(),
+      className: table.className,
+      environment: body.environment || null,
+      attributes: JSON.stringify(attrs),
+      props: attrs,
+    };
+    const session = fastify.neo4j.session();
+    try {
+      const result = await session.run(
+        `CREATE (n:ConfigurationItem {id: $id, name: $name, class: $className, environment: $environment, attributes: $attributes})
+         SET n += $props
+         RETURN n`,
+        record
+      );
+      const created = parseNode(result.records[0].get("n"));
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "table.record.created",
+        entityType: table.id,
+        entityId: created.id,
+        newValues: created,
+        metadata: { source: "api.tables", provider: table.provider, className: table.className },
+      });
+      return reply.status(201).send({ table, record: created });
+    } finally {
+      await session.close();
+    }
+  });
+
+  fastify.patch("/api/tables/:table/records/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot write tables" });
+    }
+    const { table: tableId, id } = request.params as { table: string; id: string };
+    const body = request.body as { name?: string; environment?: string; attributes?: Record<string, unknown> };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    if (table.provider === "postgres-table") {
+      const before = await getPostgresRecord(fastify, table, id);
+      const record = await updatePostgresRecord(fastify, table, id, body);
+      if (!record) return reply.status(404).send({ error: "Record not found" });
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "table.record.updated",
+        entityType: table.id,
+        entityId: id,
+        oldValues: before || undefined,
+        newValues: record,
+        metadata: { source: "api.tables", provider: table.provider, tableName: table.tableName },
+      });
+      return { table, record };
+    }
+
+    const hasAttributes = body.attributes !== undefined;
+    const attrs = splitAttrs(body.attributes);
+    const session = fastify.neo4j.session();
+    try {
+      const result = await session.run(
+        `MATCH (n:ConfigurationItem {id: $id})
+         WHERE n.class = $className
+         SET n.name = coalesce($name, n.name),
+             n.environment = coalesce($environment, n.environment),
+             n.attributes = coalesce($attributes, n.attributes)
+         SET n += $props
+         RETURN n`,
+        {
+          id,
+          className: table.className,
+          name: body.name?.trim() || null,
+          environment: body.environment ?? null,
+          attributes: hasAttributes ? JSON.stringify(attrs) : null,
+          props: hasAttributes ? attrs : {},
+        }
+      );
+      const record = result.records[0]?.get("n");
+      if (!record) return reply.status(404).send({ error: "Record not found" });
+      const updated = parseNode(record);
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "table.record.updated",
+        entityType: table.id,
+        entityId: id,
+        newValues: updated,
+        metadata: { source: "api.tables", provider: table.provider, className: table.className },
+      });
+      return { table, record: updated };
+    } finally {
+      await session.close();
+    }
+  });
+
+  fastify.delete("/api/tables/:table/records/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot write tables" });
+    }
+    const { table: tableId, id } = request.params as { table: string; id: string };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    if (table.provider === "postgres-table") {
+      const before = await getPostgresRecord(fastify, table, id);
+      await fastify.pg.query(`DELETE FROM ${quoteIdentifier(table.tableName!)} WHERE id = $1`, [id]);
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "table.record.deleted",
+        entityType: table.id,
+        entityId: id,
+        oldValues: before || { id },
+        metadata: { source: "api.tables", provider: table.provider, tableName: table.tableName },
+      });
+      return { ok: true };
+    }
+
+    const session = fastify.neo4j.session();
+    try {
+      await session.run(
+        `MATCH (n:ConfigurationItem {id: $id})
+         WHERE n.class = $className
+         DETACH DELETE n`,
+        { id, className: table.className }
+      );
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "table.record.deleted",
+        entityType: table.id,
+        entityId: id,
+        oldValues: { id, className: table.className },
+        metadata: { source: "api.tables", provider: table.provider, className: table.className },
+      });
+      return { ok: true };
+    } finally {
+      await session.close();
+    }
+  });
+}

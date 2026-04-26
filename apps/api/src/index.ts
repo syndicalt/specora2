@@ -18,11 +18,21 @@ import { appToolRoutes } from "./routes/appTools";
 import { healthRoutes } from "./routes/health";
 import { jobQueueRoutes } from "./routes/jobQueue";
 import { adminRoutes } from "./routes/admin";
+import { appsRoutes } from "./routes/apps";
+import { tableRoutes } from "./routes/tables";
+import { dataFoundationRoutes } from "./routes/dataFoundations";
+import { changeAutomationRoutes } from "./routes/changeAutomation";
+import { incidentAutomationRoutes } from "./routes/incidentAutomation";
+import { knowledgeAutomationRoutes } from "./routes/knowledgeAutomation";
+import { preventionAutomationRoutes } from "./routes/preventionAutomation";
+import { assetAutomationRoutes } from "./routes/assetAutomation";
+import { itVisibilityRoutes } from "./routes/itVisibility";
 import { initializeAuditLog } from "./services/auditLog";
 import { websocketRoutes } from "./services/websocket";
 import { initializeEventBus } from "./services/eventBus";
 import { seedCIClasses } from "./services/ciClassSeed";
 import { registerAllAppTools } from "./services/appTools";
+import { startDiscoveryScheduler } from "./services/discoveryScheduler";
 
 const fastify = Fastify({ logger: { transport: { target: "pino-pretty" } } });
 
@@ -35,7 +45,7 @@ declare module "fastify" {
 async function main() {
   await fastify.register(cors, { origin: true });
   await fastify.register(rateLimit, {
-    max: 100,
+    max: Number(process.env.RATE_LIMIT_MAX || 600),
     timeWindow: "1 minute",
     skipOnError: false,
   });
@@ -79,8 +89,18 @@ async function main() {
   await fastify.register(healthRoutes);
   await fastify.register(jobQueueRoutes);
   await fastify.register(adminRoutes);
+  await fastify.register(appsRoutes);
+  await fastify.register(tableRoutes);
+  await fastify.register(dataFoundationRoutes);
+  await fastify.register(changeAutomationRoutes);
+  await fastify.register(incidentAutomationRoutes);
+  await fastify.register(knowledgeAutomationRoutes);
+  await fastify.register(preventionAutomationRoutes);
+  await fastify.register(assetAutomationRoutes);
+  await fastify.register(itVisibilityRoutes);
 
   initializeAuditLog(fastify);
+  startDiscoveryScheduler(fastify);
 
   fastify.get("/health", async () => ({ status: "ok" }));
 

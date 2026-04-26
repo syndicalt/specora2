@@ -3,6 +3,7 @@ import { FastifyInstance } from "fastify";
 import type { Trace } from "@pathlight/sdk";
 import { executeTool as executeAppTool, getToolsForSession } from "@specora/sdk";
 import { SessionTrace } from "./pathlightSession";
+import { hasPermission } from "./rbac";
 
 function getOpenAI(): OpenAI | null {
   const key = process.env.OPENAI_API_KEY;
@@ -60,11 +61,22 @@ HOW TO ANSWER QUESTIONS:
 UI NAVIGATION (action directives):
 These are special tags that open apps in the user's browser. They do NOT fetch data — they only open visual views AFTER you have already fetched the data with tools.
 - [[action|open-service-map|rootId=<id>|Open Service Map]] — opens the visual service map
-- [[action|open-ci-details|id=<id>|View CI Details]] — opens the CI details panel
-- [[action|select-ci|context=default|Browse CMDB]] — opens the CMDB Explorer
+- [[action|open-ci-details|id=<id>|View in CMDB Explorer]] — opens CMDB Explorer and focuses the CI
+- [[action|open-cmdb-explorer|queue=attention|Open CMDB Explorer]] — opens CMDB Explorer to a queue. Supported queues: all, attention, orphaned, stale, critical
+- [[action|open-cmdb-explorer|query=<search>|Open Search in CMDB Explorer]] — opens CMDB Explorer with a search query
+- [[action|open-cmdb-explorer|class=<class>&environment=<env>|Open Filtered CMDB Explorer]] — opens CMDB Explorer with filters
+- [[action|select-ci|context=default|Browse CMDB]] — opens CMDB Explorer in visual CI selection mode
 - [[action|pick-date|context=planned-start|Pick Start Date]] — shows a date picker
 
 Always include the relevant action directive at the end of your response after describing data fetched via tools. For example, after describing a CI's dependencies, add: [[action|open-service-map|rootId=srv-6|Open Service Map]]
+
+When the user asks to browse, open, or visually inspect the CMDB without asking for data, respond with the CMDB Explorer action only: [[action|open-cmdb-explorer|queue=all|Open CMDB Explorer]]
+
+When the user asks for risky, stale, orphaned, or critical CIs, fetch data first with tools, summarize the results, then offer a matching Explorer queue:
+- risky or low health: [[action|open-cmdb-explorer|queue=attention|Open Risk Queue]]
+- orphaned: [[action|open-cmdb-explorer|queue=orphaned|Open Orphan Queue]]
+- stale: [[action|open-cmdb-explorer|queue=stale|Open Stale Queue]]
+- critical: [[action|open-cmdb-explorer|queue=critical|Open Critical Queue]]
 
 EXAMPLE WORKFLOW:
 User: "Show me the service map for db-prod-01"
@@ -77,7 +89,17 @@ User: "What are the dependencies of Portal API?"
 → Call search_cis with name="Portal API" to find its ID
 → Call get_ci_details with id=<found_id> to get relationships
 → Summarize the dependencies
-→ Add [[action|open-service-map|rootId=<found_id>|Open Service Map]]
+→ Add [[action|open-ci-details|id=<found_id>|View in CMDB Explorer]] and optionally [[action|open-service-map|rootId=<found_id>|Open Service Map]]
+
+User: "Open CMDB Explorer"
+→ Do not call tools
+→ Add [[action|open-cmdb-explorer|queue=all|Open CMDB Explorer]]
+
+User: "Find the dependency path between Server A and Service B"
+→ Use search_cis to resolve both CIs if needed
+→ Call find_dependency_path with the two IDs
+→ Summarize the path
+→ Add [[action|open-service-map|rootId=<source_id>|Open Service Map]]
 
 CRITICAL: Do NOT say "I will open it" or "The map is now open." The map only opens when the user clicks the action button or explicitly asks. Always fetch data with tools first, then describe it, then offer the action directive.
 
@@ -98,6 +120,45 @@ When a user wants to create or edit a change request, use a step-by-step convers
 8. When asking for dates on an EXISTING RFC (after creation), you MUST call change-manager_edit_rfc with the rfcId and the extracted date fields. Extract YYYY-MM-DD from the user's input for the date fields and HH:MM for the time fields. Do NOT just acknowledge — always call the tool to persist the change.
 9. When asking for any date, also offer a datepicker action: [[action|pick-date|context=planned-start|Pick Start Date]] so the user can click a calendar.
 10. After creating an RFC, offer to open the Change Manager to view it with [[action|open-change-manager|rfcId=<id>|View in Change Manager]].`
+
+  prompt += `
+
+When a user reports, investigates, or escalates an incident:
+1. First decide whether this can be deflected with known context, correlated to an existing incident/change/CI health issue, or safely remediated.
+2. For a new incident, collect the minimum viable facts: affected service or CI, user-visible impact, severity, and source signal. Use search_cis when a CI or service name is ambiguous.
+3. Create the incident with incident-manager_create_incident as soon as title and impact are clear. Include ciId, service, severity, source, externalRef, and affectedCiIds when known.
+4. Immediately run incident-manager_triage_incident and incident-manager_recommend_remediation for active incidents.
+5. For major incidents, use incident-manager_record_incident_event for timeline updates and incident-manager_draft_stakeholder_update for communications.
+6. Never claim remediation has executed unless incident-manager_execute_remediation returns success.
+7. Offer to open the Incident Command Center with [[action|open-incident-manager|incidentId=<id>|View Incident]].`;
+
+  prompt += `
+
+When a user asks a support, troubleshooting, service, runbook, policy, or "how do I" question:
+1. Prefer governed knowledge first by calling knowledge-core_answer with the user's question and any known CI, service, or audience context.
+2. Answer with the returned citations and confidence. If confidence is low, say what is missing and offer to create a knowledge gap or draft.
+3. When a workflow produces reusable learning, call knowledge-core_draft_from_record for incidents, changes, health findings, discovery findings, or external records.
+4. For explicit publish/review requests, use knowledge-core_publish_knowledge only when the user has provided a clear instruction.
+5. Offer to open Knowledge Core with [[action|open-knowledge-core|knowledgeId=<id>|View Knowledge]] when citing or creating knowledge.`;
+
+  prompt += `
+
+When a user asks about recurring incidents, root cause, known errors, prevention, reliability backlog, or whether Problem Management is needed:
+1. Use prevention-center_detect_candidates to find recurring incident clusters when the user wants prevention opportunities.
+2. Use prevention-center_propose_actions for a selected prevention record before recommending manual work.
+3. Use prevention-center_create_known_error when a recurring issue needs a governed Known Error in Knowledge Core.
+4. Treat Prevention Center as the replacement for legacy Problem Management: focus on measurable incident reduction and corrective actions.
+5. Offer to open Prevention Center with [[action|open-prevention-center|preventionId=<id>|View Prevention]].`;
+
+  prompt += `
+
+When a user asks about hardware assets, software licenses, procurement, contracts, entitlements, scans, renewals, audit exposure, or ITAM:
+1. Use asset-command_dashboard or asset-command_list_exceptions to understand the current asset posture.
+2. Use asset-command_ingest_contract when the user provides contract or agreement terms and wants entitlements extracted.
+3. Use asset-command_ingest_procurement for purchase orders, invoices, receipts, or procurement payloads.
+4. Use asset-command_record_scan for mobile/barcode/RFID/NFC scan evidence and custody updates.
+5. Use asset-command_reconcile_sam to compare usage against entitlements before making compliance or savings claims.
+6. Offer to open Asset Command Center with [[action|open-asset-command|assetId=<id>|View Asset]].`;
 
   if (uiContext) {
     prompt += `\n\nCURRENT UI CONTEXT:\n${uiContext}`;
@@ -259,8 +320,41 @@ const CORE_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   },
 ];
 
-function getAllTools(): OpenAI.Chat.ChatCompletionTool[] {
-  const appTools = getToolsForSession("system").map((tool): OpenAI.Chat.ChatCompletionTool => ({
+const APP_TOOL_RESOURCE_MAP: Record<string, string> = {
+  "change-manager": "change-manager",
+  "incident-manager": "incident-manager",
+  "knowledge-core": "knowledge-core",
+  "prevention-center": "prevention-center",
+  "asset-command": "asset-command",
+  "discovery-insights": "discovery",
+  "health-monitor": "health-monitor",
+};
+
+function toolToAction(toolName: string): string {
+  const writePrefixes = ["create", "update", "edit", "delete", "approve", "assign", "apply", "execute", "triage", "transition", "record", "resolve", "draft", "publish"];
+  return writePrefixes.some((prefix) => toolName.startsWith(prefix)) ? "write" : "read";
+}
+
+async function canUseAppTool(fastify: FastifyInstance, user: { role?: string } | undefined, fullToolName: string): Promise<boolean> {
+  if (!user?.role) return false;
+  if (user.role === "admin" || user.role === "security_admin") return true;
+  const separator = fullToolName.indexOf("_");
+  if (separator < 0) return false;
+  const appId = fullToolName.slice(0, separator);
+  const toolName = fullToolName.slice(separator + 1);
+  const resource = APP_TOOL_RESOURCE_MAP[appId] || appId;
+  const action = toolToAction(toolName);
+  return hasPermission(fastify.pg, { role: user.role, resource, action });
+}
+
+async function getAllTools(fastify: FastifyInstance, user?: { role?: string }): Promise<OpenAI.Chat.ChatCompletionTool[]> {
+  const appTools = [];
+  for (const tool of getToolsForSession("system")) {
+    if (await canUseAppTool(fastify, user, tool.name)) {
+      appTools.push(tool);
+    }
+  }
+  const mappedAppTools = appTools.map((tool): OpenAI.Chat.ChatCompletionTool => ({
     type: "function",
     function: {
       name: tool.name,
@@ -268,7 +362,7 @@ function getAllTools(): OpenAI.Chat.ChatCompletionTool[] {
       parameters: tool.parameters as any,
     },
   }));
-  return [...CORE_TOOLS, ...appTools];
+  return [...CORE_TOOLS, ...mappedAppTools];
 }
 
 async function executeCoreTool(
@@ -586,7 +680,7 @@ export async function chat(
   let lastCiDetailsId: string | null = null;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    let completion = await callLlm(currentMessages, fastify, usedProvara, openai, provara, trace, round);
+    let completion = await callLlm(currentMessages, fastify, usedProvara, openai, provara, trace, round, true, user);
     let message = completion.choices[0].message;
 
     // Fallback: check for XML and action-directive tool calls BEFORE sanitizing content.
@@ -615,7 +709,7 @@ export async function chat(
       // Retry once without tools if the model returned empty content.
       if (!message.content) {
         fastify.log.warn({ round }, "chat empty content — retrying without tools");
-        completion = await callLlm(currentMessages, fastify, usedProvara, openai, provara, trace, round, false);
+        completion = await callLlm(currentMessages, fastify, usedProvara, openai, provara, trace, round, false, user);
         message = completion.choices[0].message;
         const retryRaw = message.content || "";
         const retryXml = parseXmlToolCalls(retryRaw);
@@ -694,7 +788,7 @@ export async function chat(
     ...currentMessages,
     { role: "user", content: "Please provide a final answer based on the tool results above." },
   ];
-  const finalCompletion = await callLlm(finalMessages, fastify, usedProvara, openai, provara, trace, MAX_TOOL_ROUNDS, false);
+  const finalCompletion = await callLlm(finalMessages, fastify, usedProvara, openai, provara, trace, MAX_TOOL_ROUNDS, false, user);
   let finalContent = sanitizeAssistantContent(finalCompletion.choices[0].message.content || "");
 
   // Auto-append action directives if the model fetched data but forgot to offer the visual
@@ -721,9 +815,10 @@ async function callLlm(
   _provara: any,
   trace?: Trace | SessionTrace,
   round?: number,
-  includeTools = true
+  includeTools = true,
+  user?: { role?: string }
 ): Promise<OpenAI.Chat.ChatCompletion> {
-  const tools = includeTools ? getAllTools() : [];
+  const tools = includeTools ? await getAllTools(_fastify, user) : [];
   const model = usedProvara ? "provara-router" : "gpt-4o-mini";
   const provider = usedProvara ? "provara" : "openai";
   const toolChoice = (includeTools && round === 0) ? "required" : (tools.length > 0 ? "auto" : undefined);
@@ -802,9 +897,10 @@ async function callLlmStream(
   _provara: any,
   onEvent: (event: ChatStreamEvent) => void,
   trace?: Trace | SessionTrace,
-  includeTools = true
+  includeTools = true,
+  user?: { role?: string }
 ): Promise<{ content: string; toolCalls?: any[] }> {
-  const tools = includeTools ? getAllTools() : [];
+  const tools = includeTools ? await getAllTools(_fastify, user) : [];
   const model = usedProvara ? "provara-router" : "gpt-4o-mini";
   const provider = usedProvara ? "provara" : "openai";
 
@@ -1016,7 +1112,7 @@ export async function chatStream(
     // Always pass tools (matching non-streaming behavior). The model uses them
     // only when it chooses to; omitting them in later rounds can confuse
     // Provara's router when tool_calls exist in the history.
-    let { content, toolCalls } = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, true);
+    let { content, toolCalls } = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, true, user);
 
     // Fallback: check for XML and action-directive tool calls BEFORE sanitizing content.
     const rawContent = content || "";
@@ -1047,7 +1143,7 @@ export async function chatStream(
       // in streaming mode when tools are present, even for simple prompts.
       if (!content) {
         fastify.log.warn({ round }, "chatStream empty content — retrying without tools");
-        const retry = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, false);
+        const retry = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, false, user);
         const retryRaw = retry.content || "";
         const retryXml = parseXmlToolCalls(retryRaw);
         if (retryXml && (!retry.toolCalls || retry.toolCalls.length === 0)) {
@@ -1133,7 +1229,7 @@ export async function chatStream(
     ...currentMessages,
     { role: "user", content: "Please provide a final answer based on the tool results above." },
   ];
-  const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, false);
+  const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, false, user);
   let sanitizedFinal = sanitizeAssistantContent(finalContent || "");
 
   // Auto-append action directives if the model fetched data but forgot to offer the visual

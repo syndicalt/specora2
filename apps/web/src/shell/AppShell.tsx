@@ -5,7 +5,7 @@ import { ShellContext, shellReducer, initialShellState, type ShellAction } from 
 import { CanvasArea, DormantApps, WindowLayer } from "./AppContainers";
 import { AppDock } from "./AppDock";
 import { AppLauncher } from "./AppLauncher";
-import { seedBuiltInApps, getRegistry } from "@/sdk";
+import { syncServerRegistry } from "@/sdk";
 import type { RegistryEntry, AppMessage } from "@/sdk/types";
 import { X } from "lucide-react";
 import { ChatPanel } from "@/components/ChatPanel";
@@ -32,6 +32,17 @@ const UPDATE_PREFS_MUTATION = `
     updatePreferences(preferences: $preferences) { id preferences }
   }
 `;
+
+const CREATE_FORM_TABLE_BY_APP: Record<string, string> = {
+  "incident-manager": "pg.incidents",
+  "change-manager": "pg.change_requests",
+  "knowledge-core": "pg.knowledge_items",
+  "prevention-center": "pg.prevention_records",
+  "asset-command": "pg.asset_records",
+  "discovery": "pg.discovery_pipelines",
+};
+
+const FALLBACK_CREATE_FORM = { appId: "incident-manager", tableId: "pg.incidents" };
 
 interface HistoryState {
   activeCanvasId: string | null;
@@ -115,11 +126,11 @@ export function AppShell() {
   // Initialize IndexedDB registry + fetch user preferences
   useEffect(() => {
     let mounted = true;
-    seedBuiltInApps()
+    syncServerRegistry()
       .catch((err) => {
-        console.error("[AppShell] seedBuiltInApps failed:", err);
+        console.error("[AppShell] syncServerRegistry failed:", err);
+        return [];
       })
-      .then(() => getRegistry())
       .then((apps) => {
         if (!mounted) return;
         setRegistry(apps);
@@ -193,6 +204,56 @@ export function AppShell() {
     );
     return () => timers.forEach(clearTimeout);
   }, [state.notifications]);
+
+  useEffect(() => {
+    if (!ready) return;
+
+    const openCreateForm = () => {
+      const activeAppId = state.activeCanvasId || FALLBACK_CREATE_FORM.appId;
+      const tableId = CREATE_FORM_TABLE_BY_APP[activeAppId] || FALLBACK_CREATE_FORM.tableId;
+      const tablesEntry = registry.find((entry) => entry.id === "tables");
+      if (!tablesEntry) {
+        dispatch({
+          type: "NOTIFY",
+          notification: {
+            id: crypto.randomUUID(),
+            message: "Tables application is not available for record creation",
+            type: "error",
+          },
+        });
+        return;
+      }
+
+      dispatch({
+        type: "OPEN_APP",
+        id: tablesEntry.id,
+        installKey: tablesEntry.installKey,
+        mode: "window",
+        permissions: tablesEntry.permissions,
+        window: {
+          x: 16,
+          y: 16,
+          width: Math.max(900, window.innerWidth - 32),
+          height: Math.max(640, window.innerHeight - 112),
+        },
+        launchPayload: { type: "SELECT_TABLE", tableId, mode: "create", createdAt: Date.now(), windowPreset: "large" },
+      });
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isNewFormShortcut = event.key.toLowerCase() === "n"
+        && event.altKey
+        && !event.shiftKey
+        && !event.repeat
+        && (event.ctrlKey || event.metaKey);
+      if (!isNewFormShortcut) return;
+      event.preventDefault();
+      openCreateForm();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [ready, registry, state.activeCanvasId]);
 
   const eventStream = useEventStream();
 

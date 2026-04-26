@@ -80,7 +80,7 @@ export const HARDCODED_RULES: HealthRule[] = [
     severity: "warning",
     cypher: `
       MATCH (s:Server)
-      WHERE NOT (s)-[:MANAGED_BY]-(:User OR :Group)
+      WHERE NOT ((s)-[:MANAGED_BY]-(:User) OR (s)-[:MANAGED_BY]-(:Group))
       RETURN s.id as ciId, s.name as ciName, s.class as ciClass
     `,
   },

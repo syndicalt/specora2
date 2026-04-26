@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { GenericContainer, Wait } from "testcontainers";
-import neo4j from "neo4j-driver";
+import neo4j, { type Driver } from "neo4j-driver";
 import { seed, isMainModule } from "./seed";
 
 describe("isMainModule", () => {
@@ -19,7 +19,7 @@ describe("isMainModule", () => {
 
 describe("seed (with testcontainers)", () => {
   let container: Awaited<ReturnType<GenericContainer["start"]>>;
-  let driver: neo4j.Driver;
+  let driver: Driver;
 
   beforeAll(async () => {
     container = await new GenericContainer("neo4j:5.18-community")
@@ -33,19 +33,18 @@ describe("seed (with testcontainers)", () => {
   }, 60000);
 
   afterAll(async () => {
-    await driver.close();
-    await container.stop();
+    await driver?.close();
+    await container?.stop();
   });
 
-  it("seeds Neo4j with ~1000 CSDMv5 nodes", async () => {
+  it("seeds Neo4j with exactly 5,000 CSDMv5 nodes", async () => {
     await seed(driver);
 
     const session = driver.session();
     try {
       const result = await session.run("MATCH (n:ConfigurationItem) RETURN count(n) as total");
       const count = result.records[0].get("total").toNumber();
-      expect(count).toBeGreaterThanOrEqual(900);
-      expect(count).toBeLessThanOrEqual(1100);
+      expect(count).toBe(5000);
     } finally {
       await session.close();
     }
@@ -59,11 +58,10 @@ describe("seed (with testcontainers)", () => {
     try {
       const result = await session.run("MATCH (n:ConfigurationItem) RETURN count(n) as total");
       const count = result.records[0].get("total").toNumber();
-      expect(count).toBeGreaterThanOrEqual(900);
-      expect(count).toBeLessThanOrEqual(1100);
+      expect(count).toBe(5000);
 
       const relResult = await session.run("MATCH ()-[r]->() RETURN count(r) as total");
-      expect(relResult.records[0].get("total").toNumber()).toBeGreaterThanOrEqual(100);
+      expect(relResult.records[0].get("total").toNumber()).toBeGreaterThanOrEqual(11000);
     } finally {
       await session.close();
     }
@@ -77,8 +75,8 @@ describe("seed (with testcontainers)", () => {
       const result = await session.run(
         "MATCH (u:User:ConfigurationItem) RETURN u.userId as userId ORDER BY userId"
       );
-      const userIds = result.records.map((r) => r.get("userId")).filter(Boolean);
-      expect(userIds.length).toBe(7);
+      const userIds = result.records.map((r: any) => r.get("userId")).filter(Boolean);
+      expect(userIds.length).toBe(60);
       expect(userIds[0]).toBe("550e8400-e29b-41d4-a716-446655440001");
     } finally {
       await session.close();
@@ -93,8 +91,24 @@ describe("seed (with testcontainers)", () => {
       const result = await session.run(
         "MATCH (u:User:ConfigurationItem) RETURN u.passwordHash as hash"
       );
-      const hashes = result.records.map((r) => r.get("hash")).filter(Boolean);
+      const hashes = result.records.map((r: any) => r.get("hash")).filter(Boolean);
       expect(hashes.length).toBe(0);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("stores class-manager attributes as queryable properties and JSON attributes", async () => {
+    await seed(driver);
+
+    const session = driver.session();
+    try {
+      const result = await session.run(
+        "MATCH (s:Server:ConfigurationItem) RETURN s.ipAddress as ipAddress, s.attributes as attributes LIMIT 1"
+      );
+      const record = result.records[0];
+      expect(record.get("ipAddress")).toMatch(/^10\./);
+      expect(JSON.parse(record.get("attributes"))).toHaveProperty("ipAddress");
     } finally {
       await session.close();
     }

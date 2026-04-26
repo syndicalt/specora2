@@ -1,4 +1,3 @@
-version: "3.8"
 services:
   neo4j:
     image: neo4j:5.18-community
@@ -43,6 +42,24 @@ services:
       - ./packages/db/migrations/019_change_request_comments.sql:/docker-entrypoint-initdb.d/019_change_request_comments.sql
       - ./packages/db/migrations/020_marketplace_admin_panels.sql:/docker-entrypoint-initdb.d/020_marketplace_admin_panels.sql
       - ./packages/db/migrations/021_change_request_planned_times.sql:/docker-entrypoint-initdb.d/021_change_request_planned_times.sql
+      - ./packages/db/migrations/022_change_request_impact.sql:/docker-entrypoint-initdb.d/022_change_request_impact.sql
+      - ./packages/db/migrations/023_risk_score_history.sql:/docker-entrypoint-initdb.d/023_risk_score_history.sql
+      - ./packages/db/migrations/024_ci_classes.sql:/docker-entrypoint-initdb.d/024_ci_classes.sql
+      - ./packages/db/migrations/025_cmdb_admin_permission.sql:/docker-entrypoint-initdb.d/025_cmdb_admin_permission.sql
+      - ./packages/db/migrations/026_tables_data_foundations_permissions.sql:/docker-entrypoint-initdb.d/026_tables_data_foundations_permissions.sql
+      - ./packages/db/migrations/027_discovery_pipelines.sql:/docker-entrypoint-initdb.d/027_discovery_pipelines.sql
+      - ./packages/db/migrations/028_incident_manager.sql:/docker-entrypoint-initdb.d/028_incident_manager.sql
+      - ./packages/db/migrations/029_knowledge_core.sql:/docker-entrypoint-initdb.d/029_knowledge_core.sql
+      - ./packages/db/migrations/030_prevention_center.sql:/docker-entrypoint-initdb.d/030_prevention_center.sql
+      - ./packages/db/migrations/031_asset_command_center.sql:/docker-entrypoint-initdb.d/031_asset_command_center.sql
+      - ./packages/db/migrations/032_demo_itsm_itam_seed.sql:/docker-entrypoint-initdb.d/032_demo_itsm_itam_seed.sql
+      - ./packages/db/migrations/033_discovery_staging.sql:/docker-entrypoint-initdb.d/033_discovery_staging.sql
+      - ./packages/db/migrations/034_discovery_pipeline_schedules.sql:/docker-entrypoint-initdb.d/034_discovery_pipeline_schedules.sql
+      - ./packages/db/migrations/035_number_sequences.sql:/docker-entrypoint-initdb.d/035_number_sequences.sql
+      - ./packages/db/migrations/036_it_visibility_dcim.sql:/docker-entrypoint-initdb.d/036_it_visibility_dcim.sql
+      - ./packages/db/migrations/037_dcim_floorplan_connections.sql:/docker-entrypoint-initdb.d/037_dcim_floorplan_connections.sql
+      - ./packages/db/migrations/038_discovery_lifecycle.sql:/docker-entrypoint-initdb.d/038_discovery_lifecycle.sql
+      - ./packages/db/migrations/039_app_provisioning.sql:/docker-entrypoint-initdb.d/039_app_provisioning.sql
 
   api:
     build:

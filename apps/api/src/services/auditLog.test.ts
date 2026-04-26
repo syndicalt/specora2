@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { persistAuditLog, initializeAuditLog } from "./auditLog";
+import { persistAuditLog, initializeAuditLog, recordAuditEvent } from "./auditLog";
 import { emit } from "./eventBus";
 
 describe("auditLog", () => {
@@ -22,6 +22,22 @@ describe("auditLog", () => {
     expect(fastify.pg.query).toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO audit_log"),
       expect.anything()
+    );
+  });
+
+  it("records canonical audit events and normalizes non-UUID actors", async () => {
+    const fastify = mockFastify();
+    await recordAuditEvent(fastify, {
+      actorId: "u1",
+      action: "app.install",
+      entityType: "AppInstallation",
+      entityId: "it-visibility-dcim",
+      metadata: { source: "test" },
+    });
+
+    expect(fastify.pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO audit_log"),
+      [null, "app.install", "AppInstallation", "it-visibility-dcim", null, null, JSON.stringify({ result: "success", source: "test" })]
     );
   });
 

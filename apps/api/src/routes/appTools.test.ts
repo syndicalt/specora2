@@ -12,6 +12,21 @@ vi.mock("@specora/sdk", () => ({
 describe("appToolRoutes", () => {
   async function buildApp() {
     const app = Fastify();
+    app.decorate("pg", {
+      query: vi.fn(async () => ({
+        rows: [{
+          id: "job-1",
+          type: "app_tool",
+          payload: {},
+          status: "pending",
+          priority: 0,
+          retries: 0,
+          max_retries: 3,
+          created_at: "now",
+          updated_at: "now",
+        }],
+      })),
+    });
     app.decorate("authenticate", async () => {});
     await app.register(appToolRoutes);
     return app;
@@ -39,6 +54,7 @@ describe("appToolRoutes", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body).toEqual({ found: true });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["app_tool.executed", "AppTool", "health-monitor_find_cycles"]));
   });
 
   it("executes a tool via GET", async () => {
@@ -50,5 +66,27 @@ describe("appToolRoutes", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body).toEqual({ found: true });
+  });
+
+  it("queues a tool execution job for asynchronous processing", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/apps/health-monitor/tools/find_cycles/jobs",
+      payload: { maxDepth: 5 },
+    });
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.payload).job).toMatchObject({ id: "job-1", type: "app_tool" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO jobs"), [
+      "app_tool",
+      JSON.stringify({
+        appId: "health-monitor",
+        toolName: "find_cycles",
+        args: { maxDepth: 5 },
+        user: { id: undefined, role: undefined },
+      }),
+      0,
+    ]);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["app_tool.queued", "AppTool", "health-monitor_find_cycles"]));
   });
 });

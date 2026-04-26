@@ -57,6 +57,13 @@ export interface AppManifest {
   chatCapabilities?: ChatCapability[];
   events?: string[];
   adminPanels?: AdminPanelDefinition[];
+  packageId?: string;
+  packageName?: string;
+  premium?: boolean;
+  entitlementMode?: "included" | "trial" | "paid" | "placeholder";
+  bundledWithPlatform?: boolean;
+  installStatus?: "available" | "installed" | "installing" | "uninstalling" | "failed" | "uninstalled";
+  provisioningJobId?: string;
 }
 
 export interface RegistryEntry extends AppManifest {
@@ -80,9 +87,13 @@ export interface ShellAPI {
   appId: string;
   isActive: boolean;
   isDormant: boolean;
+  launchPayload?: unknown;
   sendMessage: (msg: Omit<AppMessage, "from">) => void;
   onMessage: (handler: (msg: AppMessage) => void) => () => void;
   notify: (message: string, type?: "info" | "success" | "error") => void;
+  query: (query: string, variables?: Record<string, unknown>) => Promise<any>;
+  mutate: (mutation: string, variables?: Record<string, unknown>) => Promise<any>;
+  fetch: (path: string, init?: RequestInit) => Promise<Response>;
   dispatch: React.Dispatch<any>;
   messageBus: {
     subscribe: (handler: (msg: AppMessage) => void) => () => void;

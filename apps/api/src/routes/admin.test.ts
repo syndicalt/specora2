@@ -14,7 +14,7 @@ describe("adminRoutes", () => {
     const app = Fastify();
     await app.register(jwt, { secret: "test-secret" });
     app.decorate("pg", {
-      query: queryImpl || vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      query: queryImpl ? vi.fn(queryImpl) : vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
     });
     await app.register(authPlugin);
     await app.register(adminRoutes);
@@ -65,6 +65,7 @@ describe("adminRoutes", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body.permission.role).toBe("viewer");
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["rbac.permission.created", "AppPermission", "perm-1"]));
   });
 
   it("POST /api/admin/permissions rejects duplicates", async () => {
@@ -100,6 +101,7 @@ describe("adminRoutes", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.payload).success).toBe(true);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["rbac.permission.deleted", "AppPermission", "perm-1"]));
   });
 
   it("GET /api/admin/system-properties returns properties", async () => {
@@ -122,6 +124,90 @@ describe("adminRoutes", () => {
     expect(body.properties).toHaveLength(1);
   });
 
+  it("analyzes RBAC access decisions", async () => {
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1 AND resource = $2 AND action = $3")) {
+        return Promise.resolve({ rows: [{ id: "admin-rbac", role: "security_admin", resource: "rbac", action: "read" }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT id, name, email, role FROM users WHERE id = $1")) {
+        return Promise.resolve({ rows: [{ id: params?.[0], name: "Olivia Ops", email: "olivia@example.com", role: "operator" }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY")) {
+        return Promise.resolve({ rows: [{ id: "perm-1", role: "operator", resource: "incident-manager", action: "write" }], rowCount: 1 });
+      }
+      if (sql.includes("FROM marketplace_apps")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/rbac/analyze",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { userId: "u-ops", resource: "incident-manager", action: "write" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.result.allowed).toBe(true);
+    expect(body.result.reason).toBe("direct_role_grant");
+    expect(body.result.relatedApps[0].id).toBe("incident-manager");
+  });
+
+  it("manages number sequences", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT id, app_id, table_name")) {
+        return Promise.resolve({ rows: [{ id: "seq-1", app_id: "incident-manager", table_name: "incidents", record_type: "Incident", prefix: "INC", next_value: 10, padding: 6, enabled: true }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO number_sequences")) {
+        return Promise.resolve({ rows: [{ id: "seq-2", app_id: "knowledge-core", table_name: "knowledge_items", record_type: "Knowledge", prefix: "KB", next_value: 1, padding: 6, enabled: true }], rowCount: 1 });
+      }
+      if (sql.includes("UPDATE number_sequences")) {
+        return Promise.resolve({ rows: [{ id: "seq-1", table_name: "incidents", record_type: "Incident", prefix: "INC", next_value: 11, padding: 6, enabled: true }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const listed = await app.inject({ method: "GET", url: "/api/admin/number-sequences", headers: authHeader(app) });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.payload).sequences[0].prefix).toBe("INC");
+
+    const options = await app.inject({ method: "GET", url: "/api/admin/number-sequences/options", headers: authHeader(app) });
+    expect(options.statusCode).toBe(200);
+    expect(JSON.parse(options.payload).options.some((option: any) => option.tableName === "incidents")).toBe(true);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/number-sequences",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { appId: "knowledge-core", tableName: "knowledge_items", recordType: "Knowledge", prefix: "kb" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(JSON.parse(created.payload).sequence.prefix).toBe("KB");
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["number_sequence.created", "NumberSequence", "seq-2"]));
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/admin/number-sequences",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { appId: "unknown", tableName: "arbitrary_table", recordType: "Anything", prefix: "ANY" },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/admin/number-sequences/seq-1",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { nextValue: 11 },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(JSON.parse(updated.payload).sequence.next_value).toBe(11);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["number_sequence.updated", "NumberSequence", "seq-1"]));
+  });
+
   it("POST /api/admin/system-properties creates a property", async () => {
     const app = await buildApp((sql: string) => {
       if (sql.includes("app_permissions WHERE role = $1")) {
@@ -141,6 +227,7 @@ describe("adminRoutes", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body.property.key).toBe("new_prop");
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["system_property.created", "SystemProperty", "new_prop"]));
   });
 
   it("PUT /api/admin/system-properties/:key updates a property", async () => {
@@ -162,6 +249,7 @@ describe("adminRoutes", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body.property.value).toBe("999");
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["system_property.updated", "SystemProperty", "max_upload_size"]));
   });
 
   it("PUT /api/admin/system-properties/:key returns 404 for missing property", async () => {
@@ -194,6 +282,7 @@ describe("adminRoutes", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.payload).success).toBe(true);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["system_property.deleted", "SystemProperty", "max_upload_size"]));
   });
 
   it("GET /api/admin/panels returns visible panels", async () => {
@@ -268,6 +357,7 @@ describe("adminRoutes", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body.success).toBe(true);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["system_property.updated", "SystemProperty", "change-manager.state_machine"]));
   });
 
   it("rejects non-security_admin users", async () => {

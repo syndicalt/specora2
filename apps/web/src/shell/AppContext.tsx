@@ -10,6 +10,7 @@ export type AppInstance = {
   state: "active" | "dormant";
   mode: AppMode;
   permissions: string[];
+  launchPayload?: unknown;
   window?: {
     x: number;
     y: number;
@@ -38,7 +39,7 @@ export type ShellState = {
 };
 
 export type ShellAction =
-  | { type: "OPEN_APP"; id: string; installKey: string; mode: AppMode; permissions: string[] }
+  | { type: "OPEN_APP"; id: string; installKey: string; mode: AppMode; permissions: string[]; launchPayload?: unknown; window?: Partial<NonNullable<AppInstance["window"]>> }
   | { type: "ACTIVATE_APP"; instanceId: string }
   | { type: "MINIMIZE_APP"; instanceId: string }
   | { type: "CLOSE_APP"; instanceId: string }
@@ -71,7 +72,12 @@ export function shellReducer(state: ShellState, action: ShellAction): ShellState
           ...state,
           instances: state.instances.map((i) =>
             i.instanceId === existing.instanceId
-              ? { ...i, state: "active" as const, window: i.window ? { ...i.window, zIndex: nextZ, minimized: false } : undefined }
+              ? {
+                  ...i,
+                  state: "active" as const,
+                  launchPayload: action.launchPayload ?? i.launchPayload,
+                  window: i.window ? { ...i.window, ...action.window, zIndex: nextZ, minimized: false } : undefined,
+                }
               : i.state === "active" && i.mode === "canvas"
                 ? { ...i, state: "dormant" as const }
                 : i
@@ -88,8 +94,9 @@ export function shellReducer(state: ShellState, action: ShellAction): ShellState
         state: "active",
         mode: action.mode,
         permissions: action.permissions,
+        launchPayload: action.launchPayload,
         window: action.mode === "window"
-          ? { x: 0, y: 0, width: 600, height: 400, zIndex: nextZ, minimized: false }
+          ? { x: 0, y: 0, width: 600, height: 400, zIndex: nextZ, minimized: false, ...action.window }
           : undefined,
       };
       return {

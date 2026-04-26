@@ -36,6 +36,7 @@ type APINode = {
     completeness: number;
     relationshipValidity: number;
   } | null;
+  classDisplayName?: string;
 };
 type APIEdge = { id: string; type: string; sourceId: string; targetId: string };
 
@@ -88,7 +89,7 @@ function computeLayout(nodes: APINode[], edges: APIEdge[], classDisplayNames: Re
       id: node.id,
       name: node.name,
       class: node.class,
-      classDisplayName: classDisplayNames[node.class] || node.class,
+      classDisplayName: node.classDisplayName || classDisplayNames[node.class] || node.class,
       environment: node.environment,
       attributes: node.attributes,
       health: node.health,
@@ -132,8 +133,59 @@ function computeLayout(nodes: APINode[], edges: APIEdge[], classDisplayNames: Re
 }
 
 const REL_TYPES = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"];
+const NODE_WIDTH = 260;
+const NODE_HEIGHT = 100;
+const NODE_GAP = 48;
 
 const nodeTypes = { serviceMapNode: ServiceMapNode };
+
+function rectsOverlap(a: { x: number; y: number }, b: { x: number; y: number }) {
+  return (
+    a.x < b.x + NODE_WIDTH + NODE_GAP &&
+    a.x + NODE_WIDTH + NODE_GAP > b.x &&
+    a.y < b.y + NODE_HEIGHT + NODE_GAP &&
+    a.y + NODE_HEIGHT + NODE_GAP > b.y
+  );
+}
+
+function findOpenPosition(preferred: { x: number; y: number }, occupied: Array<{ x: number; y: number }>) {
+  const stepX = NODE_WIDTH + NODE_GAP;
+  const stepY = NODE_HEIGHT + NODE_GAP;
+  const candidates: Array<{ x: number; y: number }> = [preferred];
+
+  for (let ring = 1; ring <= 8; ring += 1) {
+    for (let dx = -ring; dx <= ring; dx += 1) {
+      candidates.push({ x: preferred.x + dx * stepX, y: preferred.y - ring * stepY });
+      candidates.push({ x: preferred.x + dx * stepX, y: preferred.y + ring * stepY });
+    }
+    for (let dy = -ring + 1; dy <= ring - 1; dy += 1) {
+      candidates.push({ x: preferred.x - ring * stepX, y: preferred.y + dy * stepY });
+      candidates.push({ x: preferred.x + ring * stepX, y: preferred.y + dy * stepY });
+    }
+  }
+
+  return candidates.find((candidate) => occupied.every((pos) => !rectsOverlap(candidate, pos))) || preferred;
+}
+
+function placeExpandedNodes(existingNodes: FlowNode[], sourceId: string, newItems: APINode[]) {
+  const source = existingNodes.find((node) => node.id === sourceId);
+  const sourcePosition = source?.position || { x: 100, y: 100 };
+  const occupied = existingNodes.map((node) => node.position);
+  const count = Math.max(newItems.length, 1);
+  const radiusX = NODE_WIDTH + 140;
+  const radiusY = NODE_HEIGHT + 110;
+
+  return newItems.map((item, index) => {
+    const angle = (-Math.PI / 2) + (index * 2 * Math.PI) / count;
+    const preferred = {
+      x: sourcePosition.x + Math.cos(angle) * radiusX,
+      y: sourcePosition.y + Math.sin(angle) * radiusY,
+    };
+    const position = findOpenPosition(preferred, occupied);
+    occupied.push(position);
+    return { item, position };
+  });
+}
 
 function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const { setCenter } = useReactFlow();
@@ -208,6 +260,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
 
   // Plugin decorator state — apps can register to add badges to nodes
   const [nodeDecorators, setNodeDecorators] = useState<Record<string, NodeData["decorators"]>>({});
+  const lastFetchKeyRef = useRef<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -215,6 +268,18 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   }, []);
 
   const fetchData = useCallback(async (targetRootId: string, highlightId?: string | null) => {
+    const requestKey = JSON.stringify({
+      targetRootId,
+      highlightId: highlightId || null,
+      classFilters,
+      environmentFilters,
+      relationshipFilters,
+    });
+    if (lastFetchKeyRef.current === requestKey) {
+      setLoading(false);
+      return;
+    }
+    lastFetchKeyRef.current = requestKey;
     try {
       const data = await graphqlClient.request(
         `query GetServiceMap($rootId: ID!, $classFilter: [String], $environmentFilter: [String], $relationshipFilter: [String]) {
@@ -231,7 +296,11 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }
       );
       const map = (data as any).serviceMap;
-      const layout = computeLayout(map.nodes, map.edges, classDisplayNames, highlightId);
+      const nodesWithClassNames = map.nodes.map((node: APINode) => ({
+        ...node,
+        classDisplayName: classDisplayNames[node.class] || node.class,
+      }));
+      const layout = computeLayout(nodesWithClassNames, map.edges, classDisplayNames, highlightId);
       // Merge plugin decorators into node data
       const nodesWithDecorators = layout.nodes.map((n) => ({
         ...n,
@@ -242,14 +311,14 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       }));
       setNodes(nodesWithDecorators);
       setEdges(layout.edges);
-      const rootNode = map.nodes.find((n: APINode) => n.id === targetRootId);
+      const rootNode = nodesWithClassNames.find((n: APINode) => n.id === targetRootId);
       setRootName(rootNode?.name || targetRootId);
     } catch (err) {
       console.error("fetchData error:", err);
     } finally {
       setLoading(false);
     }
-  }, [setNodes, setEdges, classFilters, environmentFilters, relationshipFilters, nodeDecorators]);
+  }, [setNodes, setEdges, classFilters, environmentFilters, relationshipFilters, nodeDecorators, classDisplayNames]);
 
   useEffect(() => { fetchData(rootId, highlightedNodeId); }, [rootId, fetchData, highlightedNodeId]);
 
@@ -457,6 +526,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
           id: ci.id,
           name: ci.name,
           class: ci.class,
+          classDisplayName: classDisplayNames[ci.class] || ci.class,
           environment: ci.environment,
           health: (ci as any).health,
           relationshipCount: 0,
@@ -577,19 +647,20 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       // Merge new nodes
       setNodes((prev) => {
         const existingIds = new Set(prev.map((n) => n.id));
-        const newNodes = result.nodes
-          .filter((n: APINode) => !existingIds.has(n.id))
-          .map((n: APINode) => ({
-            id: n.id,
+        const newItems = result.nodes.filter((n: APINode) => !existingIds.has(n.id));
+        const placedNodes = placeExpandedNodes(prev, nodeId, newItems);
+        const newNodes = placedNodes.map(({ item, position }) => ({
+            id: item.id,
             data: {
-              id: n.id,
-              name: n.name,
-              class: n.class,
-              environment: n.environment,
-              health: n.health,
+              id: item.id,
+              name: item.name,
+              class: item.class,
+              classDisplayName: classDisplayNames[item.class] || item.class,
+              environment: item.environment,
+              health: item.health,
               relationshipCount: 0,
             } as NodeData,
-            position: { x: 100 + Math.random() * 400, y: 100 + Math.random() * 400 },
+            position,
             style: {
               width: 260,
               height: 100,
@@ -625,7 +696,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     } catch {
       showToast("Failed to load neighbors");
     }
-  }, [showToast]);
+  }, [showToast, classDisplayNames]);
 
   const selectRoot = (id: string) => {
     setRootId(id); setPickerOpen(false);
@@ -734,6 +805,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
                 id: newCi.id,
                 name: newCi.name,
                 class: newCi.class,
+                classDisplayName: classDisplayNames[newCi.class] || newCi.class,
                 environment: newCi.environment,
                 health: null,
                 relationshipCount: 0,
@@ -767,7 +839,18 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }`,
         { id }
       );
-      setSidebarCi((data as any).ci);
+      const ci = (data as any).ci;
+      setSidebarCi(ci ? {
+        ...ci,
+        classDisplayName: classDisplayNames[ci.class] || ci.class,
+        relationships: (ci.relationships || []).map((rel: any) => ({
+          ...rel,
+          target: {
+            ...rel.target,
+            classDisplayName: classDisplayNames[rel.target.class] || rel.target.class,
+          },
+        })),
+      } : null);
     } catch {
       showToast("Failed to load CI details");
     }
@@ -1114,7 +1197,20 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       )}
 
       {/* Sidebar Panel */}
-      {sidebarCi && <SidebarPanel ci={sidebarCi} onClose={() => setSidebarCi(null)} />}
+      {sidebarCi && (
+        <SidebarPanel
+          ci={sidebarCi}
+          classDisplayNames={classDisplayNames}
+          onClose={() => setSidebarCi(null)}
+          onEdit={(ci) => setEditCi(ci)}
+          onSetRoot={(id) => {
+            selectRoot(id);
+            setSidebarCi(null);
+          }}
+          onExpand={expandNode}
+          onOpenRelated={fetchCIDetails}
+        />
+      )}
 
       {/* Graph canvas */}
       <div className="h-full w-full">

@@ -1,37 +1,97 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
+import type { RefObject } from "react";
 import type { AppInstance } from "./AppContext";
 import type { RegistryEntry, ShellAPI } from "@/sdk/types";
 import { useShell } from "./AppContext";
-import { getUserRole } from "@/lib/auth";
-import ServiceMapApp from "@/apps/service-map";
-import CMDBExplorerApp from "@/apps/cmdb-explorer";
-import SettingsApp from "@/apps/settings";
-import DiscoveryApp from "@/apps/discovery";
-import ArcApp from "@/apps/arc";
-import ChangeManagerApp from "@/apps/change-manager";
-import DiscoveryInsightsApp from "@/apps/discovery-insights";
-import HealthMonitorApp from "@/apps/health-monitor";
-import AuditLogApp from "@/apps/audit-log";
-import AdminConsoleApp from "@/apps/admin-console";
-import CIClassManagerApp from "@/apps/ci-class-manager";
-
-const BUILT_IN_COMPONENTS: Record<string, React.ComponentType<{ shell: ShellAPI }>> = {
-  "service-map": ServiceMapApp,
-  "cmdb-explorer": CMDBExplorerApp,
-  "settings": SettingsApp,
-  "discovery": DiscoveryApp,
-  "arc": ArcApp,
-  "change-manager": ChangeManagerApp,
-  "discovery-insights": DiscoveryInsightsApp,
-  "health-monitor": HealthMonitorApp,
-  "audit-log": AuditLogApp,
-  "admin-console": AdminConsoleApp,
-  "ci-class-manager": CIClassManagerApp,
+import { getToken, getUserRole } from "@/lib/auth";
+import { API_BASE, graphqlClient } from "@/lib/api";
+const BUILT_IN_COMPONENTS: Record<string, () => Promise<{ default: React.ComponentType<{ shell: ShellAPI }> }>> = {
+  "service-map": () => import("@/apps/service-map"),
+  "cmdb-explorer": () => import("@/apps/cmdb-explorer"),
+  "settings": () => import("@/apps/settings"),
+  "discovery": () => import("@/apps/discovery"),
+  "arc": () => import("@/apps/arc"),
+  "change-manager": () => import("@/apps/change-manager"),
+  "incident-manager": () => import("@/apps/incident-manager"),
+  "knowledge-core": () => import("@/apps/knowledge-core"),
+  "prevention-center": () => import("@/apps/prevention-center"),
+  "asset-command": () => import("@/apps/asset-command"),
+  "discovery-insights": () => import("@/apps/discovery-insights"),
+  "health-monitor": () => import("@/apps/health-monitor"),
+  "it-visibility-dcim": () => import("@/apps/it-visibility-dcim"),
+  "audit-log": () => import("@/apps/audit-log"),
+  "admin-console": () => import("@/apps/admin-console"),
+  "ci-class-manager": () => import("@/apps/ci-class-manager"),
+  "tables": () => import("@/apps/tables"),
+  "data-foundations": () => import("@/apps/data-foundations"),
+  "hello-world": () => import("@/apps/hello-world"),
 };
 
 const externalCache = new Map<string, React.ComponentType<{ shell: ShellAPI }>>();
+const builtInCache = new Map<string, React.ComponentType<{ shell: ShellAPI }>>();
+const DOCK_INSET_CLASS = "specora-dock-inset-target";
+
+function useDockSafeScrollContainers(rootRef: RefObject<HTMLDivElement>, enabled: boolean) {
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || !enabled) return;
+
+    let frame = 0;
+    const marked = new Set<HTMLElement>();
+
+    const isScrollable = (element: HTMLElement) => {
+      const style = window.getComputedStyle(element);
+      return /auto|scroll|overlay/.test(style.overflowY) && element.clientHeight > 0;
+    };
+
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const dockInset = parseFloat(window.getComputedStyle(document.documentElement).getPropertyValue("--specora-dock-safe-area")) || 112;
+        const bottomThreshold = window.innerHeight - dockInset + 8;
+        const candidates = [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))];
+        const next = new Set<HTMLElement>();
+
+        for (const element of candidates) {
+          if (!isScrollable(element)) continue;
+          const rect = element.getBoundingClientRect();
+          if (rect.height < 96 || rect.bottom < bottomThreshold) continue;
+          next.add(element);
+          if (!element.dataset.specoraOriginalBottomPadding) {
+            element.dataset.specoraOriginalBottomPadding = window.getComputedStyle(element).paddingBottom || "0px";
+            element.style.setProperty("--specora-original-bottom-padding", element.dataset.specoraOriginalBottomPadding);
+          }
+          element.classList.add(DOCK_INSET_CLASS);
+        }
+
+        for (const element of marked) {
+          if (!next.has(element)) element.classList.remove(DOCK_INSET_CLASS);
+        }
+        marked.clear();
+        next.forEach((element) => marked.add(element));
+      });
+    };
+
+    update();
+    const mutationObserver = new MutationObserver(update);
+    mutationObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style"] });
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    resizeObserver?.observe(root);
+    window.addEventListener("resize", update);
+    window.addEventListener("specora:dock-safe-area-change", update);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      mutationObserver.disconnect();
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("specora:dock-safe-area-change", update);
+      marked.forEach((element) => element.classList.remove(DOCK_INSET_CLASS));
+    };
+  }, [rootRef, enabled]);
+}
 
 function satisfiesReactVersion(required: string): boolean {
   const requiredMajor = required.match(/\^?(\d+)/)?.[1];
@@ -63,49 +123,98 @@ async function loadExternalComponent(entry: RegistryEntry): Promise<React.Compon
 }
 
 const PERMISSION_CAPABILITIES: Record<string, string[]> = {
-  "read:cmdb": ["sendMessage", "onMessage", "notify", "dispatch"],
-  "write:cmdb": ["sendMessage", "onMessage", "notify"],
-  "read:relationships": ["sendMessage", "onMessage", "notify"],
-  "read:discovery": ["sendMessage", "onMessage", "notify"],
-  "write:discovery": ["sendMessage", "onMessage", "notify"],
-  "read:profile": ["sendMessage", "onMessage", "notify"],
-  "read:chat": ["sendMessage", "onMessage", "notify"],
-  "itsm:change:read": ["sendMessage", "onMessage", "notify"],
-  "itsm:change:write": ["sendMessage", "onMessage", "notify"],
-  "itsm:discovery:read": ["sendMessage", "onMessage", "notify"],
-  "itsm:health:read": ["sendMessage", "onMessage", "notify"],
-  "itsm:health:write": ["sendMessage", "onMessage", "notify"],
+  "read:cmdb": ["sendMessage", "onMessage", "notify", "dispatch", "query", "fetch"],
+  "write:cmdb": ["sendMessage", "onMessage", "notify", "dispatch", "query", "mutate", "fetch"],
+  "read:relationships": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "write:relationships": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "read:discovery": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "write:discovery": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "read:profile": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "read:chat": ["sendMessage", "onMessage", "notify", "fetch"],
+  "itsm:change:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "itsm:change:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:incident:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "itsm:incident:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:incident:remediate": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:knowledge:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "itsm:knowledge:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:knowledge:govern": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:prevention:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "itsm:prevention:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:prevention:govern": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:asset:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "itsm:asset:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:asset:govern": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "itsm:discovery:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "itsm:health:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "itsm:health:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "it-visibility:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "it-visibility:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "it-visibility:operate": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "audit-log:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "rbac:read": ["sendMessage", "onMessage", "notify", "fetch"],
+  "rbac:write": ["sendMessage", "onMessage", "notify", "fetch"],
+  "number-sequences:read": ["sendMessage", "onMessage", "notify", "fetch"],
+  "number-sequences:write": ["sendMessage", "onMessage", "notify", "fetch"],
+  "system-properties:read": ["sendMessage", "onMessage", "notify", "fetch"],
+  "system-properties:write": ["sendMessage", "onMessage", "notify", "fetch"],
+  "admin:cmdb": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "tables:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "tables:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "data-foundations:read": ["sendMessage", "onMessage", "notify", "dispatch", "fetch"],
+  "data-foundations:write": ["sendMessage", "onMessage", "notify", "dispatch", "fetch"],
 };
 
 const ROLE_PERMISSIONS: Record<string, string[]> = {
   viewer: [
     "read:cmdb", "read:relationships", "read:discovery",
-    "itsm:change:read", "itsm:discovery:read", "itsm:health:read",
-    "audit-log:read", "read:profile", "read:chat"
+    "itsm:change:read", "itsm:incident:read", "itsm:knowledge:read", "itsm:prevention:read", "itsm:asset:read", "itsm:discovery:read", "itsm:health:read",
+    "audit-log:read", "read:profile", "read:chat",
+    "tables:read", "data-foundations:read"
   ],
   operator: [
     "read:cmdb", "write:cmdb", "read:relationships", "write:relationships",
     "read:discovery", "write:discovery",
     "itsm:change:read", "itsm:change:write",
+    "itsm:incident:read", "itsm:incident:write", "itsm:incident:remediate",
+    "itsm:knowledge:read", "itsm:knowledge:write",
+    "itsm:prevention:read", "itsm:prevention:write",
+    "itsm:asset:read", "itsm:asset:write",
     "itsm:discovery:read",
     "itsm:health:read", "itsm:health:write",
-    "audit-log:read", "read:profile", "read:chat"
+    "it-visibility:read",
+    "audit-log:read", "read:profile", "read:chat",
+    "tables:read", "tables:write", "data-foundations:read"
   ],
   admin: [
     "read:cmdb", "write:cmdb", "read:relationships", "write:relationships",
     "read:discovery", "write:discovery",
     "itsm:change:read", "itsm:change:write",
+    "itsm:incident:read", "itsm:incident:write", "itsm:incident:remediate",
+    "itsm:knowledge:read", "itsm:knowledge:write", "itsm:knowledge:govern",
+    "itsm:prevention:read", "itsm:prevention:write", "itsm:prevention:govern",
+    "itsm:asset:read", "itsm:asset:write", "itsm:asset:govern",
     "itsm:discovery:read",
     "itsm:health:read", "itsm:health:write",
+    "it-visibility:read", "it-visibility:write", "it-visibility:operate",
     "audit-log:read", "read:profile", "read:chat",
-    "app:install", "app:uninstall"
+    "app:install", "app:uninstall", "admin:cmdb",
+    "number-sequences:read", "number-sequences:write",
+    "tables:read", "tables:write", "data-foundations:read", "data-foundations:write"
   ],
   security_admin: [
     "rbac:read", "rbac:write",
+    "number-sequences:read", "number-sequences:write",
     "system-properties:read", "system-properties:write",
     "audit-log:read",
     "app:install", "app:uninstall",
-    "read:profile", "read:chat"
+    "read:profile", "read:chat",
+    "itsm:incident:read", "itsm:incident:write", "itsm:incident:remediate",
+    "itsm:knowledge:read", "itsm:knowledge:write", "itsm:knowledge:govern",
+    "itsm:prevention:read", "itsm:prevention:write", "itsm:prevention:govern",
+    "itsm:asset:read", "itsm:asset:write", "itsm:asset:govern",
+    "it-visibility:read", "it-visibility:write", "it-visibility:operate",
+    "tables:read", "tables:write", "data-foundations:read", "data-foundations:write"
   ],
 };
 
@@ -135,6 +244,7 @@ function buildShellAPI(
     appId: instance.id,
     isActive: instance.state === "active",
     isDormant: instance.state === "dormant",
+    launchPayload: instance.launchPayload,
     sendMessage: allowed.has("sendMessage")
       ? (msg) => bus.publish({ from: instance.installKey, ...msg })
       : () => console.warn(`App ${instance.id} lacks permission to send messages`),
@@ -146,6 +256,21 @@ function buildShellAPI(
           dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message, type } });
         }
       : () => {},
+    query: allowed.has("query")
+      ? (query, variables) => graphqlClient.request(query, variables)
+      : () => Promise.reject(new Error(`App ${instance.id} lacks permission to query GraphQL`)),
+    mutate: allowed.has("mutate")
+      ? (mutation, variables) => graphqlClient.request(mutation, variables)
+      : () => Promise.reject(new Error(`App ${instance.id} lacks permission to mutate GraphQL`)),
+    fetch: allowed.has("fetch")
+      ? (path, init = {}) => {
+          const token = getToken();
+          const headers = new Headers(init.headers);
+          if (token) headers.set("Authorization", `Bearer ${token}`);
+          const url = path.startsWith("http") ? path : `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+          return fetch(url, { ...init, headers });
+        }
+      : () => Promise.reject(new Error(`App ${instance.id} lacks permission to fetch API routes`)),
     dispatch: allowed.has("dispatch") ? dispatch : () => {},
     messageBus: bus,
     eventBus,
@@ -165,7 +290,19 @@ function AppLoader({ entry, shellAPI }: {
 
     const builtIn = BUILT_IN_COMPONENTS[entry.id];
     if (builtIn) {
-      if (mounted) setComponent(() => builtIn);
+      const cached = builtInCache.get(entry.id);
+      if (cached) {
+        if (mounted) setComponent(() => cached);
+        return;
+      }
+      builtIn().then((mod) => {
+        if (!mounted) return;
+        builtInCache.set(entry.id, mod.default);
+        setComponent(() => mod.default);
+      }).catch((err) => {
+        console.error(`Failed to load built-in app ${entry.id}:`, err);
+        if (mounted) setFailed(true);
+      });
       return;
     }
 
@@ -239,8 +376,35 @@ function AppLoader({ entry, shellAPI }: {
   return <Component shell={shellAPI} />;
 }
 
+function AppHost({ entry, instance }: { entry: RegistryEntry; instance: AppInstance }) {
+  const { dispatch, messageBus, eventBus } = useShell();
+  const hostRef = useRef<HTMLDivElement>(null);
+  const permissionsKey = useMemo(() => (instance.permissions || []).join("|"), [instance.permissions]);
+  const shellAPI = useMemo(
+    () => buildShellAPI(instance, dispatch, messageBus, eventBus),
+    [
+      instance.id,
+      instance.installKey,
+      instance.state,
+      instance.launchPayload,
+      permissionsKey,
+      dispatch,
+      messageBus,
+      eventBus,
+    ]
+  );
+
+  useDockSafeScrollContainers(hostRef, instance.mode === "canvas" && instance.state === "active");
+
+  return (
+    <div ref={hostRef} className="specora-app-host h-full w-full overflow-hidden">
+      <AppLoader entry={entry} shellAPI={shellAPI} />
+    </div>
+  );
+}
+
 export function CanvasArea() {
-  const { state, dispatch, messageBus, registry, eventBus } = useShell();
+  const { state, registry } = useShell();
   const role = useMemo(() => getUserRole(), []);
   const visibleRegistry = filterRegistryByRole(registry, role);
   const activeInstance = state.instances.find(
@@ -285,17 +449,15 @@ export function CanvasArea() {
     );
   }
 
-  const shellAPI = buildShellAPI(activeInstance, dispatch, messageBus, eventBus);
-
   return (
     <div className="h-full w-full">
-      <AppLoader entry={entry} shellAPI={shellAPI} />
+      <AppHost entry={entry} instance={activeInstance} />
     </div>
   );
 }
 
 export function DormantApps() {
-  const { state, dispatch, messageBus, registry, eventBus } = useShell();
+  const { state, registry } = useShell();
   const role = useMemo(() => getUserRole(), []);
   const visibleRegistry = filterRegistryByRole(registry, role);
   const dormantInstances = state.instances.filter((i) => i.state === "dormant" && i.mode === "canvas");
@@ -305,10 +467,9 @@ export function DormantApps() {
       {dormantInstances.map((instance) => {
         const entry = visibleRegistry.find((r) => r.id === instance.id);
         if (!entry) return null;
-        const shellAPI = buildShellAPI(instance, dispatch, messageBus, eventBus);
         return (
           <div key={instance.instanceId} id={`dormant-${instance.instanceId}`}>
-            <AppLoader entry={entry} shellAPI={shellAPI} />
+            <AppHost entry={entry} instance={instance} />
           </div>
         );
       })}
@@ -343,11 +504,9 @@ function saveWindowState(appId: string, state: { x: number; y: number; width: nu
 function WindowFrame({
   instance,
   entry,
-  shellAPI,
 }: {
   instance: AppInstance;
   entry: RegistryEntry;
-  shellAPI: ShellAPI;
 }) {
   const { dispatch } = useShell();
   const frameRef = useRef<HTMLDivElement>(null);
@@ -367,7 +526,8 @@ function WindowFrame({
     const w = instance.window;
     if (!w) return;
 
-    const persisted = loadWindowState(instance.id);
+    const launchPayload = instance.launchPayload as { windowPreset?: string } | undefined;
+    const persisted = launchPayload?.windowPreset === "large" ? null : loadWindowState(instance.id);
     if (persisted) {
       dispatch({ type: "MOVE_WINDOW", instanceId: instance.instanceId, x: persisted.x, y: persisted.y });
       dispatch({ type: "RESIZE_WINDOW", instanceId: instance.instanceId, width: persisted.width, height: persisted.height });
@@ -516,7 +676,7 @@ function WindowFrame({
         </div>
         {/* Content */}
         <div className={`flex-1 overflow-hidden ${!isActive ? "opacity-50" : ""}`}>
-          <AppLoader entry={entry} shellAPI={shellAPI} />
+          <AppHost entry={entry} instance={instance} />
         </div>
         {/* Resize handle */}
         <div
@@ -534,7 +694,7 @@ function WindowFrame({
 }
 
 export function WindowLayer({ registry }: { registry: RegistryEntry[] }) {
-  const { state, dispatch, messageBus, eventBus } = useShell();
+  const { state } = useShell();
   const role = useMemo(() => getUserRole(), []);
   const visibleRegistry = filterRegistryByRole(registry, role);
   const windowInstances = state.instances.filter((i) => i.mode === "window");
@@ -546,13 +706,11 @@ export function WindowLayer({ registry }: { registry: RegistryEntry[] }) {
       {windowInstances.map((instance) => {
         const entry = visibleRegistry.find((r) => r.id === instance.id);
         if (!entry) return null;
-        const shellAPI = buildShellAPI(instance, dispatch, messageBus, eventBus);
         return (
           <WindowFrame
             key={instance.instanceId}
             instance={instance}
             entry={entry}
-            shellAPI={shellAPI}
           />
         );
       })}

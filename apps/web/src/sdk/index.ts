@@ -25,10 +25,71 @@ export async function getRegistry(): Promise<RegistryEntry[]> {
     const tx = db.transaction(STORE_NAME, "readonly");
     const store = tx.objectStore(STORE_NAME);
     const req = store.getAll();
-    req.onsuccess = () => resolve(req.result as RegistryEntry[]);
+    req.onsuccess = () => resolve(sortRegistry(req.result as RegistryEntry[]));
     req.onerror = () => reject(req.error);
     tx.oncomplete = () => db.close();
   });
+}
+
+async function getRawRegistry(): Promise<RegistryEntry[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const req = store.getAll();
+    req.onsuccess = () => resolve(sortRegistry(req.result as RegistryEntry[]));
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => db.close();
+  });
+}
+
+function sortRegistry(apps: RegistryEntry[]): RegistryEntry[] {
+  return [...apps].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+function getApiBase() {
+  return process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
+}
+
+function getToken() {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("specora_token");
+}
+
+export async function syncServerRegistry(): Promise<RegistryEntry[]> {
+  const token = getToken();
+  if (!token) {
+    await seedBuiltInApps();
+    return getRegistry();
+  }
+
+  const response = await fetch(`${getApiBase()}/api/apps/registry`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    await seedBuiltInApps();
+    return getRegistry();
+  }
+
+  const data = await response.json();
+  const apps = (data.apps || []) as RegistryEntry[];
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const clearReq = store.clear();
+    clearReq.onsuccess = () => {
+      for (const app of apps) store.put(app);
+    };
+    clearReq.onerror = () => reject(clearReq.error);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+  return sortRegistry(apps);
 }
 
 export async function installApp(manifest: AppManifest): Promise<RegistryEntry> {
@@ -49,7 +110,47 @@ export async function installApp(manifest: AppManifest): Promise<RegistryEntry> 
   });
 }
 
+export async function getAvailableRegistry(): Promise<RegistryEntry[]> {
+  const token = getToken();
+  if (!token) {
+    await seedBuiltInApps();
+    return getRawRegistry();
+  }
+  const response = await fetch(`${getApiBase()}/api/apps/catalog`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    await seedBuiltInApps();
+    return getRawRegistry();
+  }
+  const data = await response.json();
+  return sortRegistry((data.apps || []) as RegistryEntry[]);
+}
+
+export async function reinstallOptionalApp(id: string): Promise<void> {
+  const token = getToken();
+  if (!token) return seedBuiltInApps();
+  const response = await fetch(`${getApiBase()}/api/apps/${id}/install`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error("App could not be installed");
+  await syncServerRegistry();
+}
+
 export async function uninstallApp(id: string, clearData: boolean = false): Promise<void> {
+  const token = getToken();
+  if (token) {
+    const response = await fetch(`${getApiBase()}/api/apps/${id}/uninstall`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ clearData, dataRetentionPolicy: clearData ? "purge" : "retain" }),
+    });
+    if (!response.ok) throw new Error("App could not be uninstalled");
+    await syncServerRegistry();
+    return;
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
@@ -107,7 +208,7 @@ export async function seedBuiltInApps(): Promise<void> {
       description: "Search, filter, and inspect Configuration Items in your CMDB.",
       icon: "Database",
       version: "1.0.0",
-      permissions: ["read:cmdb"],
+      permissions: ["read:cmdb", "read:relationships"],
       defaultMode: "canvas",
       installKey: "builtin_cmdb-explorer",
       source: "built-in",
@@ -115,18 +216,39 @@ export async function seedBuiltInApps(): Promise<void> {
       installedAt: Date.now(),
       chatCapabilities: [
         {
-          id: "cmdb.search",
-          label: "Search CMDB",
-          description: "Find CIs by name, class, or property",
-          prompt: "Search the CMDB",
+          id: "cmdb.investigate-ci",
+          label: "Investigate CI",
+          description: "Find a CI, summarize its details, and open it in CMDB Explorer",
+          prompt: "Find and investigate a configuration item",
           icon: "Database",
         },
         {
-          id: "cmdb.list-servers",
-          label: "List all servers",
-          description: "Show every Server-class CI",
-          prompt: "List all servers in the CMDB",
-          icon: "Server",
+          id: "cmdb.browse",
+          label: "Browse CMDB",
+          description: "Open the CMDB Explorer workspace",
+          prompt: "Open CMDB Explorer",
+          icon: "Search",
+        },
+        {
+          id: "cmdb.find-risk",
+          label: "Find risky CIs",
+          description: "Find low-health, stale, or incomplete CIs",
+          prompt: "Find risky CIs in the CMDB",
+          icon: "AlertTriangle",
+        },
+        {
+          id: "cmdb.find-orphans",
+          label: "Find orphaned CIs",
+          description: "Find CIs with missing relationship context",
+          prompt: "Find orphaned CIs in the CMDB",
+          icon: "Unlink",
+        },
+        {
+          id: "cmdb.find-path",
+          label: "Find dependency path",
+          description: "Find the graph path between two CIs",
+          prompt: "Find the dependency path between two CIs",
+          icon: "Route",
         },
       ],
     },
@@ -280,6 +402,219 @@ Only call this tool once all required information is gathered.`,
       events: ["ci.created"],
     },
     {
+      id: "incident-manager",
+      name: "Incident Command Center",
+      description: "AI-first incident triage, command, remediation, and learning workflows.",
+      icon: "Siren",
+      version: "1.0.0",
+      permissions: ["itsm:incident:read", "itsm:incident:write"],
+      defaultMode: "canvas",
+      installKey: "builtin_incident-manager",
+      source: "built-in",
+      publisher: "Specora ITSM",
+      installedAt: Date.now(),
+      chatTools: [
+        {
+          name: "create_incident",
+          description: "Create an incident from a user report, alert, pipeline, monitor, or external signal.",
+          parameters: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              description: { type: "string" },
+              severity: { type: "string", description: "critical, high, medium, low" },
+              ciId: { type: "string" },
+              service: { type: "string" },
+              source: { type: "string" },
+              externalRef: { type: "string" },
+              affectedCiIds: { type: "array", items: { type: "string" } },
+            },
+            required: ["title"],
+          },
+        },
+        {
+          name: "triage_incident",
+          description: "Correlate and triage an incident using CMDB, health, and change context.",
+          parameters: {
+            type: "object",
+            properties: {
+              incidentId: { type: "string" },
+            },
+            required: ["incidentId"],
+          },
+        },
+        {
+          name: "recommend_remediation",
+          description: "Propose safe remediation actions for an active incident.",
+          parameters: {
+            type: "object",
+            properties: {
+              incidentId: { type: "string" },
+            },
+            required: ["incidentId"],
+          },
+        },
+      ],
+      chatCapabilities: [
+        {
+          id: "incident-manager.triage",
+          label: "Triage incident",
+          description: "Create, correlate, and triage an incident with AI context",
+          prompt: "Triage a new incident",
+          icon: "Siren",
+        },
+        {
+          id: "incident-manager.command",
+          label: "Open command center",
+          description: "Open active incidents and major incident command",
+          prompt: "Open Incident Command Center",
+          icon: "Activity",
+        },
+        {
+          id: "incident-manager.remediate",
+          label: "Recommend remediation",
+          description: "Suggest safe remediation actions for an active incident",
+          prompt: "Recommend remediation for an incident",
+          icon: "Bot",
+        },
+      ],
+      events: ["incident.created", "incident.triaged", "incident.status_changed"],
+    },
+    {
+      id: "knowledge-core",
+      name: "Knowledge Core",
+      description: "AI-governed knowledge graph for answers, runbooks, stewardship, and operational learning.",
+      icon: "Brain",
+      version: "1.0.0",
+      permissions: ["itsm:knowledge:read", "itsm:knowledge:write"],
+      defaultMode: "canvas",
+      installKey: "builtin_knowledge-core",
+      source: "built-in",
+      publisher: "Specora ITSM",
+      installedAt: Date.now(),
+      chatTools: [
+        {
+          name: "answer",
+          description: "Answer a question using governed knowledge with citations and confidence.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+              audience: { type: "string" },
+              ciId: { type: "string" },
+              service: { type: "string" },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "draft_from_record",
+          description: "Draft knowledge from an incident, change, chat answer, health finding, or discovery finding.",
+          parameters: {
+            type: "object",
+            properties: {
+              sourceType: { type: "string" },
+              sourceId: { type: "string" },
+              title: { type: "string" },
+              notes: { type: "string" },
+            },
+            required: ["sourceType", "sourceId"],
+          },
+        },
+      ],
+      chatCapabilities: [
+        {
+          id: "knowledge-core.answer",
+          label: "Answer from knowledge",
+          description: "Answer with governed knowledge, citations, and confidence",
+          prompt: "Answer this using Knowledge Core",
+          icon: "Brain",
+        },
+        {
+          id: "knowledge-core.stewardship",
+          label: "Stewardship queue",
+          description: "Review stale, risky, missing, and draft knowledge",
+          prompt: "Show the Knowledge Core stewardship queue",
+          icon: "Library",
+        },
+        {
+          id: "knowledge-core.draft",
+          label: "Draft knowledge",
+          description: "Create reusable knowledge from an incident, change, or operational note",
+          prompt: "Draft a knowledge article from recent work",
+          icon: "Sparkles",
+        },
+      ],
+      events: ["knowledge.created", "knowledge.published", "knowledge.gap_detected", "knowledge.feedback_recorded"],
+    },
+    {
+      id: "prevention-center",
+      name: "Prevention Center",
+      description: "Reliability prevention engine for recurring incidents, known errors, corrective actions, and measured reduction.",
+      icon: "ShieldCheck",
+      version: "1.0.0",
+      permissions: ["itsm:prevention:read", "itsm:prevention:write"],
+      defaultMode: "canvas",
+      installKey: "builtin_prevention-center",
+      source: "built-in",
+      publisher: "Specora ITSM",
+      installedAt: Date.now(),
+      chatCapabilities: [
+        {
+          id: "prevention-center.detect",
+          label: "Detect prevention work",
+          description: "Find recurring incident and reliability patterns worth fixing",
+          prompt: "Detect prevention candidates",
+          icon: "ShieldCheck",
+        },
+        {
+          id: "prevention-center.actions",
+          label: "Propose corrective actions",
+          description: "Create known-error, health, change, and automation prevention work",
+          prompt: "Propose corrective actions for prevention candidates",
+          icon: "Target",
+        },
+      ],
+      events: ["prevention.created", "prevention.candidates_detected", "prevention.status_changed"],
+    },
+    {
+      id: "asset-command",
+      name: "Asset Command Center",
+      description: "AI-first ITAM for hardware custody, software entitlements, contract extraction, reconciliation, and savings.",
+      icon: "PackageSearch",
+      version: "1.0.0",
+      permissions: ["itsm:asset:read", "itsm:asset:write"],
+      defaultMode: "canvas",
+      installKey: "builtin_asset-command",
+      source: "built-in",
+      publisher: "Specora ITSM",
+      installedAt: Date.now(),
+      chatCapabilities: [
+        {
+          id: "asset-command.reconcile",
+          label: "Reconcile SAM",
+          description: "Compare software usage against entitlements and surface license risk",
+          prompt: "Run SAM reconciliation",
+          icon: "Scale",
+        },
+        {
+          id: "asset-command.contract",
+          label: "Extract entitlements",
+          description: "Create contract and entitlement records from agreement data",
+          prompt: "Extract software entitlements from this contract",
+          icon: "FileText",
+        },
+        {
+          id: "asset-command.scans",
+          label: "Review asset scans",
+          description: "Inspect mobile-ready barcode/RFID scan and custody evidence",
+          prompt: "Review asset scan exceptions",
+          icon: "ScanLine",
+        },
+      ],
+      events: ["asset.created", "asset.contract_ingested", "asset.sam_reconciled", "asset.scanned"],
+    },
+    {
       id: "discovery-insights",
       name: "Discovery Insights",
       description: "Analyze discovery coverage and suggest next scans.",
@@ -399,6 +734,48 @@ Only call this tool once all required information is gathered.`,
       events: ["ci.updated"],
     },
     {
+      id: "it-visibility-dcim",
+      name: "DCIM Command Center",
+      description: "Premium IT Visibility package app for facility topology, rack intelligence, power/cooling risk, and event correlation.",
+      icon: "Network",
+      version: "0.1.0",
+      permissions: ["it-visibility:read", "it-visibility:write", "it-visibility:operate"],
+      defaultMode: "canvas",
+      installKey: "package_it-visibility_dcim",
+      source: "built-in",
+      publisher: "Specora IT Visibility",
+      installedAt: Date.now(),
+      packageId: "it-visibility",
+      packageName: "IT Visibility",
+      premium: true,
+      entitlementMode: "placeholder",
+      bundledWithPlatform: false,
+      chatCapabilities: [
+        {
+          id: "dcim.plan-install",
+          label: "Plan rack install",
+          description: "Find viable rack placement and power/network constraints",
+          prompt: "Plan a data center rack install",
+          icon: "Network",
+        },
+        {
+          id: "dcim.failure-impact",
+          label: "Simulate facility failure",
+          description: "Explain service impact from PDU, UPS, cooling, or rack failure",
+          prompt: "Simulate a data center failure impact",
+          icon: "Zap",
+        },
+        {
+          id: "dcim.event-story",
+          label: "Explain facility events",
+          description: "Correlate facility events into an operational story",
+          prompt: "Explain current DCIM events",
+          icon: "Activity",
+        },
+      ],
+      events: ["dcim.event.ingested", "dcim.capacity.changed", "dcim.risk.detected"],
+    },
+    {
       id: "audit-log",
       name: "Audit Log",
       description: "View audit trail of all CMDB mutations and changes.",
@@ -423,11 +800,11 @@ Only call this tool once all required information is gathered.`,
     {
       id: "admin-console",
       name: "Admin Console",
-      description: "Manage RBAC permissions and system properties.",
+      description: "Govern access, registries, counters, system properties, and app-owned admin panels.",
       icon: "Shield",
       version: "1.0.0",
-      permissions: ["rbac:read", "rbac:write", "system-properties:read", "system-properties:write"],
-      defaultMode: "window",
+      permissions: ["rbac:read", "rbac:write", "number-sequences:read", "number-sequences:write", "system-properties:read", "system-properties:write"],
+      defaultMode: "canvas",
       installKey: "builtin_admin-console",
       source: "built-in",
       publisher: "Specora",
@@ -446,6 +823,32 @@ Only call this tool once all required information is gathered.`,
       publisher: "Specora",
       installedAt: Date.now(),
     },
+    {
+      id: "tables",
+      name: "Tables",
+      description: "Browse and maintain platform tables through RBAC-aware CRUD APIs.",
+      icon: "TableProperties",
+      version: "1.0.0",
+      permissions: ["tables:read", "tables:write"],
+      defaultMode: "canvas",
+      installKey: "builtin_tables",
+      source: "built-in",
+      publisher: "Specora",
+      installedAt: Date.now(),
+    },
+    {
+      id: "data-foundations",
+      name: "Data Foundations",
+      description: "Govern CSDMv5 foundation data quality, ownership, and readiness.",
+      icon: "Building2",
+      version: "1.0.0",
+      permissions: ["data-foundations:read", "data-foundations:write", "tables:read"],
+      defaultMode: "canvas",
+      installKey: "builtin_data-foundations",
+      source: "built-in",
+      publisher: "Specora",
+      installedAt: Date.now(),
+    },
   ];
 
   const missing = builtIns.filter((b) => !existingIds.has(b.id));
@@ -456,7 +859,8 @@ Only call this tool once all required information is gathered.`,
     // Compare key fields that affect runtime behavior
     const fieldsToCompare: (keyof RegistryEntry)[] = [
       "name", "description", "icon", "version", "permissions",
-      "defaultMode", "adminPanels", "chatTools", "events",
+      "defaultMode", "adminPanels", "chatTools", "chatCapabilities", "events",
+      "packageId", "packageName", "premium", "entitlementMode", "bundledWithPlatform",
     ];
     return fieldsToCompare.some((f) => JSON.stringify(e[f]) !== JSON.stringify(b[f]));
   });

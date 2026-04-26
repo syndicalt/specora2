@@ -18,12 +18,22 @@ Primary Provara routing:
 | `PROVARA_URL` | Provara API endpoint |
 | `PROVARA_API_KEY` | Provara API key |
 | `PROVARA_TENANT_ID` | Optional tenant identifier for multi-tenant Provara deployments |
+| `PROVARA_MODEL` | Optional default Provara model/router name; defaults to `provara-router` |
 
 Fallback OpenAI routing:
 
 | Variable | Description |
 | --- | --- |
 | `OPENAI_API_KEY` | Direct OpenAI key used when Provara is unavailable or disabled |
+| `OPENAI_MODEL` | Optional default direct OpenAI model |
+
+Discovery transform routing:
+
+| Variable | Description |
+| --- | --- |
+| `DISCOVERY_PROVARA_MODEL` | Optional Provara model/router override for Discovery AI transform drafting |
+| `DISCOVERY_OPENAI_MODEL` | Optional direct OpenAI fallback model for Discovery transform drafting; defaults to `gpt-4o` |
+| `DISCOVERY_AI_TIMEOUT_MS` | Optional bounded timeout for Discovery AI transform drafting; defaults to `3500` |
 
 ## Tool-Call Contract
 
@@ -48,6 +58,7 @@ The unified registry exposes the tool list to chat and routes tool invocations t
 ## Operational Notes
 
 - Prefer Provara for normal deployments because it centralizes model routing.
+- Use higher-capability Discovery transform models than generic chat defaults. Discovery mapping can affect CMDB data quality, reconciliation, and class routing.
 - Keep OpenAI fallback working so local development and degraded routing states remain usable.
 - Do not remove tool calling or replace it with static embeddings. CMDB data changes frequently, and stale embedded knowledge is not acceptable for ITSM workflows.
 - If Provara behavior changes, update this file and `AGENTS.md` in the same change.

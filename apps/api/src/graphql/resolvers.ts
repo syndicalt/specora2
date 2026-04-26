@@ -9,6 +9,32 @@ import {
 } from "@specora/core";
 import { hasPermission } from "../services/rbac";
 
+const ALLOWED_RELATIONSHIP_TYPES = [
+  "PART_OF",
+  "DEPENDS_ON",
+  "HOSTED_ON",
+  "MANAGED_BY",
+  "OWNED_BY",
+  "LOCATED_AT",
+] as const;
+
+function relationshipPattern(types?: string[]) {
+  const relTypes = types?.length ? types : [...ALLOWED_RELATIONSHIP_TYPES];
+  const invalid = relTypes.filter((type) => !ALLOWED_RELATIONSHIP_TYPES.includes(type as any));
+  if (invalid.length) {
+    throw new GraphQLError(`Invalid relationship type: ${invalid.join(", ")}`, { extensions: { code: "BAD_USER_INPUT" } });
+  }
+  return relTypes.join("|");
+}
+
+function boundedHopCount(value: number | undefined, fallback: number) {
+  const hops = value ?? fallback;
+  if (!Number.isInteger(hops) || hops < 1 || hops > 10) {
+    throw new GraphQLError("maxHops must be an integer between 1 and 10", { extensions: { code: "BAD_USER_INPUT" } });
+  }
+  return hops;
+}
+
 function parseNode(node: any) {
   const attrs = typeof node.attributes === "string" ? JSON.parse(node.attributes) : (node.attributes || {});
   return { ...node, attributes: attrs };
@@ -241,9 +267,7 @@ export const resolvers = {
         const rootRecord = rootResult.records[0];
         const rootNode = rootRecord ? parseNode(rootRecord.get("root").properties) : null;
 
-        const relTypes = args.relationshipFilter?.length
-          ? args.relationshipFilter.join("|")
-          : "PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT";
+        const relTypes = relationshipPattern(args.relationshipFilter);
 
         let query = `MATCH path = (root:ConfigurationItem {id: $rootId})-[:${relTypes}*0..3]-(related:ConfigurationItem)
 WHERE related <> root`;
@@ -314,7 +338,7 @@ LIMIT 50`;
         );
         const rootNode = rootResult.records[0] ? parseNode(rootResult.records[0].get("root").properties) : null;
 
-        const relTypes = args.types?.length ? args.types.join("|") : "PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT";
+        const relTypes = relationshipPattern(args.types);
         const limit = args.limit ?? 50;
 
         const result = await session.run(
@@ -363,7 +387,7 @@ LIMIT 50`;
     async dependencyPath(_parent: any, args: { fromId: string; toId: string; maxHops?: number }, context: any) {
       const session = context.neo4j.session();
       try {
-        const maxHops = args.maxHops ?? 10;
+        const maxHops = boundedHopCount(args.maxHops, 10);
         const result = await session.run(
           `MATCH path = shortestPath(
              (a:ConfigurationItem {id: $fromId})
@@ -404,8 +428,19 @@ LIMIT 50`;
       }
     },
     async discoverySources(_parent: any, _args: any, context: any) {
-      const result = await context.pg.query("SELECT id, name, type, config, created_at FROM discovery_sources ORDER BY created_at DESC");
-      return result.rows.map((row: any) => ({ id: row.id, name: row.name, type: row.type, config: row.config, createdAt: row.created_at }));
+      const result = await context.pg.query("SELECT id, name, type, config, credential_ref, last_tested_at, last_status, last_error, created_at, updated_at FROM discovery_sources ORDER BY created_at DESC");
+      return result.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        config: row.config,
+        credentialRef: row.credential_ref,
+        lastTestedAt: row.last_tested_at,
+        lastStatus: row.last_status,
+        lastError: row.last_error,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
     },
     async discoveryJobs(_parent: any, _args: any, context: any) {
       const result = await context.pg.query("SELECT id, source_id, file_path, status, stats, created_at, updated_at FROM discovery_jobs ORDER BY created_at DESC");
@@ -1006,10 +1041,54 @@ LIMIT 50`;
     async createDiscoverySource(_parent: any, args: { name: string; type: string; config?: any }, context: any) {
       await checkPermission(context, "discovery", "write");
       const result = await context.pg.query(
-        "INSERT INTO discovery_sources (name, type, config) VALUES ($1, $2, $3) RETURNING id, name, type, config, created_at as createdAt",
+        "INSERT INTO discovery_sources (name, type, config) VALUES ($1, $2, $3) RETURNING id, name, type, config, credential_ref, last_tested_at, last_status, last_error, created_at, updated_at",
         [args.name, args.type, JSON.stringify(args.config || {})]
       );
-      return result.rows[0];
+      const row = result.rows[0];
+      return {
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        config: row.config,
+        credentialRef: row.credential_ref,
+        lastTestedAt: row.last_tested_at,
+        lastStatus: row.last_status,
+        lastError: row.last_error,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    },
+    async updateDiscoverySource(_parent: any, args: { id: string; name: string; type: string; config?: any }, context: any) {
+      await checkPermission(context, "discovery", "write");
+      const result = await context.pg.query(
+        `UPDATE discovery_sources
+         SET name = $2,
+             type = $3,
+             config = $4,
+             credential_ref = $5,
+             last_status = NULL,
+             last_error = NULL,
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING id, name, type, config, credential_ref, last_tested_at, last_status, last_error, created_at, updated_at`,
+        [args.id, args.name, args.type, JSON.stringify(args.config || {}), args.config?.credentialRef || null]
+      );
+      if (!result.rows.length) {
+        throw new GraphQLError("Discovery source not found", { extensions: { code: "NOT_FOUND" } });
+      }
+      const row = result.rows[0];
+      return {
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        config: row.config,
+        credentialRef: row.credential_ref,
+        lastTestedAt: row.last_tested_at,
+        lastStatus: row.last_status,
+        lastError: row.last_error,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
     },
     async deleteDiscoverySource(_parent: any, args: { id: string }, context: any) {
       await checkPermission(context, "discovery", "write");

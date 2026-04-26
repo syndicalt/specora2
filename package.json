@@ -8,7 +8,13 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
-    "proto:generate": "bash packages/protobuf/generate.sh"
+    "proto:generate": "bash packages/protobuf/generate.sh",
+    "migrate": "pnpm --filter @specora/db migrate",
+    "migrate:status": "pnpm --filter @specora/db migrate:status",
+    "migrate:dry-run": "pnpm --filter @specora/db migrate:dry-run",
+    "migrate:baseline": "pnpm --filter @specora/db migrate:baseline",
+    "validate:seed": "bash scripts/validate-seed.sh",
+    "demo:ready": "bash scripts/demo-readiness.sh"
   },
   "devDependencies": {
     "prettier": "^3.8.3",

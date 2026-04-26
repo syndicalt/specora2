@@ -21,6 +21,41 @@ const BUILTIN_CHAT_CAPABILITIES = [
     ],
   },
   {
+    appId: "incident-manager",
+    appName: "Incident Command Center",
+    capabilities: [
+      { id: "incident-manager.triage", label: "Triage incident", description: "Create, correlate, and triage an incident with AI context", prompt: "Triage a new incident", icon: "Siren" },
+      { id: "incident-manager.command", label: "Open command center", description: "Open active incidents and major incident command", prompt: "Open Incident Command Center", icon: "Activity" },
+      { id: "incident-manager.remediate", label: "Recommend remediation", description: "Suggest safe remediation actions for an active incident", prompt: "Recommend remediation for an incident", icon: "Bot" },
+    ],
+  },
+  {
+    appId: "knowledge-core",
+    appName: "Knowledge Core",
+    capabilities: [
+      { id: "knowledge-core.answer", label: "Answer from knowledge", description: "Answer with governed knowledge, citations, and confidence", prompt: "Answer this using Knowledge Core", icon: "Brain" },
+      { id: "knowledge-core.stewardship", label: "Stewardship queue", description: "Review stale, risky, missing, and draft knowledge", prompt: "Show the Knowledge Core stewardship queue", icon: "Library" },
+      { id: "knowledge-core.draft", label: "Draft knowledge", description: "Create reusable knowledge from an incident, change, or operational note", prompt: "Draft a knowledge article from recent work", icon: "Sparkles" },
+    ],
+  },
+  {
+    appId: "prevention-center",
+    appName: "Prevention Center",
+    capabilities: [
+      { id: "prevention-center.detect", label: "Detect prevention work", description: "Find recurring incident and reliability patterns worth fixing", prompt: "Detect prevention candidates", icon: "ShieldCheck" },
+      { id: "prevention-center.actions", label: "Propose corrective actions", description: "Create known-error, health, change, and automation prevention work", prompt: "Propose corrective actions for prevention candidates", icon: "Target" },
+    ],
+  },
+  {
+    appId: "asset-command",
+    appName: "Asset Command Center",
+    capabilities: [
+      { id: "asset-command.reconcile", label: "Reconcile SAM", description: "Compare software usage against entitlements and surface license risk", prompt: "Run SAM reconciliation", icon: "Scale" },
+      { id: "asset-command.contract", label: "Extract entitlements", description: "Create contract and entitlement records from agreement data", prompt: "Extract software entitlements from this contract", icon: "FileText" },
+      { id: "asset-command.scans", label: "Review asset scans", description: "Inspect mobile-ready barcode/RFID scan and custody evidence", prompt: "Review asset scan exceptions", icon: "ScanLine" },
+    ],
+  },
+  {
     appId: "service-map",
     appName: "Service Map",
     capabilities: [
@@ -31,9 +66,11 @@ const BUILTIN_CHAT_CAPABILITIES = [
     appId: "cmdb-explorer",
     appName: "CMDB Explorer",
     capabilities: [
-      { id: "cmdb.search", label: "Search CMDB", description: "Find CIs by name, class, or property", prompt: "Search the CMDB", icon: "Database" },
-      { id: "cmdb.nl-search", label: "Ask CMDB (natural language)", description: "Search the CMDB using plain English questions", prompt: "Ask the CMDB a question", icon: "MessageCircleQuestion" },
-      { id: "cmdb.list-servers", label: "List all servers", description: "Show every Server-class CI", prompt: "List all servers in the CMDB", icon: "Server" },
+      { id: "cmdb.investigate-ci", label: "Investigate CI", description: "Find a CI, summarize its details, and open it in CMDB Explorer", prompt: "Find and investigate a configuration item", icon: "Database" },
+      { id: "cmdb.browse", label: "Browse CMDB", description: "Open the CMDB Explorer workspace", prompt: "Open CMDB Explorer", icon: "Search" },
+      { id: "cmdb.find-risk", label: "Find risky CIs", description: "Find low-health, stale, or incomplete CIs", prompt: "Find risky CIs in the CMDB", icon: "AlertTriangle" },
+      { id: "cmdb.find-orphans", label: "Find orphaned CIs", description: "Find CIs with missing relationship context", prompt: "Find orphaned CIs in the CMDB", icon: "Unlink" },
+      { id: "cmdb.find-path", label: "Find dependency path", description: "Find the graph path between two CIs", prompt: "Find the dependency path between two CIs", icon: "Route" },
     ],
   },
   {

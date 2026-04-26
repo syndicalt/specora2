@@ -1,5 +1,12 @@
 import neo4j from "neo4j-driver";
-import { Pool } from "pg";
+import { createRequire } from "node:module";
+
+const { Pool } = createRequire(import.meta.url)("pg") as {
+  Pool: new (config: { connectionString: string }) => {
+    query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }>;
+    end: () => Promise<void>;
+  };
+};
 
 const pg = new Pool({
   connectionString: process.env.DATABASE_URL || "postgresql://specora:specora123@localhost:5432/specora",
@@ -39,7 +46,7 @@ async function getClassDefs(): Promise<CIClassDef[]> {
     defs.push({
       name: cls.name,
       displayName: cls.display_name,
-      attributes: attrsResult.rows.map((r) => ({
+      attributes: attrsResult.rows.map((r: any) => ({
         name: r.name,
         attrType: r.attr_type,
         defaultValue: r.default_value,

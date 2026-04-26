@@ -6,11 +6,16 @@
   "types": "./src/index.ts",
   "scripts": {
     "lint": "eslint src/",
+    "migrate": "tsx src/migrateCli.ts migrate",
+    "migrate:status": "tsx src/migrateCli.ts status",
+    "migrate:dry-run": "tsx src/migrateCli.ts dry-run",
+    "migrate:baseline": "tsx src/migrateCli.ts baseline",
     "seed": "tsx src/cli.ts",
     "test": "vitest run --coverage"
   },
   "dependencies": {
-    "neo4j-driver": "^5.18.0"
+    "neo4j-driver": "^5.18.0",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "@specora/eslint-config": "workspace:*",

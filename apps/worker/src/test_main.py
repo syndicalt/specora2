@@ -59,6 +59,22 @@ async def test_process_jobs_ingest_cmdb(mock_postgres, mock_handle_ingest):
 
 
 @pytest.mark.asyncio
+async def test_process_jobs_discovery_file(mock_postgres, mock_handle_discover):
+    mock_postgres.get_pending_jobs.side_effect = [
+        [{"id": 4, "type": "discovery", "payload": {"filePath": "/tmp/file.csv", "discoveryJobId": "dj-4"}}],
+        asyncio.CancelledError(),
+    ]
+    task = asyncio.create_task(process_jobs())
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    mock_handle_discover.assert_awaited_once_with("dj-4", "/tmp/file.csv")
+    mock_postgres.mark_discovery_job_status.assert_awaited_once_with("dj-4", "completed", {"created": 1})
+    mock_postgres.mark_job_status.assert_awaited_once_with(4, "completed")
+
+
+@pytest.mark.asyncio
 async def test_process_jobs_unknown_type(mock_postgres):
     mock_postgres.get_pending_jobs.side_effect = [
         [{"id": 2, "type": "unknown", "payload": {}}],
@@ -70,6 +86,25 @@ async def test_process_jobs_unknown_type(mock_postgres):
     except asyncio.CancelledError:
         pass
     mock_postgres.mark_job_status.assert_awaited_once_with(2, "failed")
+
+
+@pytest.mark.asyncio
+async def test_process_jobs_discovery_pipeline(mock_postgres):
+    mock_postgres.get_pending_jobs.side_effect = [
+        [{"id": 3, "type": "discovery_pipeline", "payload": {"pipelineId": "pipe-1", "discoveryJobId": "dj-1", "preview": {"stagedRecords": 2}}}],
+        asyncio.CancelledError(),
+    ]
+    task = asyncio.create_task(process_jobs())
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    mock_postgres.mark_discovery_job_status.assert_awaited_once_with(
+        "dj-1",
+        "completed",
+        {"pipelineId": "pipe-1", "preview": {"stagedRecords": 2}, "mode": "pipeline"},
+    )
+    mock_postgres.mark_job_status.assert_awaited_once_with(3, "completed")
 
 
 @pytest.mark.asyncio
@@ -233,9 +268,10 @@ async def test_process_discovery_jobs_with_pathlight(mock_postgres, mock_handle_
 @pytest.mark.asyncio
 async def test_serve(mock_postgres):
     with patch("src.main.grpc_aio") as mock_grpc:
-        mock_server = AsyncMock()
+        mock_server = MagicMock()
         mock_grpc.server.return_value = mock_server
         mock_server.wait_for_termination = AsyncMock(side_effect=asyncio.CancelledError())
+        mock_server.start = AsyncMock()
 
         task = asyncio.create_task(serve())
         await asyncio.sleep(0.05)
@@ -254,9 +290,10 @@ async def test_serve(mock_postgres):
 @pytest.mark.asyncio
 async def test_serve_with_pathlight(mock_postgres):
     with patch("src.main.grpc_aio") as mock_grpc:
-        mock_server = AsyncMock()
+        mock_server = MagicMock()
         mock_grpc.server.return_value = mock_server
         mock_server.wait_for_termination = AsyncMock(side_effect=asyncio.CancelledError())
+        mock_server.start = AsyncMock()
         with patch.dict(os.environ, {"PATHLIGHT_URL": "http://localhost:4100"}):
             task = asyncio.create_task(serve())
             await asyncio.sleep(0.05)

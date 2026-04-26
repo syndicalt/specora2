@@ -33,6 +33,16 @@ async def process_jobs(pathlight=None):
                             stats = await handle_discover_file(discovery_job_id, file_path)
                             await postgres_client.mark_discovery_job_status(discovery_job_id, "completed", stats)
                         status = "completed"
+                    elif job_type == "discovery_pipeline":
+                        discovery_job_id = payload.get("discoveryJobId")
+                        stats = {
+                            "pipelineId": payload.get("pipelineId"),
+                            "preview": payload.get("preview", {}),
+                            "mode": "pipeline",
+                        }
+                        if discovery_job_id:
+                            await postgres_client.mark_discovery_job_status(discovery_job_id, "completed", stats)
+                        status = "completed"
                     else:
                         print(f"Unknown job type: {job_type}")
                         status = "failed"

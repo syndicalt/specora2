@@ -43,7 +43,12 @@ Specora is an open-source, AI-native ITSM platform. It combines a graph-native C
 | `PROVARA_URL` | API | Provara API endpoint for LLM routing |
 | `PROVARA_API_KEY` | API | Provara API key |
 | `PROVARA_TENANT_ID` | API | Optional Provara tenant ID |
+| `PROVARA_MODEL` | API | Optional default Provara model/router name |
 | `OPENAI_API_KEY` | API | Direct OpenAI fallback for chat |
+| `OPENAI_MODEL` | API | Optional default direct OpenAI fallback model |
+| `DISCOVERY_PROVARA_MODEL` | API | Optional Provara model/router override for Discovery transform drafting |
+| `DISCOVERY_OPENAI_MODEL` | API | Optional direct OpenAI fallback model for Discovery transform drafting |
+| `DISCOVERY_AI_TIMEOUT_MS` | API | Optional timeout for Discovery transform drafting |
 | `PATHLIGHT_URL` | Worker | Optional Pathlight trace collector URL |
 | `REDIS_URL` | API | Redis connection string for multi-instance pub/sub, default `redis://localhost:6379` |
 | `UPLOAD_DIR` | API | Local discovery upload directory, default `./uploads` |

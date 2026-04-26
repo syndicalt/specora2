@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { subscribe } from "./eventBus";
 
-interface AuditEntry {
+type AuditEntry = {
   actor_id?: string;
   action: string;
   entity_type: string;
@@ -9,6 +9,12 @@ interface AuditEntry {
   old_values?: Record<string, unknown>;
   new_values?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+};
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function normalizeActorId(actorId?: string | null) {
+  return actorId && UUID_PATTERN.test(actorId) ? actorId : null;
 }
 
 export async function persistAuditLog(fastify: FastifyInstance, entry: AuditEntry) {
@@ -16,7 +22,7 @@ export async function persistAuditLog(fastify: FastifyInstance, entry: AuditEntr
     `INSERT INTO audit_log (actor_id, action, entity_type, entity_id, old_values, new_values, metadata)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
-      entry.actor_id || null,
+      normalizeActorId(entry.actor_id),
       entry.action,
       entry.entity_type,
       entry.entity_id,
@@ -25,6 +31,31 @@ export async function persistAuditLog(fastify: FastifyInstance, entry: AuditEntr
       entry.metadata ? JSON.stringify(entry.metadata) : null,
     ]
   );
+}
+
+export type AuditEventInput = {
+  actorId?: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  oldValues?: Record<string, unknown> | null;
+  newValues?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
+};
+
+export async function recordAuditEvent(fastify: FastifyInstance, input: AuditEventInput) {
+  await persistAuditLog(fastify, {
+    actor_id: input.actorId || undefined,
+    action: input.action,
+    entity_type: input.entityType,
+    entity_id: input.entityId,
+    old_values: input.oldValues || undefined,
+    new_values: input.newValues || undefined,
+    metadata: {
+      result: "success",
+      ...input.metadata,
+    },
+  });
 }
 
 export function initializeAuditLog(fastify: FastifyInstance) {

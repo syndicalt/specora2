@@ -1,714 +1,367 @@
-import { useState, useEffect } from "react";
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ShellAPI } from "@/sdk/types";
-import { getToken } from "@/lib/auth";
 import { ImpactGraph } from "@/components/ImpactGraph";
-import { GitPullRequest, Calendar, Server, MessageSquare, CheckCircle, XCircle, Edit3, ChevronLeft, Loader2, Save, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Bot,
+  CalendarDays,
+  ChevronLeft,
+  Clock,
+  GitPullRequest,
+  GitBranch,
+  MessageSquare,
+  RefreshCw,
+  ShieldCheck,
+  Siren,
+  TerminalSquare,
+} from "lucide-react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
-
-interface RFC {
+type RFC = {
   id: string;
   ci_id: string;
   title: string;
-  description: string;
+  description?: string;
   status: string;
-  requester_id: string;
-  approver_id: string;
-  scheduled_at: string;
-  planned_start_at: string;
-  planned_end_at: string;
+  requester_id?: string;
+  approver_id?: string;
+  scheduled_at?: string;
+  planned_start_at?: string;
+  planned_end_at?: string;
   created_at: string;
   risk_score?: number;
   blast_radius?: number;
   priority?: string;
-  affectedCis?: { ciId: string; role: string; name?: string; distance?: number; direction?: string; contribution?: number }[];
-  approvers?: { user_id: string; name: string; email: string; role: string; approved_at: string | null }[];
-  comments?: { id: string; content: string; author: string; created_at: string }[];
+  affectedCis?: Array<{ ciId: string; role: string; name?: string; distance?: number; direction?: string; contribution?: number }>;
+  approvers?: Array<{ user_id: string; name: string; email: string; role: string; approved_at: string | null }>;
+  comments?: Array<{ id: string; content: string; author: string; created_at: string }>;
+  edges?: Array<{ sourceId: string; targetId: string; type: string }>;
+};
+
+type CabBrief = {
+  rfcId: string;
+  grade?: any;
+  conflicts?: any;
+  health?: any;
+  criticalPath?: any;
+  generatedAt: number;
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  draft: "bg-gray-800 text-gray-300",
+  pending_approval: "bg-amber-500/10 text-amber-200 border-amber-500/30",
+  approved: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+  implemented: "bg-sky-500/10 text-sky-300 border-sky-500/30",
+  closed: "bg-gray-800 text-gray-500",
+  rejected: "bg-rose-500/10 text-rose-300 border-rose-500/30",
+  rolled_back: "bg-orange-500/10 text-orange-300 border-orange-500/30",
+};
+
+const PRIORITY_COLORS: Record<string, string> = {
+  critical: "bg-rose-500/10 text-rose-300 border-rose-500/30",
+  high: "bg-orange-500/10 text-orange-300 border-orange-500/30",
+  medium: "bg-amber-500/10 text-amber-200 border-amber-500/30",
+  low: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+};
+
+function pretty(value?: string) {
+  return value ? value.replace(/_/g, " ") : "unknown";
+}
+
+function riskBand(score = 0) {
+  if (score >= 80) return "critical";
+  if (score >= 60) return "high";
+  if (score >= 35) return "medium";
+  return "low";
+}
+
+function timeLabel(value?: string) {
+  if (!value) return "Not scheduled";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Invalid date" : date.toLocaleString();
 }
 
 export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
+  const shellRef = useRef(shell);
+  shellRef.current = shell;
   const [rfcs, setRfcs] = useState<RFC[]>([]);
-  const [selectedRfc, setSelectedRfc] = useState<RFC | null>(null);
+  const [selected, setSelected] = useState<RFC | null>(null);
+  const [briefs, setBriefs] = useState<Record<string, CabBrief>>({});
+  const [view, setView] = useState<"command" | "cab" | "schedule" | "automation">("command");
+  const [statusFilter, setStatusFilter] = useState("");
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("");
-  const [impactData, setImpactData] = useState<{ nodes: any[]; edges: any[] } | null>(null);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [editMode, setEditMode] = useState(false);
-  const [editForm, setEditForm] = useState<Partial<RFC>>({});
-  const [rejectReason, setRejectReason] = useState("");
-  const [showRejectInput, setShowRejectInput] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchRfcs();
+  const fetchJson = useCallback(async (path: string, init?: RequestInit) => {
+    const res = await shellRef.current.fetch(path, init);
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `Request failed: ${res.status}`);
+    return data;
   }, []);
 
-  useEffect(() => {
-    if (selectedRfc?.id) {
-      fetchRfcDetails(selectedRfc.id);
-    }
-  }, [selectedRfc?.id]);
-
-  // Listen for FOCUS_RFC messages from chat
-  useEffect(() => {
-    const unsubscribe = shell.onMessage((msg: any) => {
-      if (msg.type === "FOCUS_RFC" && msg.payload?.rfcId) {
-        const rfcId = msg.payload.rfcId;
-        const existing = rfcs.find((r) => r.id === rfcId);
-        if (existing) {
-          setSelectedRfc(existing);
-        } else {
-          fetchRfcDetails(rfcId);
-        }
-        // Always refresh the list in case a new RFC was created while the app was open
-        fetchRfcs();
-      }
-    });
-    return unsubscribe;
-  }, [shell, rfcs]);
-
-  // Subscribe to real-time RFC events
-  useEffect(() => {
-    const unsubCreated = shell.eventBus.subscribe("rfc.created", () => fetchRfcs());
-    const unsubUpdated = shell.eventBus.subscribe("rfc.updated", (payload: any) => {
-      if (selectedRfc?.id === payload.rfcId) {
-        fetchRfcDetails(payload.rfcId);
-      }
-      fetchRfcs();
-    });
-    const unsubStatus = shell.eventBus.subscribe("rfc.status_changed", (payload: any) => {
-      if (selectedRfc?.id === payload.rfcId) {
-        fetchRfcDetails(payload.rfcId);
-      }
-      fetchRfcs();
-    });
-    const unsubDeleted = shell.eventBus.subscribe("rfc.deleted", (payload: any) => {
-      if (selectedRfc?.id === payload.rfcId) {
-        setSelectedRfc(null);
-        setImpactData(null);
-      }
-      fetchRfcs();
-    });
-    return () => {
-      unsubCreated();
-      unsubUpdated();
-      unsubStatus();
-      unsubDeleted();
-    };
-  }, [shell, selectedRfc?.id]);
-
-  async function fetchRfcs() {
+  const refresh = useCallback(async () => {
+    setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/apps/change-manager/tools/list_rfcs`, {
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setMessage({ type: "error", text: data.error || `Failed to load RFCs (${res.status})` });
-      } else if (Array.isArray(data)) {
-        setRfcs(data);
-      } else {
-        setRfcs([]);
-      }
+      const data = await fetchJson("/api/apps/change-manager/tools/list_rfcs");
+      setRfcs(Array.isArray(data) ? data : []);
     } catch (err: any) {
-      setMessage({ type: "error", text: err.message || "Failed to load RFCs" });
+      shellRef.current.notify(err.message || "Change requests could not be loaded", "error");
     } finally {
       setLoading(false);
     }
-  }
+  }, [fetchJson]);
 
-  async function fetchRfcDetails(rfcId: string) {
+  const loadDetails = useCallback(async (rfcId: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/apps/change-manager/tools/get_rfc_details?rfcId=${rfcId}`, {
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setMessage({ type: "error", text: data.error || `Failed to load RFC details (${res.status})` });
-        return;
-      }
-      setSelectedRfc(data);
-      // Ensure the RFC is in the list
-      setRfcs((prev) => {
-        if (prev.some((r) => r.id === data.id)) return prev;
-        return [data, ...prev];
-      });
-      // Build impact graph data using real Neo4j relationships
-      const nodes = (data.affectedCis || []).map((ci: any) => ({
-        id: ci.ciId,
-        name: ci.name || ci.ciId,
-        class: "CI",
-        role: ci.role === "primary" ? "primary" : ci.role === "affected" ? "affected" : "dependency",
-      }));
-      // Use real edges from Neo4j if available; otherwise show nodes without fabricated edges
-      const edges = (data.edges || []).map((e: any) => ({
-        sourceId: e.sourceId,
-        targetId: e.targetId,
-        type: e.type,
-      }));
-      setImpactData({ nodes, edges });
+      const data = await fetchJson(`/api/apps/change-manager/tools/get_rfc_details?rfcId=${encodeURIComponent(rfcId)}`);
+      setSelected(data);
+      setRfcs((prev) => prev.some((r) => r.id === data.id) ? prev.map((r) => r.id === data.id ? { ...r, ...data } : r) : [data, ...prev]);
     } catch (err: any) {
-      setMessage({ type: "error", text: err.message || "Failed to load RFC details" });
+      shellRef.current.notify(err.message || "RFC details could not be loaded", "error");
     }
-  }
+  }, [fetchJson]);
 
-  async function callTool(toolName: string, body: Record<string, unknown>) {
-    const token = getToken();
-    const res = await fetch(`${API_URL}/api/apps/change-manager/tools/${toolName}`, {
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    return shellRef.current.onMessage((msg) => {
+      if (msg.type === "FOCUS_RFC" && msg.payload?.rfcId) loadDetails(msg.payload.rfcId);
+    });
+  }, [loadDetails]);
+
+  useEffect(() => {
+    const events = ["rfc.created", "rfc.updated", "rfc.status_changed", "rfc.deleted"];
+    const unsubs = events.map((event) => shellRef.current.eventBus.subscribe(event, (payload: any) => {
+      refresh();
+      if (payload?.rfcId && selected?.id === payload.rfcId) loadDetails(payload.rfcId);
+    }));
+    return () => unsubs.forEach((unsub) => unsub());
+  }, [refresh, loadDetails, selected?.id]);
+
+  const filtered = useMemo(() => rfcs.filter((rfc) => statusFilter ? rfc.status === statusFilter : true), [rfcs, statusFilter]);
+  const pending = rfcs.filter((rfc) => rfc.status === "pending_approval");
+  const active = rfcs.filter((rfc) => !["closed", "rejected"].includes(rfc.status));
+  const risky = active.filter((rfc) => (rfc.risk_score || 0) >= 60 || ["critical", "high"].includes(rfc.priority || ""));
+  const unscheduled = active.filter((rfc) => !rfc.planned_start_at && !rfc.scheduled_at);
+  const upcoming = active
+    .filter((rfc) => rfc.planned_start_at || rfc.scheduled_at)
+    .sort((a, b) => new Date(a.planned_start_at || a.scheduled_at || 0).getTime() - new Date(b.planned_start_at || b.scheduled_at || 0).getTime());
+
+  async function callTool(name: string, body: Record<string, unknown> = {}) {
+    return fetchJson(`/api/apps/change-manager/tools/${name}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token || ""}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
-    if (!res.ok || data.error) {
-      throw new Error(data.error || `Failed to ${toolName}`);
-    }
-    return data;
   }
 
-  async function handleApprove() {
-    if (!selectedRfc) return;
-    setActionLoading("approve");
-    setMessage(null);
+  async function approve(rfcId: string) {
+    setBusy(`approve:${rfcId}`);
     try {
-      const data = await callTool("approve_rfc", { rfcId: selectedRfc.id });
-      setMessage({ type: "success", text: data.allApproversApproved ? "RFC approved." : "Approval recorded. Waiting for remaining approvers." });
-      await fetchRfcDetails(selectedRfc.id);
-      await fetchRfcs();
+      await callTool("approve_rfc", { rfcId });
+      shell.notify("Approval recorded", "success");
+      await refresh();
+      if (selected?.id === rfcId) await loadDetails(rfcId);
     } catch (err: any) {
-      setMessage({ type: "error", text: err.message });
+      shell.notify(err.message || "Approval failed", "error");
     } finally {
-      setActionLoading(null);
+      setBusy(null);
     }
   }
 
-  async function handleReject() {
-    if (!selectedRfc || !rejectReason.trim()) return;
-    setActionLoading("reject");
-    setMessage(null);
+  async function reject(rfcId: string) {
+    const reason = prompt("Rejection reason");
+    if (!reason?.trim()) return;
+    setBusy(`reject:${rfcId}`);
     try {
-      await callTool("reject_rfc", { rfcId: selectedRfc.id, reason: rejectReason.trim() });
-      setMessage({ type: "success", text: "RFC rejected." });
-      setShowRejectInput(false);
-      setRejectReason("");
-      await fetchRfcDetails(selectedRfc.id);
-      await fetchRfcs();
+      await callTool("reject_rfc", { rfcId, reason: reason.trim() });
+      shell.notify("RFC rejected", "success");
+      await refresh();
+      if (selected?.id === rfcId) await loadDetails(rfcId);
     } catch (err: any) {
-      setMessage({ type: "error", text: err.message });
+      shell.notify(err.message || "Reject failed", "error");
     } finally {
-      setActionLoading(null);
+      setBusy(null);
     }
   }
 
-  async function handleDelete() {
-    if (!selectedRfc) return;
-    setActionLoading("delete");
-    setMessage(null);
+  async function generateCabBrief(rfcId: string) {
+    setBusy(`brief:${rfcId}`);
     try {
-      await callTool("delete_rfc", { rfcId: selectedRfc.id });
-      setMessage({ type: "success", text: "RFC deleted." });
-      setShowDeleteConfirm(false);
-      setSelectedRfc(null);
-      setImpactData(null);
-      await fetchRfcs();
+      const [grade, conflicts, health, criticalPath] = await Promise.all([
+        callTool("grade_change_rfc", { rfcId }),
+        callTool("check_change_conflicts", { rfcId, windowHours: 48 }),
+        callTool("check_ci_health_before_change", { rfcId }),
+        callTool("find_critical_path", { rfcId }),
+      ]);
+      setBriefs((prev) => ({ ...prev, [rfcId]: { rfcId, grade, conflicts, health, criticalPath, generatedAt: Date.now() } }));
+      shell.notify("CAB brief generated", "success");
     } catch (err: any) {
-      setMessage({ type: "error", text: err.message });
+      shell.notify(err.message || "CAB brief failed", "error");
     } finally {
-      setActionLoading(null);
+      setBusy(null);
     }
   }
 
-  function isoToDateTime(iso?: string): { date: string; time: string } | null {
-    if (!iso) return null;
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return null;
-    const date = d.toISOString().slice(0, 10);
-    const time = d.toISOString().slice(11, 16);
-    return { date, time };
+  function orchestrateCabFromChat(rfc?: RFC) {
+    const prompt = rfc
+      ? `Prepare a CAB recommendation for RFC ${rfc.id}. Grade the change, check conflicts, check CI health, find the critical path, and recommend approve, reject, defer, or request more information.`
+      : "Prepare the CAB agenda for pending changes. Prioritize by risk, schedule conflicts, CI health, blast radius, and approval readiness.";
+    navigator.clipboard?.writeText(prompt).catch(() => undefined);
+    shell.notify("CAB prompt copied. Open chat with Ctrl+K and paste it.", "info");
   }
 
-  async function handleSaveEdit() {
-    if (!selectedRfc) return;
-    setActionLoading("edit");
-    setMessage(null);
-    try {
-      const body: Record<string, unknown> = { rfcId: selectedRfc.id };
-      if (editForm.title !== undefined && editForm.title !== selectedRfc.title) body.title = editForm.title;
-      if (editForm.description !== undefined && editForm.description !== selectedRfc.description) body.description = editForm.description;
-      if (editForm.status !== undefined && editForm.status !== selectedRfc.status) body.status = editForm.status;
-      if (editForm.planned_start_at !== undefined && editForm.planned_start_at !== selectedRfc.planned_start_at) {
-        const st = isoToDateTime(editForm.planned_start_at);
-        if (st) { body.plannedStartDate = st.date; body.plannedStartTime = st.time; }
-      }
-      if (editForm.planned_end_at !== undefined && editForm.planned_end_at !== selectedRfc.planned_end_at) {
-        const en = isoToDateTime(editForm.planned_end_at);
-        if (en) { body.plannedEndDate = en.date; body.plannedEndTime = en.time; }
-      }
-      await callTool("edit_rfc", body);
-      setMessage({ type: "success", text: "RFC updated." });
-      setEditMode(false);
-      await fetchRfcDetails(selectedRfc.id);
-      await fetchRfcs();
-    } catch (err: any) {
-      setMessage({ type: "error", text: err.message });
-    } finally {
-      setActionLoading(null);
-    }
-  }
-
-  const canEdit = selectedRfc && !["implemented", "closed", "rejected"].includes(selectedRfc.status);
-  const canApprove = selectedRfc && selectedRfc.status === "pending_approval";
-  const canReject = selectedRfc && selectedRfc.status === "pending_approval";
-  const canDelete = selectedRfc && selectedRfc.status === "draft";
-
-  const filtered = rfcs.filter((r) => (filter ? r.status === filter : true));
-
-  const statusColors: Record<string, string> = {
-    draft: "bg-gray-700 text-gray-300",
-    pending_approval: "bg-yellow-900/50 text-yellow-300",
-    approved: "bg-green-900/50 text-green-300",
-    implemented: "bg-blue-900/50 text-blue-300",
-    closed: "bg-gray-800 text-gray-500",
-    rejected: "bg-red-900/50 text-red-300",
-    rolled_back: "bg-orange-900/50 text-orange-300",
-  };
-
-  const priorityColors: Record<string, string> = {
-    critical: "bg-red-900/60 text-red-300 border-red-700",
-    high: "bg-orange-900/50 text-orange-300 border-orange-700",
-    medium: "bg-yellow-900/40 text-yellow-300 border-yellow-700",
-    low: "bg-green-900/40 text-green-300 border-green-700",
-  };
-
-  if (selectedRfc) {
-    return (
-      <div className="h-full w-full bg-gray-950 text-gray-100 flex flex-col">
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-800 flex items-center gap-4">
-          <button
-            onClick={() => { setSelectedRfc(null); setImpactData(null); }}
-            className="flex items-center gap-1 text-sm text-gray-400 hover:text-white transition-colors"
-          >
-            <ChevronLeft className="w-4 h-4" /> Back
-          </button>
-          <div className="flex-1">
-            <h1 className="text-lg font-semibold">{selectedRfc.title}</h1>
-            <p className="text-xs text-gray-500">{selectedRfc.id}</p>
-          </div>
-          <span className={`px-2.5 py-1 rounded-full text-xs font-medium capitalize ${statusColors[selectedRfc.status] || "bg-gray-800 text-gray-400"}`}>
-            {selectedRfc.status.replace("_", " ")}
-          </span>
-        </div>
-
-        <div className="flex-1 overflow-auto p-6 pb-24">
-        <div className="max-w-4xl mx-auto space-y-6">
-            {/* Info grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <div className="flex items-center gap-2 text-gray-500 text-xs mb-1">
-                  <Server className="w-3.5 h-3.5" /> Primary CI
-                </div>
-                <div className="text-sm font-medium">{selectedRfc.ci_id}</div>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <div className="flex items-center gap-2 text-gray-500 text-xs mb-1">
-                  <Calendar className="w-3.5 h-3.5" /> Planned Start
-                </div>
-                <div className="text-sm font-medium">
-                  {selectedRfc.planned_start_at ? new Date(selectedRfc.planned_start_at).toLocaleString() : "Not set"}
-                </div>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <div className="flex items-center gap-2 text-gray-500 text-xs mb-1">
-                  <Calendar className="w-3.5 h-3.5" /> Planned End
-                </div>
-                <div className="text-sm font-medium">
-                  {selectedRfc.planned_end_at ? new Date(selectedRfc.planned_end_at).toLocaleString() : "Not set"}
-                </div>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <div className="flex items-center gap-2 text-gray-500 text-xs mb-1">
-                  <GitPullRequest className="w-3.5 h-3.5" /> Created
-                </div>
-                <div className="text-sm font-medium">
-                  {new Date(selectedRfc.created_at).toLocaleDateString()}
-                </div>
-              </div>
-            </div>
-
-            {/* Risk Summary */}
-            {(selectedRfc.risk_score !== undefined || selectedRfc.priority) && (
-              <div className={`bg-gray-900 border rounded-xl p-4 ${priorityColors[selectedRfc.priority || "low"] || "border-gray-800"}`}>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-gray-300">Impact Analysis</h3>
-                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${priorityColors[selectedRfc.priority || "low"] || "bg-gray-800 text-gray-400"}`}>
-                    {selectedRfc.priority || "low"} risk
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">Risk Score</div>
-                    <div className="text-lg font-semibold">{selectedRfc.risk_score ?? 0}<span className="text-xs text-gray-500 font-normal">/100</span></div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">Blast Radius</div>
-                    <div className="text-lg font-semibold">{selectedRfc.blast_radius ?? 0}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">Affected CIs</div>
-                    <div className="text-lg font-semibold">{selectedRfc.affectedCis?.length ?? 0}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500 mb-0.5">Downstream</div>
-                    <div className="text-lg font-semibold">{selectedRfc.affectedCis?.filter((ci) => ci.direction === "downstream").length ?? 0}</div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Description */}
-            {selectedRfc.description && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <h3 className="text-sm font-medium text-gray-300 mb-2">Description</h3>
-                <p className="text-sm text-gray-400">{selectedRfc.description}</p>
-              </div>
-            )}
-
-            {/* Impact Graph */}
-            {impactData && impactData.nodes.length > 0 && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <h3 className="text-sm font-medium text-gray-300 mb-3">Impact Graph (3 hops)</h3>
-                <ImpactGraph nodes={impactData.nodes} edges={impactData.edges} height={320} />
-              </div>
-            )}
-
-            {/* Affected CIs list */}
-            {selectedRfc.affectedCis && selectedRfc.affectedCis.length > 0 && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <h3 className="text-sm font-medium text-gray-300 mb-3">Affected CIs</h3>
-                <div className="space-y-2">
-                  {selectedRfc.affectedCis.map((ci) => (
-                    <div key={ci.ciId} className="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-800/50">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${ci.role === "primary" ? "bg-indigo-500" : ci.role === "affected" ? "bg-orange-500" : "bg-emerald-500"}`} />
-                        <span className="text-sm text-gray-300">{ci.name || ci.ciId}</span>
-                        <span className="text-xs text-gray-500 font-mono">{ci.ciId}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {ci.distance !== undefined && (
-                          <span className="text-xs text-gray-500">{ci.distance}h</span>
-                        )}
-                        {ci.direction && (
-                          <span className={`text-xs px-1.5 py-0.5 rounded ${ci.direction === "downstream" ? "bg-red-900/30 text-red-300" : "bg-blue-900/30 text-blue-300"}`}>
-                            {ci.direction}
-                          </span>
-                        )}
-                        <span className="text-xs text-gray-500 capitalize">{ci.role}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Approvers */}
-            {selectedRfc.approvers && selectedRfc.approvers.length > 0 && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <h3 className="text-sm font-medium text-gray-300 mb-3">Approvers</h3>
-                <div className="space-y-2">
-                  {selectedRfc.approvers.map((a) => (
-                    <div key={a.user_id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-800/50">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-300">{a.name || a.email}</span>
-                        <span className="text-xs text-gray-500 capitalize">{a.role}</span>
-                      </div>
-                      {a.approved_at ? (
-                        <span className="flex items-center gap-1 text-xs text-green-400">
-                          <CheckCircle className="w-3.5 h-3.5" /> Approved
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1 text-xs text-yellow-400">
-                          <XCircle className="w-3.5 h-3.5" /> Pending
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Comments */}
-            {selectedRfc.comments && selectedRfc.comments.length > 0 && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4" /> Comments
-                </h3>
-                <div className="space-y-3">
-                  {selectedRfc.comments.map((c) => (
-                    <div key={c.id} className="border-l-2 border-gray-700 pl-3">
-                      <div className="flex items-center gap-2 text-xs text-gray-500 mb-1">
-                        <span className="font-medium text-gray-400">{c.author || "Unknown"}</span>
-                        <span>{new Date(c.created_at).toLocaleString()}</span>
-                      </div>
-                      <p className="text-sm text-gray-300">{c.content}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Message */}
-            {message && (
-              <div className={`p-3 rounded-lg text-sm border ${message.type === "success" ? "bg-green-900/30 border-green-800 text-green-300" : "bg-red-900/30 border-red-800 text-red-300"}`}>
-                {message.text}
-              </div>
-            )}
-
-            {/* Edit Form */}
-            {editMode && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-4">
-                <h3 className="text-sm font-medium text-gray-300">Edit RFC</h3>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Title</label>
-                  <input
-                    type="text"
-                    value={editForm.title ?? selectedRfc.title}
-                    onChange={(e) => setEditForm((prev) => ({ ...prev, title: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Description</label>
-                  <textarea
-                    value={editForm.description ?? selectedRfc.description}
-                    onChange={(e) => setEditForm((prev) => ({ ...prev, description: e.target.value }))}
-                    rows={4}
-                    className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Status</label>
-                    <select
-                      value={editForm.status ?? selectedRfc.status}
-                      onChange={(e) => setEditForm((prev) => ({ ...prev, status: e.target.value }))}
-                      className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
-                    >
-                      {["draft", "pending_approval", "approved", "implemented", "closed", "rejected"].map((s) => (
-                        <option key={s} value={s}>{s.replace("_", " ")}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Planned Start</label>
-                    <input
-                      type="datetime-local"
-                      value={editForm.planned_start_at ? new Date(editForm.planned_start_at).toISOString().slice(0, 16) : selectedRfc.planned_start_at ? new Date(selectedRfc.planned_start_at).toISOString().slice(0, 16) : ""}
-                      onChange={(e) => setEditForm((prev) => ({ ...prev, planned_start_at: e.target.value ? new Date(e.target.value).toISOString() : undefined }))}
-                      className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Planned End</label>
-                    <input
-                      type="datetime-local"
-                      value={editForm.planned_end_at ? new Date(editForm.planned_end_at).toISOString().slice(0, 16) : selectedRfc.planned_end_at ? new Date(selectedRfc.planned_end_at).toISOString().slice(0, 16) : ""}
-                      onChange={(e) => setEditForm((prev) => ({ ...prev, planned_end_at: e.target.value ? new Date(e.target.value).toISOString() : undefined }))}
-                      className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={handleSaveEdit}
-                    disabled={actionLoading === "edit"}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    {actionLoading === "edit" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                    Save
-                  </button>
-                  <button
-                    onClick={() => { setEditMode(false); setEditForm({}); }}
-                    className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Reject Reason */}
-            {showRejectInput && (
-              <div className="bg-gray-900 border border-red-800/50 rounded-xl p-4 space-y-3">
-                <label className="block text-sm font-medium text-red-300">Rejection Reason</label>
-                <textarea
-                  value={rejectReason}
-                  onChange={(e) => setRejectReason(e.target.value)}
-                  rows={3}
-                  placeholder="Why is this RFC being rejected?"
-                  className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-red-500"
-                />
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={handleReject}
-                    disabled={actionLoading === "reject" || !rejectReason.trim()}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    {actionLoading === "reject" ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
-                    Confirm Reject
-                  </button>
-                  <button
-                    onClick={() => { setShowRejectInput(false); setRejectReason(""); }}
-                    className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Delete confirmation */}
-            {showDeleteConfirm && (
-              <div className="bg-gray-900 border border-red-800/50 rounded-xl p-4 space-y-3">
-                <p className="text-sm text-red-300">Are you sure you want to delete this draft RFC? This action cannot be undone.</p>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={handleDelete}
-                    disabled={actionLoading === "delete"}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    {actionLoading === "delete" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                    Confirm Delete
-                  </button>
-                  <button
-                    onClick={() => setShowDeleteConfirm(false)}
-                    className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Actions */}
-            {!editMode && !showRejectInput && !showDeleteConfirm && (
-              <div className="flex items-center gap-3">
-                {canApprove && (
-                  <button
-                    onClick={handleApprove}
-                    disabled={actionLoading === "approve"}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    {actionLoading === "approve" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-                    Approve
-                  </button>
-                )}
-                {canReject && (
-                  <button
-                    onClick={() => setShowRejectInput(true)}
-                    disabled={actionLoading === "reject"}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-900/40 hover:bg-red-900/60 text-red-300 border border-red-800 text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    <XCircle className="w-4 h-4" /> Reject
-                  </button>
-                )}
-                {canEdit && (
-                  <button
-                    onClick={() => { setEditMode(true); setEditForm({}); }}
-                    disabled={actionLoading === "edit"}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    <Edit3 className="w-4 h-4" /> Edit
-                  </button>
-                )}
-                {canDelete && (
-                  <button
-                    onClick={() => setShowDeleteConfirm(true)}
-                    disabled={actionLoading === "delete"}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-900/40 hover:bg-red-900/60 text-red-300 border border-red-800 text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    <Trash2 className="w-4 h-4" /> Delete
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const impactData = selected?.affectedCis?.length ? {
+    nodes: selected.affectedCis.map((ci) => ({ id: ci.ciId, name: ci.name || ci.ciId, class: "CI", role: ci.role === "primary" ? "primary" : "affected" })),
+    edges: selected.edges || [],
+  } : null;
 
   return (
-    <div className="h-full w-full bg-gray-950 text-gray-100 flex flex-col">
-      <header className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Change Manager</h1>
-        <div className="flex gap-2">
-          {["", "draft", "pending_approval", "approved", "implemented", "closed", "rejected"].map((s) => (
-            <button
-              key={s || "all"}
-              onClick={() => setFilter(s)}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
-                filter === s ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"
-              }`}
-            >
-              {s ? s.replace("_", " ") : "All"}
+    <div className="flex h-full w-full flex-col overflow-hidden bg-gray-950 text-gray-100">
+      <header className="flex shrink-0 items-center justify-between border-b border-gray-800 px-5 py-3">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-indigo-500/40 bg-indigo-500/10">
+            <GitPullRequest className="h-5 w-5 text-indigo-300" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold">Change Command Center</h1>
+            <p className="text-xs text-gray-500">CAB readiness, release safety, impact intelligence, and pipeline automation.</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {(["command", "cab", "schedule", "automation"] as const).map((tab) => (
+            <button key={tab} onClick={() => setView(tab)} className={`rounded-md px-3 py-2 text-sm capitalize ${view === tab ? "bg-gray-800 text-white" : "text-gray-400 hover:bg-gray-900 hover:text-white"}`}>
+              {tab}
             </button>
           ))}
+          <button onClick={refresh} className="rounded-md p-2 text-gray-400 hover:bg-gray-900 hover:text-white" title="Refresh">
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
         </div>
       </header>
 
-      {message && !selectedRfc && (
-        <div className={`px-6 py-2 text-sm ${message.type === "error" ? "bg-red-900/30 text-red-300" : "bg-green-900/30 text-green-300"}`}>
-          {message.text}
-        </div>
-      )}
-      <div className="flex-1 overflow-auto p-6 pb-24">
-        {loading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-gray-500">
-            <p className="text-lg font-medium">No change requests found</p>
-            <p className="text-sm mt-1">Create an RFC from the chat or upload a discovery file.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filtered.map((rfc) => (
-              <button
-                key={rfc.id}
-                onClick={() => setSelectedRfc(rfc)}
-                className="text-left p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition-colors"
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <h3 className="font-medium text-gray-200 line-clamp-1">{rfc.title}</h3>
-                  <div className="flex gap-1.5">
-                    {rfc.priority && (
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${priorityColors[rfc.priority] || "bg-gray-800 text-gray-400"}`}>
-                        {rfc.priority}
-                      </span>
-                    )}
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${statusColors[rfc.status] || "bg-gray-800 text-gray-400"}`}>
-                      {rfc.status.replace("_", " ")}
-                    </span>
-                  </div>
+      <main className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[1fr_420px]">
+        <section className="min-h-0 overflow-auto p-5 pb-24">
+          {view === "command" && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <Metric icon={<GitBranch className="h-4 w-4" />} label="Active" value={active.length} />
+                <Metric icon={<Clock className="h-4 w-4" />} label="Awaiting CAB" value={pending.length} />
+                <Metric icon={<Siren className="h-4 w-4" />} label="High Risk" value={risky.length} />
+                <Metric icon={<CalendarDays className="h-4 w-4" />} label="Unscheduled" value={unscheduled.length} />
+              </div>
+              <div className="grid gap-4 xl:grid-cols-[1.15fr_.85fr]">
+                <Panel title="Action Queue" icon={<AlertTriangle className="h-4 w-4" />}>
+                  <RfcList rfcs={[...pending, ...risky].slice(0, 8)} selectedId={selected?.id} onSelect={loadDetails} empty="No high-priority work queued." />
+                </Panel>
+                <Panel title="Upcoming Change Schedule" icon={<CalendarDays className="h-4 w-4" />}>
+                  <ScheduleList rfcs={upcoming.slice(0, 8)} onSelect={loadDetails} />
+                </Panel>
+              </div>
+              <Panel title="All Changes" icon={<GitPullRequest className="h-4 w-4" />}>
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {["", "draft", "pending_approval", "approved", "implemented", "closed", "rejected"].map((status) => (
+                    <button key={status || "all"} onClick={() => setStatusFilter(status)} className={`rounded-md px-3 py-1.5 text-xs capitalize ${statusFilter === status ? "bg-indigo-500 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}>
+                      {status ? pretty(status) : "all"}
+                    </button>
+                  ))}
                 </div>
-                <p className="text-sm text-gray-500 line-clamp-2 mb-3">{rfc.description || "No description"}</p>
-                <div className="flex items-center gap-3 text-xs text-gray-500">
-                  <span className="flex items-center gap-1">
-                    <Server className="w-3 h-3" /> {rfc.ci_id}
-                  </span>
-                  <span>{new Date(rfc.created_at).toLocaleDateString()}</span>
+                <RfcList rfcs={filtered} selectedId={selected?.id} onSelect={loadDetails} empty="No change requests found." />
+              </Panel>
+            </div>
+          )}
+
+          {view === "cab" && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between rounded-lg border border-indigo-500/30 bg-indigo-500/10 p-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-indigo-100">CAB Workbench</h2>
+                  <p className="mt-1 text-sm text-indigo-100/70">Generate briefs, check health/conflicts, and approve from the same queue.</p>
                 </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+                <button onClick={() => orchestrateCabFromChat()} className="flex items-center gap-2 rounded-md bg-indigo-500 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-400">
+                  <Bot className="h-4 w-4" />
+                  Orchestrate in Chat
+                </button>
+              </div>
+              <div className="grid gap-3">
+                {pending.length ? pending.map((rfc) => (
+                  <CabCard key={rfc.id} rfc={rfc} brief={briefs[rfc.id]} busy={busy} onSelect={loadDetails} onBrief={generateCabBrief} onApprove={approve} onReject={reject} onChat={() => orchestrateCabFromChat(rfc)} />
+                )) : <Empty text="No changes are awaiting CAB review." />}
+              </div>
+            </div>
+          )}
+
+          {view === "schedule" && (
+            <Panel title="Change Calendar Risk View" icon={<CalendarDays className="h-4 w-4" />}>
+              <ScheduleList rfcs={upcoming} onSelect={loadDetails} dense={false} />
+            </Panel>
+          )}
+
+          {view === "automation" && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <AutomationCard title="Create RFC from CI/CD" method="POST" path="/api/change-automation/requests" body={{ ciId: "demo-app-001", title: "Deploy build 2026.04.25", description: "Automated release from pipeline", plannedStartDate: "2026-04-25", plannedStartTime: "21:00", affectedCiIds: ["demo-db-001"] }} />
+              <AutomationCard title="Pre-Deploy Gate" method="POST" path="/api/change-automation/gate" body={{ rfcId: "<rfc-id>", windowHours: 48 }} />
+              <AutomationCard title="Proposed Change Gate" method="POST" path="/api/change-automation/gate" body={{ ciId: "demo-app-001", affectedCiIds: ["demo-db-001"] }} />
+              <AutomationCard title="Transition After Deployment" method="POST" path="/api/change-automation/requests/<rfc-id>/transition" body={{ status: "implemented", comment: "Pipeline deployment completed successfully" }} />
+            </div>
+          )}
+        </section>
+
+        <aside className="min-h-0 overflow-auto border-t border-gray-800 bg-gray-950 p-5 pb-24 xl:border-l xl:border-t-0">
+          {selected ? (
+            <DetailPanel rfc={selected} impactData={impactData} brief={briefs[selected.id]} busy={busy} onBack={() => setSelected(null)} onBrief={generateCabBrief} onApprove={approve} onReject={reject} onChat={() => orchestrateCabFromChat(selected)} />
+          ) : (
+            <div className="rounded-lg border border-dashed border-gray-800 p-5 text-sm text-gray-500">
+              Select a change to see impact, approvals, CAB readiness, and execution details.
+            </div>
+          )}
+        </aside>
+      </main>
     </div>
   );
+}
+
+function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
+  return <div className="rounded-lg border border-gray-800 bg-gray-900 p-4"><div className="mb-2 flex items-center gap-2 text-xs text-gray-500">{icon}{label}</div><div className="text-2xl font-semibold">{value}</div></div>;
+}
+
+function Panel({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
+  return <section className="rounded-lg border border-gray-800 bg-gray-900 p-4"><div className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-200"><span className="text-indigo-300">{icon}</span>{title}</div>{children}</section>;
+}
+
+function Badge({ value, colors }: { value?: string; colors: Record<string, string> }) {
+  return <span className={`rounded-full border px-2 py-0.5 text-xs capitalize ${colors[value || ""] || "border-gray-700 bg-gray-800 text-gray-400"}`}>{pretty(value)}</span>;
+}
+
+function RfcList({ rfcs, selectedId, onSelect, empty }: { rfcs: RFC[]; selectedId?: string; onSelect: (id: string) => void; empty: string }) {
+  if (!rfcs.length) return <Empty text={empty} />;
+  return <div className="space-y-2">{rfcs.map((rfc) => <button key={rfc.id} onClick={() => onSelect(rfc.id)} className={`block w-full rounded-md border p-3 text-left hover:border-indigo-500/60 ${selectedId === rfc.id ? "border-indigo-500 bg-indigo-500/10" : "border-gray-800 bg-gray-950"}`}><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-sm font-medium text-gray-100">{rfc.title}</div><div className="mt-1 text-xs text-gray-500">{rfc.ci_id} · {timeLabel(rfc.planned_start_at || rfc.scheduled_at)}</div></div><div className="flex shrink-0 gap-1"><Badge value={rfc.priority || riskBand(rfc.risk_score)} colors={PRIORITY_COLORS} /><Badge value={rfc.status} colors={STATUS_COLORS} /></div></div></button>)}</div>;
+}
+
+function ScheduleList({ rfcs, onSelect, dense = true }: { rfcs: RFC[]; onSelect: (id: string) => void; dense?: boolean }) {
+  if (!rfcs.length) return <Empty text="No scheduled changes." />;
+  return <div className="space-y-2">{rfcs.map((rfc) => <button key={rfc.id} onClick={() => onSelect(rfc.id)} className={`grid w-full grid-cols-[120px_1fr_auto] items-center gap-3 rounded-md border border-gray-800 bg-gray-950 p-3 text-left hover:border-indigo-500/60 ${dense ? "text-sm" : ""}`}><div className="text-xs text-gray-500">{timeLabel(rfc.planned_start_at || rfc.scheduled_at)}</div><div className="min-w-0"><div className="truncate text-sm font-medium">{rfc.title}</div><div className="text-xs text-gray-500">{rfc.ci_id}</div></div><Badge value={rfc.priority || riskBand(rfc.risk_score)} colors={PRIORITY_COLORS} /></button>)}</div>;
+}
+
+function CabCard({ rfc, brief, busy, onSelect, onBrief, onApprove, onReject, onChat }: { rfc: RFC; brief?: CabBrief; busy: string | null; onSelect: (id: string) => void; onBrief: (id: string) => void; onApprove: (id: string) => void; onReject: (id: string) => void; onChat: () => void }) {
+  return <div className="rounded-lg border border-gray-800 bg-gray-900 p-4"><div className="flex items-start justify-between gap-3"><button onClick={() => onSelect(rfc.id)} className="min-w-0 text-left"><div className="truncate text-sm font-semibold">{rfc.title}</div><div className="mt-1 text-xs text-gray-500">{rfc.ci_id} · risk {rfc.risk_score ?? 0}/100 · blast radius {rfc.blast_radius ?? 0}</div></button><div className="flex gap-1"><Badge value={rfc.priority || riskBand(rfc.risk_score)} colors={PRIORITY_COLORS} /><Badge value={rfc.status} colors={STATUS_COLORS} /></div></div>{brief && <div className="mt-3 grid grid-cols-3 gap-2 text-xs"><CabSignal label="Conflicts" value={brief.conflicts?.conflictCount ?? 0} bad={(brief.conflicts?.conflictCount ?? 0) > 0} /><CabSignal label="CI Health" value={brief.health?.healthy === false ? "Review" : "OK"} bad={brief.health?.healthy === false} /><CabSignal label="Critical Path" value={brief.criticalPath?.criticalPath ? "Found" : "Clear"} bad={false} /></div>}<div className="mt-3 flex flex-wrap gap-2"><button onClick={() => onBrief(rfc.id)} disabled={busy === `brief:${rfc.id}`} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">CAB brief</button><button onClick={onChat} className="rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10">Chat plan</button><button onClick={() => onApprove(rfc.id)} disabled={busy === `approve:${rfc.id}`} className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">Approve</button><button onClick={() => onReject(rfc.id)} disabled={busy === `reject:${rfc.id}`} className="rounded-md border border-rose-700 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reject</button></div></div>;
+}
+
+function CabSignal({ label, value, bad }: { label: string; value: string | number; bad: boolean }) {
+  return <div className={`rounded-md p-2 ${bad ? "bg-amber-500/10 text-amber-200" : "bg-gray-950 text-gray-300"}`}><div className="text-gray-500">{label}</div><div className="font-medium">{value}</div></div>;
+}
+
+function DetailPanel({ rfc, impactData, brief, busy, onBack, onBrief, onApprove, onReject, onChat }: { rfc: RFC; impactData: any; brief?: CabBrief; busy: string | null; onBack: () => void; onBrief: (id: string) => void; onApprove: (id: string) => void; onReject: (id: string) => void; onChat: () => void }) {
+  return <div className="space-y-4"><button onClick={onBack} className="flex items-center gap-1 text-sm text-gray-400 hover:text-white"><ChevronLeft className="h-4 w-4" /> Clear selection</button><div><h2 className="text-lg font-semibold">{rfc.title}</h2><p className="mt-1 text-xs text-gray-500">{rfc.id}</p></div><div className="flex flex-wrap gap-2"><Badge value={rfc.status} colors={STATUS_COLORS} /><Badge value={rfc.priority || riskBand(rfc.risk_score)} colors={PRIORITY_COLORS} /></div><Panel title="Readiness" icon={<ShieldCheck className="h-4 w-4" />}><div className="grid grid-cols-3 gap-2 text-xs"><CabSignal label="Risk" value={rfc.risk_score ?? 0} bad={(rfc.risk_score ?? 0) >= 60} /><CabSignal label="Blast" value={rfc.blast_radius ?? 0} bad={(rfc.blast_radius ?? 0) > 10} /><CabSignal label="Approvers" value={rfc.approvers?.filter((a) => a.approved_at).length || 0} bad={(rfc.approvers?.some((a) => !a.approved_at) ?? false)} /></div><div className="mt-3 flex flex-wrap gap-2"><button onClick={() => onBrief(rfc.id)} disabled={busy === `brief:${rfc.id}`} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">Refresh CAB brief</button><button onClick={onChat} className="rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10">Plan in chat</button>{rfc.status === "pending_approval" && <><button onClick={() => onApprove(rfc.id)} className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">Approve</button><button onClick={() => onReject(rfc.id)} className="rounded-md border border-rose-700 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reject</button></>}</div></Panel>{brief && <Panel title="CAB Brief" icon={<Bot className="h-4 w-4" />}><div className="space-y-2 text-sm text-gray-400"><p>Risk: {brief.grade?.riskScore ?? "n/a"} · Priority: {brief.grade?.priority || "n/a"}</p><p>Conflicts: {brief.conflicts?.conflictCount ?? 0}</p><p>CI health: {brief.health?.healthy === false ? "Needs review" : "OK"}</p><p>Critical path: {brief.criticalPath?.criticalPath?.targetName || "No downstream business service found"}</p></div></Panel>}{rfc.description && <Panel title="Description" icon={<MessageSquare className="h-4 w-4" />}><p className="text-sm text-gray-400">{rfc.description}</p></Panel>}{impactData && <Panel title="Impact Graph" icon={<GitBranch className="h-4 w-4" />}><ImpactGraph nodes={impactData.nodes} edges={impactData.edges} height={260} /></Panel>}<Panel title="Change Window" icon={<CalendarDays className="h-4 w-4" />}><div className="space-y-2 text-sm text-gray-400"><p>Start: {timeLabel(rfc.planned_start_at || rfc.scheduled_at)}</p><p>End: {timeLabel(rfc.planned_end_at)}</p></div></Panel>{rfc.comments?.length ? <Panel title="Activity" icon={<MessageSquare className="h-4 w-4" />}><div className="space-y-3">{rfc.comments.map((comment) => <div key={comment.id} className="border-l border-gray-700 pl-3"><div className="text-xs text-gray-500">{comment.author || "Unknown"} · {timeLabel(comment.created_at)}</div><div className="text-sm text-gray-300">{comment.content}</div></div>)}</div></Panel> : null}</div>;
+}
+
+function AutomationCard({ title, method, path, body }: { title: string; method: string; path: string; body: Record<string, unknown> }) {
+  return <section className="rounded-lg border border-gray-800 bg-gray-900 p-4"><div className="mb-3 flex items-center gap-2 text-sm font-semibold"><TerminalSquare className="h-4 w-4 text-indigo-300" />{title}</div><div className="mb-2 flex items-center gap-2 text-xs"><span className="rounded bg-indigo-500/10 px-2 py-1 text-indigo-200">{method}</span><code className="text-gray-400">{path}</code></div><pre className="max-h-72 overflow-auto rounded-md bg-gray-950 p-3 text-xs text-gray-300">{JSON.stringify(body, null, 2)}</pre></section>;
+}
+
+function Empty({ text }: { text: string }) {
+  return <div className="rounded-md border border-dashed border-gray-800 p-6 text-center text-sm text-gray-500">{text}</div>;
 }

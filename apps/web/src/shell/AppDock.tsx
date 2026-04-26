@@ -71,6 +71,25 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; appId: string } | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const updateDockInset = () => {
+      const rect = dockRef.current?.getBoundingClientRect();
+      const inset = rect ? Math.ceil(window.innerHeight - rect.top + 16) : 112;
+      document.documentElement.style.setProperty("--specora-dock-safe-area", `${inset}px`);
+      window.dispatchEvent(new Event("specora:dock-safe-area-change"));
+    };
+
+    updateDockInset();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateDockInset) : null;
+    if (dockRef.current) observer?.observe(dockRef.current);
+    window.addEventListener("resize", updateDockInset);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateDockInset);
+    };
+  }, [state.dockedIds.length, state.instances.length, state.rightPanelOpen]);
 
   const handleDockClick = (id: string) => {
     const instance = state.instances.find((i) => i.id === id);
@@ -200,7 +219,7 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
       )}
 
       {/* Dock */}
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
+      <div ref={dockRef} className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
         <div className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-800/95 backdrop-blur-2xl border border-white/15 rounded-[2rem] shadow-[0_12px_40px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.1)] min-w-[280px]">
           {/* All Apps */}
           <button

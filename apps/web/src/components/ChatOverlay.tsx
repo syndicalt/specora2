@@ -385,19 +385,30 @@ export function ChatOverlay() {
     } else if (type === "open-ci-details") {
       const params = new URLSearchParams(payload);
       const id = params.get("id");
-      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "cmdb-explorer", mode: "window", permissions: ["read:cmdb"] });
+      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "builtin_cmdb-explorer", mode: "canvas", permissions: ["read:cmdb", "read:relationships"] });
       if (id) {
         setTimeout(() => {
-          shell.messageBus.publish({ type: "FOCUS_CI", from: "chat", to: "cmdb-explorer", payload: { id } });
-        }, 500);
+          shell.messageBus.publish({ type: "SET_CMDB_VIEW", from: "chat", to: "cmdb-explorer", payload: { focusCiId: id } });
+        }, 300);
       }
+    } else if (type === "open-cmdb-explorer") {
+      const params = new URLSearchParams(payload);
+      const queue = params.get("queue") || undefined;
+      const query = params.get("query") || undefined;
+      const classFilter = params.get("class") || undefined;
+      const envFilter = params.get("environment") || undefined;
+      const focusCiId = params.get("id") || undefined;
+      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "builtin_cmdb-explorer", mode: "canvas", permissions: ["read:cmdb", "read:relationships"] });
+      setTimeout(() => {
+        shell.messageBus.publish({ type: "SET_CMDB_VIEW", from: "chat", to: "cmdb-explorer", payload: { queue, query, classFilter, envFilter, focusCiId } });
+      }, 300);
     } else if (type === "select-ci") {
       const params = new URLSearchParams(payload);
       const context = params.get("context") || "default";
-      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "cmdb-explorer", mode: "window", permissions: ["read:cmdb"] });
+      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "builtin_cmdb-explorer", mode: "canvas", permissions: ["read:cmdb", "read:relationships"] });
       setTimeout(() => {
         shell.messageBus.publish({ type: "START_CI_SELECTION", from: "chat", to: "cmdb-explorer", payload: { context, callbackChannel: "chat" } });
-      }, 500);
+      }, 300);
     } else if (type === "open-change-manager") {
       const params = new URLSearchParams(payload);
       const rfcId = params.get("rfcId");
@@ -405,6 +416,42 @@ export function ChatOverlay() {
       if (rfcId) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "FOCUS_RFC", from: "chat", to: "change-manager", payload: { rfcId } });
+        }, 500);
+      }
+    } else if (type === "open-incident-manager") {
+      const params = new URLSearchParams(payload);
+      const incidentId = params.get("incidentId");
+      shell.dispatch({ type: "OPEN_APP", id: "incident-manager", installKey: "builtin_incident-manager", mode: "canvas", permissions: ["itsm:incident:read", "itsm:incident:write"] });
+      if (incidentId) {
+        setTimeout(() => {
+          shell.messageBus.publish({ type: "FOCUS_INCIDENT", from: "chat", to: "incident-manager", payload: { incidentId } });
+        }, 500);
+      }
+    } else if (type === "open-knowledge-core") {
+      const params = new URLSearchParams(payload);
+      const knowledgeId = params.get("knowledgeId");
+      shell.dispatch({ type: "OPEN_APP", id: "knowledge-core", installKey: "builtin_knowledge-core", mode: "canvas", permissions: ["itsm:knowledge:read", "itsm:knowledge:write"] });
+      if (knowledgeId) {
+        setTimeout(() => {
+          shell.messageBus.publish({ type: "FOCUS_KNOWLEDGE", from: "chat", to: "knowledge-core", payload: { knowledgeId } });
+        }, 500);
+      }
+    } else if (type === "open-prevention-center") {
+      const params = new URLSearchParams(payload);
+      const preventionId = params.get("preventionId");
+      shell.dispatch({ type: "OPEN_APP", id: "prevention-center", installKey: "builtin_prevention-center", mode: "canvas", permissions: ["itsm:prevention:read", "itsm:prevention:write"] });
+      if (preventionId) {
+        setTimeout(() => {
+          shell.messageBus.publish({ type: "FOCUS_PREVENTION", from: "chat", to: "prevention-center", payload: { preventionId } });
+        }, 500);
+      }
+    } else if (type === "open-asset-command") {
+      const params = new URLSearchParams(payload);
+      const assetId = params.get("assetId");
+      shell.dispatch({ type: "OPEN_APP", id: "asset-command", installKey: "builtin_asset-command", mode: "canvas", permissions: ["itsm:asset:read", "itsm:asset:write"] });
+      if (assetId) {
+        setTimeout(() => {
+          shell.messageBus.publish({ type: "FOCUS_ASSET", from: "chat", to: "asset-command", payload: { assetId } });
         }, 500);
       }
     } else if (type === "pick-date") {

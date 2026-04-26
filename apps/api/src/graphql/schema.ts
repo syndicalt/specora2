@@ -51,7 +51,12 @@ const typeDefs = `
     name: String!
     type: String!
     config: JSON
+    credentialRef: String
+    lastTestedAt: String
+    lastStatus: String
+    lastError: String
     createdAt: String!
+    updatedAt: String
   }
 
   type DiscoveryJob {
@@ -236,6 +241,7 @@ const typeDefs = `
     updateRelationship(sourceId: ID!, targetId: ID!, type: String!, newType: String, attributes: JSON): Relationship!
     ingestCMDB(payload: JSON): IngestionJob!
     createDiscoverySource(name: String!, type: String!, config: JSON): DiscoverySource!
+    updateDiscoverySource(id: ID!, name: String!, type: String!, config: JSON): DiscoverySource!
     deleteDiscoverySource(id: ID!): Boolean!
     updatePreferences(preferences: JSON!): User!
     submitMarketplaceApp(id: ID!, name: String!, description: String, url: String!, icon: String, version: String, permissions: [String!], reactVersion: String, author: String!, authorUrl: String): MarketplaceApp!
