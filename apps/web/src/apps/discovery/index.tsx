@@ -51,12 +51,16 @@ import {
 
 type DiscoveryJob = {
   id: string;
-  sourceId: string | null;
-  filePath: string | null;
+  sourceId?: string | null;
+  source_id?: string | null;
+  filePath?: string | null;
+  file_path?: string | null;
   status: string;
   stats?: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string | null;
+  created_at?: string | null;
+  updatedAt?: string | null;
+  updated_at?: string | null;
 };
 
 type TargetClass = {
@@ -257,6 +261,22 @@ function statusIcon(status: string) {
     default:
       return <AlertTriangle className="h-4 w-4 text-gray-500" />;
   }
+}
+
+function discoveryJobSource(job: DiscoveryJob): string {
+  return job.filePath || job.file_path || "No source file recorded";
+}
+
+function discoveryJobTimestamp(job: DiscoveryJob): number {
+  const raw = job.createdAt || job.created_at || job.updatedAt || job.updated_at;
+  if (!raw) return 0;
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function formatDiscoveryJobDate(job: DiscoveryJob): string {
+  const timestamp = discoveryJobTimestamp(job);
+  return timestamp ? new Date(timestamp).toLocaleString() : "No timestamp";
 }
 
 const NODE_CATALOG: Array<{
@@ -473,6 +493,10 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const risks = proposal?.risks || [];
   const currentPipeline = useMemo(() => pipelines.find((pipeline) => pipeline.id === currentPipelineId) || null, [pipelines, currentPipelineId]);
   const selectedNode = useMemo(() => nodes.find((item) => item.id === selectedNodeId) || null, [nodes, selectedNodeId]);
+  const orderedJobs = useMemo(
+    () => [...jobs].sort((a, b) => discoveryJobTimestamp(b) - discoveryJobTimestamp(a) || b.id.localeCompare(a.id)),
+    [jobs]
+  );
   const isPublished = currentPipeline?.status === "published" || !!(currentPipeline?.last_published_at || currentPipeline?.lastPublishedAt);
   const readyStep = proposal ? preview ? currentPipelineId ? isPublished ? staged ? "Commit" : "Run" : "Publish" : "Preview" : "Map" : "Source";
   const undoStackRef = useRef<FlowSnapshot[]>([]);
@@ -1233,14 +1257,14 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       ) : view === "runs" ? (
         <main className="grid flex-1 grid-cols-1 gap-4 overflow-auto p-5 pb-24 lg:grid-cols-[1fr_360px]">
           <section className="space-y-3">
-            {jobs.length ? jobs.map((job) => (
+            {orderedJobs.length ? orderedJobs.map((job) => (
               <div key={job.id} className="flex items-center gap-4 rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
                 {statusIcon(job.status)}
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-medium">{job.status} <span className="text-gray-500">#{job.id.slice(0, 8)}</span></div>
-                  <div className="truncate text-xs text-gray-500">{job.filePath || "No source file recorded"}</div>
+                  <div className="truncate text-xs text-gray-500">{discoveryJobSource(job)}</div>
                 </div>
-                <div className="text-right text-xs text-gray-500">{new Date(job.createdAt).toLocaleString()}</div>
+                <div className="text-right text-xs text-gray-500">{formatDiscoveryJobDate(job)}</div>
                 <button onClick={() => loadStagedJob(job.id)} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">Stage</button>
               </div>
             )) : (

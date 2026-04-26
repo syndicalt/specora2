@@ -176,6 +176,7 @@ test.describe("demo spine smoke coverage", () => {
     await expect(page.getByText("Pipeline published")).toBeVisible();
     await page.getByRole("button", { name: "Run", exact: true }).click();
     await expect(page.getByText(/Staged Commit/)).toBeVisible();
+    await expect(page.getByText("Invalid Date")).toHaveCount(0);
     await page.getByRole("button", { name: "Approve Safe" }).click();
     await page.getByRole("button", { name: "Commit" }).click();
     await expect(page.getByText("committed").first()).toBeVisible();
