@@ -100,6 +100,10 @@ function bestTargetField(column: string): string {
   return normalized.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
 }
 
+function fallbackTargetField(column: string): string {
+  return normalize(column).replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+}
+
 function transformFor(sourceField: string, targetField: string): string {
   const source = normalize(sourceField);
   if (targetField === "environment") return "normalize_environment";
@@ -210,8 +214,13 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
   const routes = selected.length ? selected : [{ name: classNames[0] || "ConfigurationItem", score: 1 }];
   const primaryClass = routes[0].name;
 
+  const mappedNames = new Set<string>();
   const fieldMappings = columns.slice(0, 18).map((sourceField) => {
-    const targetField = bestTargetField(sourceField);
+    const initialTargetField = bestTargetField(sourceField);
+    const targetField = initialTargetField === "name" && mappedNames.has("name")
+      ? fallbackTargetField(sourceField)
+      : initialTargetField;
+    mappedNames.add(targetField);
     return {
       sourceField,
       targetClass: primaryClass,

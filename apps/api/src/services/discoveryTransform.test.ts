@@ -51,6 +51,25 @@ describe("buildDeterministicProposal", () => {
     }));
   });
 
+  it("does not let relationship hint columns overwrite the primary CI name", () => {
+    const proposal = buildDeterministicProposal(
+      {
+        sourceName: "server-app-inventory.csv",
+        columns: ["hostname", "ip_addr", "os", "app_name", "db_host", "environment", "business_owner"],
+        sampleRows: [{ hostname: "web01", ip_addr: "10.20.1.15", os: "Ubuntu", app_name: "Billing Portal", db_host: "sql01", environment: "Production", business_owner: "Finance Apps" }],
+      },
+      [{ name: "Server" }, { name: "Database" }, { name: "ApplicationService" }, { name: "Group" }]
+    );
+
+    const nameMappings = proposal.fieldMappings.filter((mapping) => mapping.targetClass === "Server" && mapping.targetField === "name");
+    expect(nameMappings).toHaveLength(1);
+    expect(nameMappings[0].sourceField).toBe("hostname");
+
+    const preview = previewPipeline({ sample: { rows: proposal.sourceProfile.sampleRows }, proposal }, [{ name: "Server" }]);
+    expect(preview.records.find((record) => record.targetClass === "Server")).toMatchObject({ name: "web01" });
+    expect(preview.relationships).toContainEqual(expect.objectContaining({ sourceField: "db_host", targetHint: "sql01" }));
+  });
+
   it("previews staged records and relationship candidates", () => {
     const proposal = buildDeterministicProposal(
       {
