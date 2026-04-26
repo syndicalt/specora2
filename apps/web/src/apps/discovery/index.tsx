@@ -452,6 +452,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [stepMenuOpen, setStepMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<"builder" | "pipelines" | "runs" | "sources">("builder");
   const loadErrorRef = useRef("");
@@ -505,6 +506,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     const next = node(id, catalog.title, catalog.detail, x, y, catalog.color, kind);
     setNodes((current) => [...current, next]);
     setSelectedNodeId(id);
+    setStepMenuOpen(false);
     setPreview(null);
     setStaged(null);
   }
@@ -1288,6 +1290,44 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 <Wand2 className="h-4 w-4" />
                 {loading ? "Drafting..." : "AI Draft Transform"}
               </button>
+              <div className="relative">
+                <button
+                  onClick={() => setStepMenuOpen((open) => !open)}
+                  className="flex items-center gap-2 rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800"
+                  aria-expanded={stepMenuOpen}
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Pipeline Step
+                </button>
+                {stepMenuOpen && (
+                  <div className="absolute left-0 top-full mt-2 w-80 rounded-lg border border-gray-800 bg-gray-900 p-2 shadow-2xl">
+                    <div className="mb-2 flex items-center gap-2 px-2 py-1 text-xs font-medium uppercase tracking-wide text-gray-500">
+                      <Workflow className="h-3.5 w-3.5 text-cyan-300" />
+                      Builder steps
+                    </div>
+                    <div className="max-h-80 overflow-auto pr-1">
+                      {NODE_CATALOG.map((item) => {
+                        const Icon = item.icon;
+                        return (
+                          <button
+                            key={item.kind}
+                            onClick={() => addCanvasNode(item.kind)}
+                            className="flex w-full items-start gap-3 rounded-md px-2 py-2 text-left hover:bg-gray-800"
+                          >
+                            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gray-950" style={{ color: item.color }}>
+                              <Icon className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block text-sm font-medium text-gray-200">{item.title}</span>
+                              <span className="mt-0.5 line-clamp-2 block text-xs leading-5 text-gray-500">{item.detail}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
               <button onClick={previewPipeline} disabled={!proposal || loading} className="flex items-center gap-2 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-50">
                 <Eye className="h-4 w-4" />
                 Preview
@@ -1305,29 +1345,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 Run
               </button>
             </div>
-            <div className="absolute bottom-4 left-4 z-10 w-[min(720px,calc(100%-7rem))] rounded-lg border border-gray-800 bg-gray-900/95 p-3 shadow-2xl backdrop-blur">
-              <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-                <Workflow className="h-3.5 w-3.5 text-cyan-300" />
-                Add pipeline step
-              </div>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {NODE_CATALOG.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.kind}
-                      onClick={() => addCanvasNode(item.kind)}
-                      className="flex min-w-32 items-center gap-2 rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-left text-xs text-gray-300 hover:border-cyan-500/50 hover:bg-cyan-500/10"
-                      title={item.detail}
-                    >
-                      <Icon className="h-4 w-4 shrink-0" style={{ color: item.color }} />
-                      <span className="truncate">{item.title}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="pointer-events-none absolute right-4 top-4 z-10 max-w-xs rounded-lg border border-gray-800 bg-gray-900/95 p-3 text-xs text-gray-400 shadow-2xl backdrop-blur">
+            <div className="pointer-events-none absolute bottom-4 left-4 z-10 max-w-xs rounded-lg border border-gray-800 bg-gray-900/80 p-3 text-xs text-gray-400 opacity-80 shadow-2xl backdrop-blur">
               <div className="mb-1 flex items-center gap-2 font-medium text-gray-200">
                 <MousePointer2 className="h-3.5 w-3.5 text-cyan-300" />
                 Canvas is the builder

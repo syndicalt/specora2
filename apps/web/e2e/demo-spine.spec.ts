@@ -155,7 +155,8 @@ test.describe("demo spine smoke coverage", () => {
 
     await page.getByRole("button", { name: "Builder" }).click();
     await expect(page.locator("textarea")).toHaveValue(new RegExp(host));
-    await expect(page.getByText("Add pipeline step")).toBeVisible();
+    await page.getByRole("button", { name: "Add Pipeline Step" }).click();
+    await expect(page.getByText("Builder steps")).toBeVisible();
     await page.getByRole("button", { name: "Validate" }).click();
     await expect(page.getByText("Canvas Inspector")).toBeVisible();
     await page.getByLabel("Title").fill("Schema Gate");
