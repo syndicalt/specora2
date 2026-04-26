@@ -163,7 +163,7 @@ test.describe("demo spine smoke coverage", () => {
     await expect(page.getByText("Schema Gate")).toBeVisible();
     await page.getByRole("button", { name: "Duplicate" }).click();
     await expect(page.getByText("Schema Gate copy")).toBeVisible();
-    await page.getByTitle("Delete node").click();
+    await page.getByRole("button", { name: "Undo" }).click();
     await expect(page.getByText("Schema Gate copy")).toHaveCount(0);
     await page.getByRole("button", { name: "AI Draft Transform" }).click();
     await expect(page.getByText("Field Mappings")).toBeVisible();

@@ -8,11 +8,13 @@ import ReactFlow, {
   MarkerType,
   Position,
   addEdge,
+  applyEdgeChanges,
   applyNodeChanges,
   useEdgesState,
   useNodesState,
   type Connection,
   type Edge,
+  type EdgeChange,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -149,6 +151,11 @@ type StagedDiscoveryJob = {
   job: DiscoveryJob;
   records: Array<{ id: string; row_number: number; target_class: string; name: string; environment?: string; status: string; errors?: string[]; warnings?: string[]; committed_ci_id?: string }>;
   relationships: Array<{ id: string; row_number: number; rel_type: string; from_class: string; to_class: string; target_hint?: string; status: string; message?: string }>;
+};
+
+type FlowSnapshot = {
+  nodes: Node<DiscoveryFlowNodeData>[];
+  edges: Edge[];
 };
 
 const SAMPLE = `hostname,ip_addr,os,app_name,db_host,environment,business_owner
@@ -461,31 +468,66 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const profile = useMemo(() => parseCsv(sample), [sample]);
   const selectedSource = useMemo(() => sources.find((source) => source.id === selectedSourceId) || null, [sources, selectedSourceId]);
   const generatedFlow = useMemo(() => proposalToFlow(proposal, sourceName), [proposal, sourceName]);
-  const [nodes, setNodes] = useNodesState(generatedFlow.nodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(generatedFlow.edges);
+  const [nodes, setNodes] = useNodesState<DiscoveryFlowNodeData>(generatedFlow.nodes as Node<DiscoveryFlowNodeData>[]);
+  const [edges, setEdges] = useEdgesState(generatedFlow.edges);
   const risks = proposal?.risks || [];
   const currentPipeline = useMemo(() => pipelines.find((pipeline) => pipeline.id === currentPipelineId) || null, [pipelines, currentPipelineId]);
   const selectedNode = useMemo(() => nodes.find((item) => item.id === selectedNodeId) || null, [nodes, selectedNodeId]);
   const isPublished = currentPipeline?.status === "published" || !!(currentPipeline?.last_published_at || currentPipeline?.lastPublishedAt);
   const readyStep = proposal ? preview ? currentPipelineId ? isPublished ? staged ? "Commit" : "Run" : "Publish" : "Preview" : "Map" : "Source";
+  const undoStackRef = useRef<FlowSnapshot[]>([]);
+  const skipGeneratedFlowSyncRef = useRef(false);
+
+  const rememberFlow = useCallback(() => {
+    undoStackRef.current = [...undoStackRef.current.slice(-24), { nodes, edges }];
+  }, [edges, nodes]);
+
+  function clearDerivedRunState() {
+    setPreview(null);
+    setStaged(null);
+  }
+
+  function undoCanvasChange() {
+    const previous = undoStackRef.current.pop();
+    if (!previous) {
+      shell.notify("Nothing to undo", "error");
+      return;
+    }
+    setNodes(previous.nodes);
+    setEdges(withDynamicEdgeHandles(previous.edges, previous.nodes));
+    setSelectedNodeId(null);
+    clearDerivedRunState();
+  }
 
   useEffect(() => {
+    if (skipGeneratedFlowSyncRef.current) {
+      skipGeneratedFlowSyncRef.current = false;
+      return;
+    }
     setNodes((current) => {
-      const next = keepPositions(generatedFlow.nodes, current);
+      const next = keepPositions(generatedFlow.nodes as Node<DiscoveryFlowNodeData>[], current);
       setEdges(withDynamicEdgeHandles(generatedFlow.edges, next));
       return next;
     });
   }, [generatedFlow, setEdges, setNodes]);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
+    if (changes.some((change) => change.type === "add" || change.type === "remove")) rememberFlow();
     setNodes((current) => {
       const next = applyNodeChanges(changes, current);
       setEdges((currentEdges) => withDynamicEdgeHandles(currentEdges, next));
       return next;
     });
-  }, [setEdges, setNodes]);
+  }, [rememberFlow, setEdges, setNodes]);
+
+  const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
+    if (changes.some((change) => change.type === "add" || change.type === "remove")) rememberFlow();
+    setEdges((current) => withDynamicEdgeHandles(applyEdgeChanges(changes, current), nodes));
+    clearDerivedRunState();
+  }, [nodes, rememberFlow, setEdges]);
 
   const onConnect = useCallback((connection: Connection) => {
+    rememberFlow();
     setEdges((current) => withDynamicEdgeHandles(addEdge({
       ...connection,
       id: `e-${connection.source}-${connection.target}-${Date.now()}`,
@@ -494,11 +536,11 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       markerEnd: { type: MarkerType.ArrowClosed },
       style: { stroke: "#818cf8" },
     }, current), nodes));
-    setPreview(null);
-    setStaged(null);
-  }, [nodes, setEdges]);
+    clearDerivedRunState();
+  }, [nodes, rememberFlow, setEdges]);
 
   function addCanvasNode(kind: DiscoveryNodeKind) {
+    rememberFlow();
     const catalog = catalogFor(kind);
     const id = `${kind}-${Date.now().toString(36)}`;
     const x = 160 + (nodes.length % 4) * 210;
@@ -507,18 +549,18 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setNodes((current) => [...current, next]);
     setSelectedNodeId(id);
     setStepMenuOpen(false);
-    setPreview(null);
-    setStaged(null);
+    clearDerivedRunState();
   }
 
   function updateCanvasNode(id: string, patch: Partial<DiscoveryFlowNodeData>) {
+    rememberFlow();
     setNodes((current) => current.map((item) => item.id === id ? { ...item, data: { ...item.data, ...patch } } : item));
-    setPreview(null);
-    setStaged(null);
+    clearDerivedRunState();
   }
 
   function duplicateSelectedNode() {
     if (!selectedNode) return;
+    rememberFlow();
     const id = `${selectedNode.data.kind}-${Date.now().toString(36)}`;
     setNodes((current) => [
       ...current,
@@ -535,11 +577,11 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   function deleteSelectedNode() {
     if (!selectedNodeId) return;
+    rememberFlow();
     setNodes((current) => current.filter((item) => item.id !== selectedNodeId));
     setEdges((current) => current.filter((item) => item.source !== selectedNodeId && item.target !== selectedNodeId));
     setSelectedNodeId(null);
-    setPreview(null);
-    setStaged(null);
+    clearDerivedRunState();
   }
 
   const definition = useCallback((): PipelineDefinition => ({
@@ -663,6 +705,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   }
 
   function newPipeline() {
+    undoStackRef.current = [];
     setCurrentPipelineId(null);
     setSchedule({ enabled: false, interval: "manual", next_run_at: null });
     setSelectedSourceId("");
@@ -675,6 +718,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   }
 
   async function loadPipeline(pipeline: PipelineRecord) {
+    undoStackRef.current = [];
     const saved = pipeline.definition || {};
     const savedSample = saved.sample || {};
     const columns = savedSample.columns || Object.keys(savedSample.rows?.[0] || {});
@@ -682,10 +726,12 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setSelectedSourceId(saved.source?.id || "");
     setSourceName(saved.sourceName || pipeline.name);
     setSample(rowsToCsv(columns, savedSample.rows || []));
+    skipGeneratedFlowSyncRef.current = true;
     setProposal(saved.proposal || null);
     if (saved.flow?.nodes?.length) {
-      setNodes(saved.flow.nodes);
-      if (saved.flow?.edges?.length) setEdges(withDynamicEdgeHandles(saved.flow.edges, saved.flow.nodes));
+      const savedNodes = saved.flow.nodes as Node<DiscoveryFlowNodeData>[];
+      setNodes(savedNodes);
+      if (saved.flow?.edges?.length) setEdges(withDynamicEdgeHandles(saved.flow.edges, savedNodes));
     } else if (saved.flow?.edges?.length) {
       setEdges(saved.flow.edges);
     }
@@ -693,6 +739,21 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setPreview(null);
     setStaged(null);
     setView("builder");
+  }
+
+  function loadExample() {
+    rememberFlow();
+    const exampleFlow = proposalToFlow(null, "server-app-inventory.csv");
+    setSelectedSourceId("");
+    setSourceName("server-app-inventory.csv");
+    setSample(SAMPLE);
+    setProposal(null);
+    setCurrentPipelineId(null);
+    setSchedule({ enabled: false, interval: "manual", next_run_at: null });
+    setNodes(exampleFlow.nodes as Node<DiscoveryFlowNodeData>[]);
+    setEdges(withDynamicEdgeHandles(exampleFlow.edges, exampleFlow.nodes as Node<DiscoveryFlowNodeData>[]));
+    clearDerivedRunState();
+    shell.notify("Example source sample loaded", "success");
   }
 
   function applySource(source: DiscoverySource) {
@@ -1277,7 +1338,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                   <span key={column} className="rounded-md border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300">{column}</span>
                 ))}
               </div>
-              <button onClick={() => setSample(SAMPLE)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-900">
+              <button onClick={loadExample} className="mt-4 flex w-full items-center justify-center gap-2 rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-900">
                 <Upload className="h-4 w-4" />
                 Load Example
               </button>
@@ -1328,6 +1389,9 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                   </div>
                 )}
               </div>
+              <button onClick={undoCanvasChange} className="flex items-center gap-2 rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800">
+                Undo
+              </button>
               <button onClick={previewPipeline} disabled={!proposal || loading} className="flex items-center gap-2 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-50">
                 <Eye className="h-4 w-4" />
                 Preview
@@ -1357,7 +1421,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
               edges={edges}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
+              onEdgesChange={handleEdgesChange}
               onConnect={onConnect}
               onNodeClick={(_, clickedNode) => setSelectedNodeId(clickedNode.id)}
               onPaneClick={() => setSelectedNodeId(null)}
