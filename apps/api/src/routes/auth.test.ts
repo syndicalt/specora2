@@ -379,6 +379,33 @@ describe("auth routes", () => {
     expect(request).toContain(">https://specora.test/saml/sp/saml-1</saml:Issuer>");
   });
 
+  it("uses forwarded public host for generated SAML service-provider URLs", async () => {
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "saml-1",
+      name: "Google SAML",
+      provider: "saml",
+      status: "active",
+      idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+    });
+    const app = await buildApp(pg);
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/auth/sso/saml-1/start?returnTo=/admin",
+      headers: {
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "specora2.specora.org",
+      },
+    });
+
+    expect(res.statusCode).toBe(302);
+    const location = new URL(res.headers.location as string);
+    const request = inflateRawSync(Buffer.from(location.searchParams.get("SAMLRequest") || "", "base64")).toString("utf8");
+    expect(request).toContain("AssertionConsumerServiceURL=\"https://specora2.specora.org/api/auth/sso/saml-1/acs\"");
+    expect(request).toContain(">https://specora2.specora.org/saml/sp/saml-1</saml:Issuer>");
+  });
+
   it("syncs OIDC group claims into identity groups", async () => {
     process.env.TEST_OIDC_SECRET = "secret";
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))

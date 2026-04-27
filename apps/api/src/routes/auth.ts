@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import { FastifyInstance, FastifyRequest } from "fastify";
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { deflateRawSync } from "zlib";
@@ -36,7 +36,8 @@ type SsoConfig = {
 };
 
 const WEB_PUBLIC_URL = process.env.WEB_PUBLIC_URL || process.env.NEXT_PUBLIC_WEB_URL || "http://localhost:3000";
-const API_PUBLIC_URL = process.env.API_PUBLIC_URL || (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/graphql").replace("/graphql", "");
+const CONFIGURED_API_PUBLIC_URL = process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "");
+const DEFAULT_API_PUBLIC_URL = "http://localhost:4000";
 const OAUTH_DEFAULT_ROLE = process.env.OAUTH_DEFAULT_ROLE || "user";
 const AUTH_HANDOFF_TTL_MS = Number(process.env.AUTH_HANDOFF_TTL_SECONDS || 90) * 1000;
 
@@ -61,12 +62,26 @@ function webUrl(path: string) {
   return url;
 }
 
-function samlSpEntityId(config: SsoConfig) {
-  return config.sp_entity_id || `${API_PUBLIC_URL}/saml/sp/${config.id}`;
+function headerValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
 }
 
-function samlAcsUrl(config: SsoConfig) {
-  return `${API_PUBLIC_URL}/api/auth/sso/${config.id}/acs`;
+function publicApiUrl(request?: FastifyRequest) {
+  if (CONFIGURED_API_PUBLIC_URL) return CONFIGURED_API_PUBLIC_URL.replace(/\/$/, "");
+  const host = headerValue(request?.headers["x-forwarded-host"]) || headerValue(request?.headers.host);
+  if (host && !host.startsWith("localhost:") && !host.startsWith("127.0.0.1:")) {
+    const proto = headerValue(request?.headers["x-forwarded-proto"]) || "https";
+    return `${proto.split(",")[0].trim()}://${host.split(",")[0].trim()}`.replace(/\/$/, "");
+  }
+  return DEFAULT_API_PUBLIC_URL;
+}
+
+function samlSpEntityId(config: SsoConfig, apiBase = publicApiUrl()) {
+  return config.sp_entity_id || `${apiBase}/saml/sp/${config.id}`;
+}
+
+function samlAcsUrl(config: SsoConfig, apiBase = publicApiUrl()) {
+  return `${apiBase}/api/auth/sso/${config.id}/acs`;
 }
 
 function escapeXml(value: string) {
@@ -132,7 +147,7 @@ function configuredOAuthProviders() {
 }
 
 function providerRedirectUri(provider: string) {
-  return `${API_PUBLIC_URL}/api/auth/oauth/${provider}/callback`;
+  return `${publicApiUrl()}/api/auth/oauth/${provider}/callback`;
 }
 
 function authUrl(provider: string, state: string) {
@@ -390,7 +405,7 @@ async function exchangeOidcCode(config: SsoConfig, code: string): Promise<OAuthP
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code,
-      redirect_uri: `${API_PUBLIC_URL}/api/auth/sso/${config.id}/callback`,
+      redirect_uri: `${publicApiUrl()}/api/auth/sso/${config.id}/callback`,
       client_id: config.client_id,
       client_secret: clientSecret,
     }),
@@ -415,12 +430,12 @@ async function exchangeOidcCode(config: SsoConfig, code: string): Promise<OAuthP
   };
 }
 
-function buildSamlAuthnRequest(config: SsoConfig) {
+function buildSamlAuthnRequest(config: SsoConfig, apiBase = publicApiUrl()) {
   if (!config.idp_sso_url) throw new Error("SAML provider is missing IdP SSO URL");
   const requestId = `_${randomUUID()}`;
   const xml = [
-    `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="${escapeXml(requestId)}" Version="2.0" IssueInstant="${new Date().toISOString()}" Destination="${escapeXml(config.idp_sso_url)}" AssertionConsumerServiceURL="${escapeXml(samlAcsUrl(config))}" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST">`,
-    `<saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">${escapeXml(samlSpEntityId(config))}</saml:Issuer>`,
+    `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="${escapeXml(requestId)}" Version="2.0" IssueInstant="${new Date().toISOString()}" Destination="${escapeXml(config.idp_sso_url)}" AssertionConsumerServiceURL="${escapeXml(samlAcsUrl(config, apiBase))}" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST">`,
+    `<saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">${escapeXml(samlSpEntityId(config, apiBase))}</saml:Issuer>`,
     `<samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress" AllowCreate="true"/>`,
     `</samlp:AuthnRequest>`,
   ].join("");
@@ -467,19 +482,19 @@ function validateSamlTime(value?: string, mode: "notBefore" | "notOnOrAfter" = "
   if (mode === "notOnOrAfter" && timestamp <= Date.now() - skewMs) throw new Error("SAML assertion has expired");
 }
 
-function parseSamlProfile(config: SsoConfig, encodedResponse: string): OAuthProfile {
+function parseSamlProfile(config: SsoConfig, encodedResponse: string, apiBase = publicApiUrl()): OAuthProfile {
   const xml = Buffer.from(encodedResponse, "base64").toString("utf8");
   if (!xml.includes("Assertion")) throw new Error("SAML response did not include an assertion");
 
   const responseTag = xmlFirstTag(xml, "Response") || "";
   const responseDestination = xmlAttribute(responseTag, "Destination");
-  if (responseDestination && responseDestination !== samlAcsUrl(config)) throw new Error("SAML response destination does not match this service provider");
+  if (responseDestination && responseDestination !== samlAcsUrl(config, apiBase)) throw new Error("SAML response destination does not match this service provider");
 
   const issuer = xmlText(xml, "Issuer");
   if (config.idp_entity_id && issuer && issuer !== config.idp_entity_id) throw new Error("SAML issuer does not match the configured IdP");
 
   const audienceValues = xmlTagBlocks(xml, "Audience").map((block) => decodeXmlEntities(block.replace(/<[^>]+>/g, "").trim())).filter(Boolean);
-  if (audienceValues.length && !audienceValues.includes(samlSpEntityId(config))) throw new Error("SAML audience does not match this service provider");
+  if (audienceValues.length && !audienceValues.includes(samlSpEntityId(config, apiBase))) throw new Error("SAML audience does not match this service provider");
 
   const conditionsTag = xmlFirstTag(xml, "Conditions") || "";
   validateSamlTime(xmlAttribute(conditionsTag, "NotBefore"), "notBefore");
@@ -487,7 +502,7 @@ function parseSamlProfile(config: SsoConfig, encodedResponse: string): OAuthProf
 
   const confirmationTag = xmlFirstTag(xml, "SubjectConfirmationData") || "";
   const recipient = xmlAttribute(confirmationTag, "Recipient");
-  if (recipient && recipient !== samlAcsUrl(config)) throw new Error("SAML recipient does not match this service provider");
+  if (recipient && recipient !== samlAcsUrl(config, apiBase)) throw new Error("SAML recipient does not match this service provider");
   validateSamlTime(xmlAttribute(confirmationTag, "NotOnOrAfter"), "notOnOrAfter");
 
   const mapping = config.attribute_mapping || {};
@@ -544,7 +559,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     const enforcedSso = await discoverSsoConfig(fastify, body.email);
     if (enforcedSso?.enforce_sso) {
       await auditAuth(fastify, { action: "auth.login.failed", entityId: body.email, metadata: { reason: "sso_required", ssoConfigId: enforcedSso.id } });
-      return reply.status(403).send({ error: "SSO is required for this email domain", ssoRequired: true, startUrl: `${API_PUBLIC_URL}/api/auth/sso/${enforcedSso.id}/start` });
+      return reply.status(403).send({ error: "SSO is required for this email domain", ssoRequired: true, startUrl: `${publicApiUrl(request)}/api/auth/sso/${enforcedSso.id}/start` });
     }
 
     const result = await fastify.pg.query(
@@ -694,7 +709,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     const query = request.query as { email?: string };
     const config = await discoverSsoConfig(fastify, query.email);
     if (!config) return { sso: false };
-    return { sso: true, provider: config.provider, name: config.name, enforceSso: config.enforce_sso, startUrl: `${API_PUBLIC_URL}/api/auth/sso/${config.id}/start` };
+    return { sso: true, provider: config.provider, name: config.name, enforceSso: config.enforce_sso, startUrl: `${publicApiUrl(request)}/api/auth/sso/${config.id}/start` };
   });
 
   fastify.get("/api/auth/sso/:id/start", async (request, reply) => {
@@ -707,16 +722,17 @@ export async function authRoutes(fastify: FastifyInstance) {
       const state = await fastify.jwt.sign({ typ: "sso-state", configId: params.id, returnTo: safeReturnPath(query.returnTo) }, { expiresIn: "10m" });
       const url = new URL(config.authorization_url);
       url.searchParams.set("client_id", config.client_id);
-      url.searchParams.set("redirect_uri", `${API_PUBLIC_URL}/api/auth/sso/${params.id}/callback`);
+      url.searchParams.set("redirect_uri", `${publicApiUrl(request)}/api/auth/sso/${params.id}/callback`);
       url.searchParams.set("response_type", "code");
       url.searchParams.set("scope", Array.isArray(config.scopes) ? config.scopes.join(" ") : "openid email profile");
       url.searchParams.set("state", state);
       return reply.redirect(url.toString());
     }
     if (!config.idp_sso_url) return reply.status(400).send({ error: "SAML provider is missing IdP SSO URL" });
+    const apiBase = publicApiUrl(request);
     const state = await fastify.jwt.sign({ typ: "saml-state", configId: params.id, returnTo: safeReturnPath(query.returnTo) }, { expiresIn: "10m" });
     const url = new URL(config.idp_sso_url);
-    url.searchParams.set("SAMLRequest", buildSamlAuthnRequest(config));
+    url.searchParams.set("SAMLRequest", buildSamlAuthnRequest(config, apiBase));
     url.searchParams.set("RelayState", state);
     return reply.redirect(url.toString());
   });
@@ -774,7 +790,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     const config = await loadSsoConfig(fastify, params.id);
     if (!config || config.provider !== "saml") return reply.status(404).send({ error: "SAML provider is not configured" });
     try {
-      const profile = parseSamlProfile(config, body.SAMLResponse);
+      const profile = parseSamlProfile(config, body.SAMLResponse, publicApiUrl(request));
       if (config.jit_enabled === false) {
         const existing = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE lower(email) = lower($1)", [profile.email]);
         if (!existing.rows[0]) return reply.status(403).send({ error: "JIT user creation is disabled for this provider" });
