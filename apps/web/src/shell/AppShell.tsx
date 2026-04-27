@@ -49,6 +49,15 @@ interface HistoryState {
   activeCanvasId: string | null;
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+    promise
+      .then(resolve, reject)
+      .finally(() => window.clearTimeout(timer));
+  });
+}
+
 function useShellHistory(
   state: typeof initialShellState,
   rawDispatch: React.Dispatch<ShellAction>,
@@ -154,7 +163,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
       bootstrapPhaseRef.current = "Loading user preferences";
 
       try {
-        const data: any = await graphqlClient.request(ME_QUERY);
+        const data: any = await withTimeout(graphqlClient.request(ME_QUERY), 5000, "User preferences");
         if (!mounted) return;
         const user = data?.me;
         if (user) {

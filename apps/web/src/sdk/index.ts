@@ -53,6 +53,16 @@ function getApiBase() {
   return process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
 }
 
+async function authFetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 5000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await authFetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export async function syncServerRegistry(): Promise<RegistryEntry[]> {
   const token = getToken();
   if (!token) {
@@ -60,11 +70,21 @@ export async function syncServerRegistry(): Promise<RegistryEntry[]> {
     return getRegistry();
   }
 
-  const response = await authFetch(`${getApiBase()}/api/apps/registry`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await authFetchWithTimeout(`${getApiBase()}/api/apps/registry`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+  } catch {
+    const cached = await getRegistry();
+    if (cached.length) return cached;
+    await seedBuiltInApps();
+    return getRegistry();
+  }
   if (!response.ok) {
+    const cached = await getRegistry();
+    if (cached.length) return cached;
     await seedBuiltInApps();
     return getRegistry();
   }
