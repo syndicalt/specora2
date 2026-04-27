@@ -174,7 +174,7 @@ Exit criteria:
 
 Important but not next-sprint critical:
 
-- Review form-heavy surfaces against the north-star philosophy. Tables, Admin, Discovery, and DCIM should keep precise structured editors, but the primary ITSM flows should favor evidence-created records, AI-drafted proposals, review queues, and stewardship tables over blank-form creation.
+- Review form-heavy surfaces against the north-star philosophy. Tables, Admin, Discovery, and DCIM should keep precise structured editors, but the primary ITSM flows should favor evidence-created records, AI-drafted proposals, review queues, and stewardship tables over blank-form creation. The current baseline is captured in [Form Surface Review](form-surface-review.md).
 - Evolve the Tables application into the universal stewardship cockpit: saved views, advanced filters, column sets, inline edit, bulk actions, audit diffs, validation state, export/import, relationship-aware filtering, and AI-assisted explanation or cleanup.
 - Upgrade `reactflow` v11 to current `@xyflow/react` and standardize graph components across Service Map, Discovery, Impact Graph, and DCIM.
 - Replace the DCIM floorplan prototype with a dedicated spatial canvas engine when DCIM becomes an active sprint again; React Flow should remain for topology/relationship diagrams, not CAD-like floorplan editing.
