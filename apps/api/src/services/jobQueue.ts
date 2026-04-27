@@ -16,6 +16,8 @@ export interface Job {
   updatedAt: string;
 }
 
+const JOB_STATUSES = new Set(["pending", "running", "completed", "failed"]);
+
 export async function enqueueJob(
   fastify: FastifyInstance,
   type: string,
@@ -84,6 +86,77 @@ export async function failJob(fastify: FastifyInstance, jobId: string, errorMess
   );
 }
 
+export async function getJobQueueSummary(fastify: FastifyInstance, staleAfterMinutes = 30) {
+  const result = await fastify.pg.query(
+    `SELECT status, COUNT(*)::int AS count
+     FROM jobs
+     GROUP BY status
+     ORDER BY status`
+  );
+  const stale = await fastify.pg.query(
+    `SELECT COUNT(*)::int AS count
+     FROM jobs
+     WHERE status = 'running'
+       AND updated_at < NOW() - ($1::int * INTERVAL '1 minute')`,
+    [staleAfterMinutes]
+  );
+  const dead = await fastify.pg.query(
+    `SELECT COUNT(*)::int AS count
+     FROM jobs
+     WHERE status = 'failed'
+       AND retries >= max_retries`
+  );
+  return {
+    generatedAt: new Date().toISOString(),
+    staleAfterMinutes,
+    byStatus: Object.fromEntries(result.rows.map((row: any) => [row.status, row.count])),
+    staleRunning: stale.rows[0]?.count || 0,
+    deadLetter: dead.rows[0]?.count || 0,
+  };
+}
+
+export async function listDeadLetterJobs(fastify: FastifyInstance, limit = 100): Promise<Job[]> {
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const result = await fastify.pg.query(
+    `SELECT id, type, payload, status, priority, retries, max_retries, error_message, worker_id, started_at, completed_at, created_at, updated_at
+     FROM jobs
+     WHERE status = 'failed' AND retries >= max_retries
+     ORDER BY updated_at DESC
+     LIMIT $1`,
+    [safeLimit]
+  );
+  return result.rows.map(rowToJob);
+}
+
+export async function requeueStaleRunningJobs(fastify: FastifyInstance, staleAfterMinutes = 30, limit = 100) {
+  const safeMinutes = Math.min(Math.max(Number(staleAfterMinutes) || 30, 1), 1440);
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const result = await fastify.pg.query(
+    `WITH stale AS (
+       SELECT id
+       FROM jobs
+       WHERE status = 'running'
+         AND updated_at < NOW() - ($1::int * INTERVAL '1 minute')
+       ORDER BY updated_at ASC
+       LIMIT $2
+     )
+     UPDATE jobs j
+     SET status = CASE WHEN j.retries + 1 >= j.max_retries THEN 'failed' ELSE 'pending' END,
+         retries = j.retries + 1,
+         worker_id = NULL,
+         error_message = 'Requeued after stale running timeout',
+         updated_at = NOW()
+     FROM stale
+     WHERE j.id = stale.id
+     RETURNING j.id, j.type, j.payload, j.status, j.priority, j.retries, j.max_retries, j.error_message, j.worker_id, j.started_at, j.completed_at, j.created_at, j.updated_at`,
+    [safeMinutes, safeLimit]
+  );
+  return {
+    staleAfterMinutes: safeMinutes,
+    jobs: result.rows.map(rowToJob),
+  };
+}
+
 export async function getJobStatus(fastify: FastifyInstance, jobId: string): Promise<Job | null> {
   const result = await fastify.pg.query(
     `SELECT id, type, payload, status, priority, retries, max_retries, error_message, worker_id, started_at, completed_at, created_at, updated_at
@@ -100,7 +173,7 @@ export async function listJobs(
   let query = `SELECT id, type, payload, status, priority, retries, max_retries, error_message, worker_id, started_at, completed_at, created_at, updated_at FROM jobs WHERE 1=1`;
   const params: any[] = [];
   let idx = 1;
-  if (filters.status) {
+  if (filters.status && JOB_STATUSES.has(filters.status)) {
     query += ` AND status = $${idx++}`;
     params.push(filters.status);
   }
@@ -109,7 +182,7 @@ export async function listJobs(
     params.push(filters.type);
   }
   query += ` ORDER BY created_at DESC LIMIT $${idx++}`;
-  params.push(filters.limit || 100);
+  params.push(Math.min(Math.max(Number(filters.limit) || 100, 1), 500));
   const result = await fastify.pg.query(query, params);
   return result.rows.map(rowToJob);
 }

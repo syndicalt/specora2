@@ -1,8 +1,19 @@
 import { FastifyInstance } from "fastify";
 import { runHardcodedRules, HARDCODED_RULES } from "../services/healthRules";
 import { generateRules, executeGeneratedRule } from "../services/aiRuleGenerator";
+import { buildConfigAudit, buildReadiness } from "../services/operability";
 
 export async function healthRoutes(fastify: FastifyInstance) {
+  fastify.get("/api/health/ready", async (_request, reply) => {
+    const readiness = await buildReadiness(fastify);
+    if (readiness.status === "fail") return reply.status(503).send(readiness);
+    return readiness;
+  });
+
+  fastify.get("/api/health/config", { onRequest: [fastify.authenticate] }, async () => {
+    return buildConfigAudit();
+  });
+
   // Run all hardcoded synthetic completeness rules
   fastify.get("/api/health/rules", { onRequest: [fastify.authenticate] }, async (_request, _reply) => {
     const violations = await runHardcodedRules(fastify);

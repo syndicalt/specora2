@@ -82,6 +82,65 @@ describe("jobQueueRoutes", () => {
     expect(body.jobs).toHaveLength(1);
   });
 
+  it("GET /api/jobs/summary returns queue posture", async () => {
+    const calls = [
+      { rows: [{ status: "pending", count: 2 }], rowCount: 1 },
+      { rows: [{ count: 1 }], rowCount: 1 },
+      { rows: [{ count: 0 }], rowCount: 1 },
+    ];
+    const app = await buildApp(vi.fn().mockImplementation(() => Promise.resolve(calls.shift() || { rows: [], rowCount: 0 })));
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/jobs/summary?staleAfterMinutes=15",
+      headers: authHeader(app),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload)).toMatchObject({ staleAfterMinutes: 15, staleRunning: 1 });
+  });
+
+  it("GET /api/jobs/dead-letter returns permanently failed jobs", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("status = 'failed'")) {
+        return Promise.resolve({
+          rows: [{
+            id: "job-1", type: "scan", payload: {}, status: "failed",
+            priority: 0, retries: 3, max_retries: 3, error_message: "boom", worker_id: null,
+            started_at: null, completed_at: null, created_at: "2024-01-01", updated_at: "2024-01-01",
+          }],
+          rowCount: 1,
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+    const res = await app.inject({ method: "GET", url: "/api/jobs/dead-letter", headers: authHeader(app) });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload).jobs[0].status).toBe("failed");
+  });
+
+  it("POST /api/jobs/requeue-stale requeues stale running jobs", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("WITH stale AS")) {
+        return Promise.resolve({
+          rows: [{
+            id: "job-1", type: "scan", payload: {}, status: "pending",
+            priority: 0, retries: 1, max_retries: 3, error_message: "Requeued after stale running timeout", worker_id: null,
+            started_at: null, completed_at: null, created_at: "2024-01-01", updated_at: "2024-01-01",
+          }],
+          rowCount: 1,
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/jobs/requeue-stale",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { staleAfterMinutes: 15, limit: 10 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload).jobs).toHaveLength(1);
+  });
+
   it("GET /api/jobs/:id returns a job", async () => {
     const app = await buildApp((sql: string) => {
       if (sql.includes("FROM jobs WHERE id = $1")) {

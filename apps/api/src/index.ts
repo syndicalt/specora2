@@ -34,6 +34,7 @@ import { initializeEventBus } from "./services/eventBus";
 import { seedCIClasses } from "./services/ciClassSeed";
 import { registerAllAppTools } from "./services/appTools";
 import { startDiscoveryScheduler } from "./services/discoveryScheduler";
+import { buildReadiness } from "./services/operability";
 
 const fastify = Fastify({ logger: { transport: { target: "pino-pretty" } } });
 
@@ -105,6 +106,11 @@ async function main() {
   startDiscoveryScheduler(fastify);
 
   fastify.get("/health", async () => ({ status: "ok" }));
+  fastify.get("/ready", async (_request, reply) => {
+    const readiness = await buildReadiness(fastify);
+    if (readiness.status === "fail") return reply.status(503).send(readiness);
+    return readiness;
+  });
 
   const yoga = createYoga({
     schema,

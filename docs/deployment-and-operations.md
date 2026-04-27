@@ -133,6 +133,23 @@ curl -I http://localhost:4000/health
 
 Expected response is HTTP 200. The route returns `{ "status": "ok" }`.
 
+API readiness:
+
+```bash
+curl http://localhost:4000/ready
+curl http://localhost:4000/api/health/ready
+```
+
+Expected response is HTTP 200 when required runtime dependencies are available. The readiness payload reports PostgreSQL, Neo4j, Redis, worker configuration, and LLM configuration. PostgreSQL or Neo4j failure returns HTTP 503. Redis, worker, or LLM gaps are reported as degraded/warn conditions because the API can still serve non-dependent requests.
+
+Configuration audit:
+
+```bash
+curl http://localhost:4000/api/health/config
+```
+
+This authenticated route reports required and recommended environment variables without returning secret values. It fails missing required production configuration and weak/default `JWT_SECRET` values.
+
 Web health:
 
 ```bash
@@ -154,6 +171,34 @@ docker compose exec neo4j cypher-shell -u neo4j -p specora123 "RETURN 1"
 Worker:
 
 The worker currently exposes gRPC, not an HTTP health endpoint. For production, add a gRPC health service or sidecar health check. Until then, operational checks should verify the process is running and that API-to-worker calls succeed.
+
+## Job Queue Operations
+
+The API exposes authenticated queue inspection endpoints:
+
+```bash
+curl http://localhost:4000/api/jobs/summary
+curl http://localhost:4000/api/jobs/dead-letter
+curl http://localhost:4000/api/jobs?status=failed
+```
+
+`/api/jobs/summary` returns counts by status, stale running jobs, and dead-letter jobs. A stale job is a `running` job whose `updated_at` is older than the configured threshold, defaulting to 30 minutes.
+
+Requeue stale running jobs:
+
+```bash
+curl -X POST http://localhost:4000/api/jobs/requeue-stale \
+  -H "Content-Type: application/json" \
+  -d '{"staleAfterMinutes":30,"limit":100}'
+```
+
+This increments retry count and moves stale running jobs back to `pending` unless the retry would exceed `max_retries`, in which case the job becomes `failed`. Dead-letter jobs are failed jobs with `retries >= max_retries`.
+
+Operational expectations:
+
+- Investigate dead-letter jobs before replaying them.
+- Keep job payloads bounded and structured; large binary inputs should live in object storage or upload directories, not directly in the queue.
+- Long-running connector execution should heartbeat or update job state before production scale claims.
 
 ## Startup Order
 
@@ -249,6 +294,7 @@ Worker:
 
 - Current worker behavior is gRPC based and not yet a full distributed worker pool.
 - Long-running Discovery connectors and remediation jobs should move toward queue-backed execution before production scale claims.
+- Stale running jobs can now be detected and requeued through the job queue API, but workers still need explicit heartbeat ownership for richer pool semantics.
 
 PostgreSQL:
 
@@ -280,7 +326,7 @@ Audit is intentionally stored separately from app-specific event tables. Event t
 
 Known gaps before production claims:
 
-- PostgreSQL has a migration runner, but restore drills and release automation still need rehearsal in a production-like environment.
+- PostgreSQL has a migration runner, runtime readiness, and queue indexes, but restore drills and release automation still need rehearsal in a production-like environment.
 - Worker does not expose a standard health endpoint.
 - Redis is documented and supported by API code but not included in local compose.
 - Package provisioning jobs complete immediately; entitlement checks, rollback, and install progress are roadmap work.

@@ -14,7 +14,7 @@ What is working well:
 - Customer Portal now provides the core self-service front door with catalog requests, AI intent resolution, and contextual support handoff primitives.
 - Provara is back as the primary LLM router with tool-call support.
 - CSDMv5-aligned seed data provides a connected 5,000-CI CMDB narrative.
-- API route coverage is improving and currently passes at 367 tests.
+- API route coverage is improving and currently passes at 377 tests.
 - Optional premium app primitives exist, with IT Visibility DCIM as the first package-style example.
 - DCIM now has persisted floorplans, racks, facility objects, and React Flow connection edges.
 
@@ -28,6 +28,7 @@ Known gaps:
 - Package installation now has an authoritative server-side installation state and completed provisioning job audit trail; production entitlement/payment/rollback depth is still backlog work.
 - The Next build cache/worker issue recurs and should be investigated separately from product work.
 - Reporting is now API-first with governed datasets, RBAC-aware query/export endpoints, saved definitions, signed CSV exports, and audit events. KPI depth and BI integration examples remain roadmap work.
+- Operability now includes runtime readiness, configuration audit, job queue summary/dead-letter/requeue endpoints, and supporting queue indexes. Worker heartbeat semantics, HA/DR drills, and release automation remain roadmap work.
 
 ## Sprint 1: Stabilize the Demo Spine
 
@@ -266,6 +267,17 @@ Priority work:
 - Add release checklist automation: migrate status, seed validation, demo readiness, E2E smoke, and artifact cleanup.
 - Document HA/DR topology options and minimum production deployment patterns.
 - Add audit-head external anchoring design for high-compliance deployments.
+
+Implemented:
+
+- Added `/ready` and `/api/health/ready` readiness endpoints for PostgreSQL, Neo4j, Redis, worker configuration, and LLM configuration.
+- Added authenticated `/api/health/config` for production configuration posture without exposing secret values.
+- Added queue posture endpoints: `/api/jobs/summary`, `/api/jobs/dead-letter`, and `/api/jobs/requeue-stale`.
+- Added bounded job listing limits and safer status filtering.
+- Added stale running job requeue behavior with retry/dead-letter transition semantics.
+- Added PostgreSQL indexes for job status, stale running jobs, and dead-letter review.
+- Updated deployment operations docs with readiness, config audit, and job queue runbooks.
+- Added focused API/service tests for readiness, config audit, queue summary, dead-letter, and stale requeue behavior.
 
 Exit criteria:
 

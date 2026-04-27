@@ -17,6 +17,9 @@ describe("healthRoutes", () => {
   async function buildApp() {
     const app = Fastify();
     app.decorate("authenticate", async () => {});
+    app.decorate("pg", {
+      query: vi.fn().mockResolvedValue({ rows: [{ ok: 1 }] }),
+    });
     app.decorate("neo4j", {
       session: vi.fn().mockReturnValue({
         run: vi.fn().mockResolvedValue({ records: [] }),
@@ -38,6 +41,27 @@ describe("healthRoutes", () => {
     expect(body.length).toBeGreaterThan(0);
     expect(body[0]).toHaveProperty("id");
     expect(body[0]).toHaveProperty("name");
+  });
+
+  it("reports runtime readiness", async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/health/ready" });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "postgres", status: "ok" }),
+      expect.objectContaining({ name: "neo4j", status: "ok" }),
+    ]));
+  });
+
+  it("reports production configuration posture", async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/health/config" });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "JWT_SECRET_STRENGTH" }),
+    ]));
   });
 
   it("runs hardcoded rules", async () => {

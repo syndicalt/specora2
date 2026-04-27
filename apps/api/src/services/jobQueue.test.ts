@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { enqueueJob, claimJob, completeJob, failJob, getJobStatus, listJobs } from "./jobQueue";
+import { enqueueJob, claimJob, completeJob, failJob, getJobStatus, getJobQueueSummary, listDeadLetterJobs, listJobs, requeueStaleRunningJobs } from "./jobQueue";
 
 function mockFastify(pgRows: any[] = []) {
   return {
@@ -86,5 +86,42 @@ describe("jobQueue", () => {
     }]);
     const jobs = await listJobs(fastify, { status: "pending", type: "discovery" });
     expect(jobs).toHaveLength(1);
+  });
+
+  it("summarizes queue health", async () => {
+    const calls: any[] = [
+      { rows: [{ status: "pending", count: 2 }, { status: "running", count: 1 }], rowCount: 2 },
+      { rows: [{ count: 1 }], rowCount: 1 },
+      { rows: [{ count: 3 }], rowCount: 1 },
+    ];
+    const fastify = { pg: { query: vi.fn().mockImplementation(() => Promise.resolve(calls.shift())) } } as any;
+    const summary = await getJobQueueSummary(fastify, 10);
+    expect(summary.byStatus).toMatchObject({ pending: 2, running: 1 });
+    expect(summary.staleRunning).toBe(1);
+    expect(summary.deadLetter).toBe(3);
+  });
+
+  it("lists dead-letter jobs with bounded limits", async () => {
+    const fastify = mockFastify([{
+      id: "job-1", type: "discovery", payload: {}, status: "failed",
+      priority: 0, retries: 3, max_retries: 3, error_message: "boom",
+      worker_id: null, started_at: null, completed_at: null,
+      created_at: "2024-01-01", updated_at: "2024-01-01",
+    }]);
+    const jobs = await listDeadLetterJobs(fastify, 9999);
+    expect(jobs[0].status).toBe("failed");
+    expect(fastify.pg.query).toHaveBeenCalledWith(expect.stringContaining("status = 'failed'"), [500]);
+  });
+
+  it("requeues stale running jobs", async () => {
+    const fastify = mockFastify([{
+      id: "job-1", type: "discovery", payload: {}, status: "pending",
+      priority: 0, retries: 1, max_retries: 3, error_message: "Requeued after stale running timeout",
+      worker_id: null, started_at: null, completed_at: null,
+      created_at: "2024-01-01", updated_at: "2024-01-01",
+    }]);
+    const result = await requeueStaleRunningJobs(fastify, 15, 10);
+    expect(result.jobs).toHaveLength(1);
+    expect(fastify.pg.query).toHaveBeenCalledWith(expect.stringContaining("WITH stale AS"), [15, 10]);
   });
 });

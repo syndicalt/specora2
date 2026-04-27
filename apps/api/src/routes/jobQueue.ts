@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { enqueueJob, listJobs, getJobStatus } from "../services/jobQueue";
+import { enqueueJob, listJobs, getJobStatus, getJobQueueSummary, listDeadLetterJobs, requeueStaleRunningJobs } from "../services/jobQueue";
 
 export async function jobQueueRoutes(fastify: FastifyInstance) {
   fastify.post("/api/jobs", { onRequest: [fastify.authenticate] }, async (request, reply) => {
@@ -9,6 +9,22 @@ export async function jobQueueRoutes(fastify: FastifyInstance) {
     }
     const job = await enqueueJob(fastify, type, payload, priority || 0);
     return job;
+  });
+
+  fastify.get("/api/jobs/summary", { onRequest: [fastify.authenticate] }, async (request) => {
+    const { staleAfterMinutes } = request.query as any;
+    return getJobQueueSummary(fastify, staleAfterMinutes ? Number(staleAfterMinutes) : undefined);
+  });
+
+  fastify.get("/api/jobs/dead-letter", { onRequest: [fastify.authenticate] }, async (request) => {
+    const { limit } = request.query as any;
+    const jobs = await listDeadLetterJobs(fastify, limit ? Number(limit) : undefined);
+    return { jobs };
+  });
+
+  fastify.post("/api/jobs/requeue-stale", { onRequest: [fastify.authenticate] }, async (request) => {
+    const { staleAfterMinutes, limit } = request.body as any || {};
+    return requeueStaleRunningJobs(fastify, staleAfterMinutes, limit);
   });
 
   fastify.get("/api/jobs", { onRequest: [fastify.authenticate] }, async (request, _reply) => {
