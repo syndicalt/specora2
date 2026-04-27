@@ -123,12 +123,14 @@ const POSTGRES_TABLES: PostgresTableRegistration[] = [
   { tableName: "catalog_request_events", label: "Catalog Request Events", category: "platform", nameField: "message", searchableFields: ["type", "message"] },
   { tableName: "support_channels", label: "Support Channels", category: "platform", nameField: "name", searchableFields: ["name", "channel_type", "description", "target"] },
   { tableName: "support_handoffs", label: "Support Handoffs", category: "platform", nameField: "reason", searchableFields: ["status", "reason"] },
+  { tableName: "table_cleanup_reviews", label: "Table Cleanup Reviews", category: "platform", nameField: "record_label", searchableFields: ["table_id", "record_id", "record_label", "reason", "severity", "status"] },
 ];
 
 const AUDIT_COLUMNS = new Set(["created_at", "updated_at"]);
 const TABLE_RELATIONSHIP_TYPES = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"] as const;
 const TABLE_RELATIONSHIP_PATTERN = TABLE_RELATIONSHIP_TYPES.join("|");
 const RELATIONSHIP_FILTER_FIELDS = new Set(["__relationshipState", "__relationshipType", "__relatedCiId"]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type TableValidationIssue = {
   field: string;
@@ -410,6 +412,10 @@ function normalizeSortDirection(value: unknown): "asc" | "desc" {
   return value === "desc" ? "desc" : "asc";
 }
 
+function normalizeSeverity(value: unknown): "low" | "medium" | "high" | "critical" {
+  return value === "low" || value === "high" || value === "critical" ? value : "medium";
+}
+
 function sanitizeSortField(table: TableDefinition, field: unknown, access?: Map<string, FieldAccess>): string {
   const fallback = table.provider === "postgres-table" ? "name" : "name";
   if (typeof field !== "string") return fallback;
@@ -444,6 +450,10 @@ function timestampString(value: any) {
 
 function actorKey(user: any) {
   return user?.id || user?.email || user?.role || "anonymous";
+}
+
+function actorUuid(user: any) {
+  return typeof user?.id === "string" && UUID_PATTERN.test(user.id) ? user.id : null;
 }
 
 function coerceFilterValue(value: unknown, attrType?: string): unknown {
@@ -836,6 +846,27 @@ async function getPostgresRecordsById(fastify: FastifyInstance, table: TableDefi
     [ids]
   );
   return result.rows.map((row: any) => redactRecord(postgresRecord(table, row), access));
+}
+
+async function getRecordsByIdForCleanup(fastify: FastifyInstance, table: TableDefinition, ids: string[], access: Map<string, FieldAccess>) {
+  if (!ids.length) return [];
+  if (table.provider === "postgres-table") {
+    return getPostgresRecordsById(fastify, table, ids, access);
+  }
+  const session = fastify.neo4j.session();
+  try {
+    const result = await session.run(
+      `MATCH (n:ConfigurationItem)
+       WHERE n.class = $className AND n.id IN $ids
+       RETURN n
+       ORDER BY n.name
+       LIMIT 250`,
+      { className: table.className, ids }
+    );
+    return result.records.map((record) => redactRecord(parseNode(record.get("n")), access));
+  } finally {
+    await session.close();
+  }
 }
 
 function postgresWriteFields(table: TableDefinition, body: { name?: string; attributes?: Record<string, unknown> }) {
@@ -1267,6 +1298,74 @@ export async function tableRoutes(fastify: FastifyInstance) {
       .type("text/csv; charset=utf-8")
       .header("Content-Disposition", `attachment; filename="${table.id.replace(/[^a-zA-Z0-9_.-]/g, "_")}-records.csv"`)
       .send(recordsToCsv(records, columns));
+  });
+
+  fastify.post("/api/tables/:table/cleanup-reviews", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot write tables" });
+    }
+    const { table: tableId } = request.params as { table: string };
+    const body = request.body as { recordIds?: unknown; reason?: string; severity?: string };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    const recordIds = Array.isArray(body.recordIds)
+      ? Array.from(new Set(body.recordIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0).map((id) => id.trim()))).slice(0, 250)
+      : [];
+    const reason = body.reason?.trim().slice(0, 1000);
+    if (!recordIds.length) return reply.status(400).send({ error: "recordIds required" });
+    if (!reason) return reply.status(400).send({ error: "reason required" });
+
+    const records = await getRecordsByIdForCleanup(fastify, tableForUser, recordIds, access);
+    if (!records.length) return reply.status(404).send({ error: "No matching records found" });
+    const severity = normalizeSeverity(body.severity);
+    const rows = await Promise.all(records.map(async (record) => {
+      const result = await fastify.pg.query(
+        `INSERT INTO table_cleanup_reviews (table_id, record_id, record_label, reason, severity, status, requested_by)
+         VALUES ($1, $2, $3, $4, $5, 'open', $6)
+         ON CONFLICT (table_id, record_id)
+         DO UPDATE SET record_label = EXCLUDED.record_label,
+                       reason = EXCLUDED.reason,
+                       severity = EXCLUDED.severity,
+                       status = 'open',
+                       requested_by = EXCLUDED.requested_by,
+                       updated_at = NOW()
+         RETURNING id, table_id, record_id, record_label, reason, severity, status, requested_by, created_at, updated_at`,
+        [table.id, record.id, record.name || record.number || record.id, reason, severity, actorUuid(request.user)]
+      );
+      return result.rows[0];
+    }));
+
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "table.cleanup_review.queued",
+      entityType: "TableCleanupReview",
+      entityId: table.id,
+      newValues: { tableId: table.id, recordIds: rows.map((row) => row.record_id), reason, severity },
+      metadata: {
+        source: "api.tables",
+        provider: table.provider,
+        requestedRecordCount: recordIds.length,
+        queuedRecordCount: rows.length,
+      },
+    });
+
+    return {
+      table: tableForUser,
+      reviews: rows.map((row) => ({
+        id: row.id,
+        tableId: row.table_id,
+        recordId: row.record_id,
+        recordLabel: row.record_label,
+        reason: row.reason,
+        severity: row.severity,
+        status: row.status,
+        requestedBy: row.requested_by,
+        createdAt: timestampString(row.created_at),
+        updatedAt: timestampString(row.updated_at),
+      })),
+    };
   });
 
   fastify.post("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {

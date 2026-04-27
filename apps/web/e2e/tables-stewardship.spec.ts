@@ -56,6 +56,12 @@ test.describe("Tables stewardship cockpit", () => {
       const row = page.getByTestId(`tables-record-${recordId}`);
       await expect(row).toBeVisible();
       await expect(row.getByText(name)).toBeVisible();
+      await row.getByRole("checkbox", { name: `Select record ${recordId}` }).check();
+      await page.getByRole("button", { name: "Queue cleanup" }).click();
+      await page.getByPlaceholder("Reason for cleanup review").fill("E2E stewardship cleanup review");
+      await page.getByRole("button", { name: "Queue review" }).click();
+      await expect(page.getByText("Queued 1 cleanup review")).toBeVisible();
+
       await row.getByRole("button", { name: /issues?/ }).click();
       await expect(page.getByText("Validation issues")).toBeVisible();
       await expect(page.getByText("City is missing")).toBeVisible();
@@ -72,6 +78,15 @@ test.describe("Tables stewardship cockpit", () => {
       await editor.getByRole("button", { name: "Save" }).click();
       await expect(editor).toHaveCount(0);
     } finally {
+      if (recordId) {
+        const reviews = await request.get(`http://localhost:4000/api/tables/pg.table_cleanup_reviews/records?q=${encodeURIComponent(recordId)}`, { headers });
+        if (reviews.ok()) {
+          const data = await reviews.json();
+          for (const item of data.records || []) {
+            await request.delete(`http://localhost:4000/api/tables/pg.table_cleanup_reviews/records/${item.id}`, { headers });
+          }
+        }
+      }
       if (recordId) {
         await request.delete(`http://localhost:4000/api/tables/cmdb.Location/records/${recordId}`, { headers });
       }

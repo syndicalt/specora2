@@ -189,7 +189,7 @@ Goal: make Tables the universal operational stewardship surface, not a raw datab
 Priority work:
 
 - Add sharing scope for saved table views once team-level stewardship workflows are needed.
-- Add richer bulk actions for assign owner, tag, and queue cleanup review.
+- Add richer bulk actions for assign owner and tag workflows.
 - Add import primitives with clear limits and audit events.
 - Add AI-assisted cleanup suggestions that explain evidence, confidence, and required approval.
 
@@ -203,6 +203,7 @@ Implemented:
 - Added relationship-aware CMDB filters for connected/orphaned records, relationship type, and related CI ID.
 - Added readable filter chips for current filters and saved view summaries, with one-click removal from the active filter strip.
 - Added low-risk bulk update from selected rows, still routed through existing field-aware, audited record update endpoints.
+- Added an audited bulk cleanup review queue for selected records, registered as a platform table for follow-up stewardship work.
 - Preserved existing saved filters, column sets, density, inline edit, export, delete, and audit diff behavior.
 
 Exit criteria:

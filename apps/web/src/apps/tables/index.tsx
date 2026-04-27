@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import type { ShellAPI } from "@/sdk/types";
 import {
+  AlertTriangle,
   Check,
   Columns3,
   Database,
@@ -302,6 +303,9 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [bulkEditorOpen, setBulkEditorOpen] = useState(false);
   const [bulkField, setBulkField] = useState("environment");
   const [bulkValue, setBulkValue] = useState("");
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupReason, setCleanupReason] = useState("Missing required stewardship data");
+  const [cleanupSeverity, setCleanupSeverity] = useState<"low" | "medium" | "high" | "critical">("medium");
   const [issuePopover, setIssuePopover] = useState<string | null>(null);
   const [serverValidationIssues, setServerValidationIssues] = useState<ValidationIssue[] | null>(null);
   const handledLaunchRef = useRef<string | null>(null);
@@ -377,6 +381,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setInlineEdit(null);
     setSelectedRows({});
     setBulkEditorOpen(false);
+    setCleanupOpen(false);
     setServerValidationIssues(null);
   }
 
@@ -831,6 +836,34 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function queueCleanupReview() {
+    if (!selected || !selectedRecordIds.length) return;
+    if (!cleanupReason.trim()) {
+      shell.notify("Cleanup reason is required", "error");
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/cleanup-reviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recordIds: selectedRecordIds, reason: cleanupReason.trim(), severity: cleanupSeverity }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to queue cleanup review");
+      }
+      const data = await res.json();
+      shell.notify(`Queued ${data.reviews?.length || selectedRecordIds.length} cleanup review${(data.reviews?.length || selectedRecordIds.length) === 1 ? "" : "s"}`, "success");
+      setCleanupOpen(false);
+      setSelectedRows({});
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to queue cleanup review", "error");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function deleteRecord(record: TableRecord) {
     if (!selected) return;
     if (!confirm(`Delete ${record.name}? This will detach relationships and cannot be undone.`)) return;
@@ -1131,6 +1164,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                 <Edit3 className="h-4 w-4" />
                 Bulk update
               </button>
+              <button onClick={() => setCleanupOpen((open) => !open)} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 px-3 py-1.5 text-amber-100 hover:bg-amber-500/10 disabled:opacity-50">
+                <AlertTriangle className="h-4 w-4" />
+                Queue cleanup
+              </button>
               <button onClick={deleteSelectedRows} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 px-3 py-1.5 text-red-200 hover:bg-red-500/10 disabled:opacity-50">
                 <Trash2 className="h-4 w-4" />
                 Delete selected
@@ -1148,6 +1185,25 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                 <BulkValueInput attr={tableAttr(bulkField)} value={bulkValue} onChange={setBulkValue} />
                 <button onClick={applyBulkUpdate} disabled={bulkBusy || !bulkField} className="rounded-lg bg-cyan-500 px-3 py-2 font-medium text-gray-950 hover:bg-cyan-400 disabled:opacity-50">
                   Apply to selected
+                </button>
+              </div>
+            )}
+            {cleanupOpen && (
+              <div className="mt-2 grid grid-cols-[160px_1fr_auto] gap-2">
+                <select value={cleanupSeverity} onChange={(event) => setCleanupSeverity(event.target.value as typeof cleanupSeverity)} className={SELECT_CLASS}>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select>
+                <input
+                  value={cleanupReason}
+                  onChange={(event) => setCleanupReason(event.target.value)}
+                  placeholder="Reason for cleanup review"
+                  className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-amber-500"
+                />
+                <button onClick={queueCleanupReview} disabled={bulkBusy || !cleanupReason.trim()} className="rounded-lg bg-amber-500 px-3 py-2 font-medium text-gray-950 hover:bg-amber-400 disabled:opacity-50">
+                  Queue review
                 </button>
               </div>
             )}

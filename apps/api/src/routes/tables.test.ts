@@ -302,6 +302,50 @@ describe("tableRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.exported", "cmdb.Location", "cmdb.Location"]));
   });
 
+  it("queues selected records for cleanup review", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", attributes: "{\"city\":\"Austin\"}" }) })],
+    ]);
+    const pgHandler = (sql: string, params?: any[]) => {
+      if (sql.includes("INSERT INTO table_cleanup_reviews")) {
+        return {
+          rows: [{
+            id: "review-1",
+            table_id: params?.[0],
+            record_id: params?.[1],
+            record_label: params?.[2],
+            reason: params?.[3],
+            severity: params?.[4],
+            status: "open",
+            requested_by: params?.[5],
+            created_at: "2026-04-27T00:00:00.000Z",
+            updated_at: "2026-04-27T00:00:00.000Z",
+          }],
+        };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "550e8400-e29b-41d4-a716-446655440001", role: "admin" }, neo4j, pgHandler);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/cleanup-reviews",
+      payload: { recordIds: ["loc-1"], reason: "Missing stewardship evidence", severity: "high" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).reviews[0]).toMatchObject({
+      tableId: "cmdb.Location",
+      recordId: "loc-1",
+      recordLabel: "HQ",
+      reason: "Missing stewardship evidence",
+      severity: "high",
+      status: "open",
+      createdAt: "2026-04-27T00:00:00.000Z",
+    });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.cleanup_review.queued", "TableCleanupReview", "cmdb.Location"]));
+  });
+
   it("creates, updates, reads, and deletes a table record", async () => {
     const neo4j = makeNeo4j([
       [makeRecord({ n: makeNode({ id: "loc-2", name: "Remote", class: "Location", attributes: "{\"city\":\"Denver\"}" }) })],
