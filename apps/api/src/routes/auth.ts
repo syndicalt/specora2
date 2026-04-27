@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest } from "fastify";
 import bcrypt from "bcryptjs";
-import { createHash, randomBytes, randomUUID } from "crypto";
+import { createHash, createPublicKey, createVerify, randomBytes, randomUUID } from "crypto";
 import { deflateRawSync } from "zlib";
 import { issueAuthTokens, listUserSessions, revokeRefreshToken, revokeUserSession, rotateRefreshToken } from "../services/authSessions";
 import { recordAuditEvent } from "../services/auditLog";
@@ -25,6 +25,7 @@ type SsoConfig = {
   client_id?: string;
   client_secret_ref?: string;
   issuer_url?: string;
+  oidc_jwks_url?: string;
   scopes?: string[];
   idp_entity_id?: string;
   idp_sso_url?: string;
@@ -139,19 +140,51 @@ function normalizeGroupClaims(value: unknown) {
   return [];
 }
 
-function decodeJwtPayload(token: string): Record<string, any> {
+function decodeJwtPart(token: string, index: number, label: string): Record<string, any> {
   const parts = token.split(".");
-  if (parts.length < 2) throw new Error("OIDC ID token is malformed");
+  if (parts.length !== 3) throw new Error("OIDC ID token is malformed");
   try {
-    return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return JSON.parse(Buffer.from(parts[index], "base64url").toString("utf8"));
   } catch {
-    throw new Error("OIDC ID token payload is invalid");
+    throw new Error(`OIDC ID token ${label} is invalid`);
   }
 }
 
-function validateOidcIdTokenClaims(config: SsoConfig, idToken?: string) {
+function decodeJwtPayload(token: string): Record<string, any> {
+  return decodeJwtPart(token, 1, "payload");
+}
+
+async function fetchOidcJwks(config: SsoConfig) {
+  let jwksUrl = config.oidc_jwks_url;
+  if (!jwksUrl && config.issuer_url) {
+    const discoveryUrl = `${config.issuer_url.replace(/\/$/, "")}/.well-known/openid-configuration`;
+    const discovery = await fetch(discoveryUrl, { headers: { Accept: "application/json" } });
+    if (!discovery.ok) throw new Error("OIDC discovery document could not be fetched");
+    const document = await discovery.json() as { jwks_uri?: string };
+    jwksUrl = document.jwks_uri;
+  }
+  if (!jwksUrl) throw new Error("OIDC JWKS URL is required for ID token signature validation");
+  const response = await fetch(jwksUrl, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error("OIDC JWKS could not be fetched");
+  const jwks = await response.json() as { keys?: Array<Record<string, unknown>> };
+  if (!Array.isArray(jwks.keys)) throw new Error("OIDC JWKS response is invalid");
+  return jwks.keys;
+}
+
+async function validateOidcIdTokenClaims(config: SsoConfig, idToken?: string) {
   if (!idToken) throw new Error("OIDC token response did not include an ID token");
+  const [encodedHeader, encodedPayload, encodedSignature] = idToken.split(".");
+  const header = decodeJwtPart(idToken, 0, "header");
   const payload = decodeJwtPayload(idToken);
+  if (header.alg !== "RS256") throw new Error("OIDC ID token must use RS256");
+  const keys = await fetchOidcJwks(config);
+  const key = keys.find((item) => item.kid === header.kid && (!item.use || item.use === "sig"));
+  if (!key) throw new Error("OIDC signing key was not found in JWKS");
+  const publicKey = createPublicKey({ key, format: "jwk" } as any);
+  const verifier = createVerify("RSA-SHA256");
+  verifier.update(`${encodedHeader}.${encodedPayload}`);
+  verifier.end();
+  if (!verifier.verify(publicKey, encodedSignature, "base64url")) throw new Error("OIDC ID token signature is invalid");
   if (config.issuer_url && payload.iss !== config.issuer_url) throw new Error("OIDC ID token issuer does not match provider configuration");
   const audience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
   if (config.client_id && !audience.includes(config.client_id)) throw new Error("OIDC ID token audience does not include this client");
@@ -294,7 +327,7 @@ async function discoverSsoConfig(fastify: FastifyInstance, email?: string) {
 async function loadSsoConfig(fastify: FastifyInstance, id: string): Promise<SsoConfig | null> {
   const result = await fastify.pg.query(
     `SELECT id, name, provider, enforce_sso, authorization_url, token_url, userinfo_url, client_id,
-            client_secret_ref, issuer_url, scopes, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+            client_secret_ref, issuer_url, oidc_jwks_url, scopes, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
             jit_enabled, default_role, attribute_mapping
      FROM sso_configs
      WHERE id = $1 AND status = 'active'`,
@@ -436,7 +469,7 @@ async function exchangeOidcCode(config: SsoConfig, code: string): Promise<OAuthP
   if (!tokenResponse.ok) throw new Error("OIDC token exchange failed");
   const tokens = await tokenResponse.json() as { access_token?: string; id_token?: string };
   if (!tokens.access_token) throw new Error("OIDC token response did not include an access token");
-  const idTokenClaims = validateOidcIdTokenClaims(config, tokens.id_token);
+  const idTokenClaims = await validateOidcIdTokenClaims(config, tokens.id_token);
   const userResponse = await fetch(config.userinfo_url, {
     headers: { Authorization: `Bearer ${tokens.access_token}`, Accept: "application/json" },
   });

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import Fastify from "fastify";
 import bcrypt from "bcryptjs";
+import { createSign, generateKeyPairSync } from "crypto";
 import { inflateRawSync } from "zlib";
 import { authRoutes } from "../routes/auth";
 import { hashRefreshToken } from "../services/authSessions";
@@ -187,10 +188,13 @@ async function buildApp(pg: FakePg, user: any = { id: "550e8400-e29b-41d4-a716-4
   return app;
 }
 
-function unsignedIdToken(payload: Record<string, unknown>) {
-  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+function signedIdToken(payload: Record<string, unknown>, privateKey: string, kid = "test-key") {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid })).toString("base64url");
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  return `${header}.${body}.`;
+  const signer = createSign("RSA-SHA256");
+  signer.update(`${header}.${body}`);
+  signer.end();
+  return `${header}.${body}.${signer.sign(privateKey, "base64url")}`;
 }
 
 describe("auth routes", () => {
@@ -414,13 +418,16 @@ describe("auth routes", () => {
 
   it("syncs OIDC group claims into identity groups", async () => {
     process.env.TEST_OIDC_SECRET = "secret";
-    const idToken = unsignedIdToken({
+    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const publicJwk = publicKey.export({ format: "jwk" }) as Record<string, unknown>;
+    const idToken = signedIdToken({
       iss: "https://idp.example",
       aud: "client-1",
       sub: "idp-user-1",
       exp: Math.floor(Date.now() / 1000) + 300,
-    });
+    }, privateKey.export({ format: "pem", type: "pkcs8" }).toString());
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", id_token: idToken }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ keys: [{ ...publicJwk, kid: "test-key", use: "sig", alg: "RS256" }] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         sub: "idp-user-1",
         email: "alice@example.com",
@@ -441,6 +448,7 @@ describe("auth routes", () => {
       client_id: "client-1",
       client_secret_ref: "env:TEST_OIDC_SECRET",
       issuer_url: "https://idp.example",
+      oidc_jwks_url: "https://idp.example/keys",
       default_role: "operator",
       attribute_mapping: { email: "email", name: "name", groups: "groups" },
     });
@@ -458,13 +466,16 @@ describe("auth routes", () => {
 
   it("rejects OIDC callbacks with invalid ID token audience", async () => {
     process.env.TEST_OIDC_SECRET = "secret";
-    const idToken = unsignedIdToken({
+    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const publicJwk = publicKey.export({ format: "jwk" }) as Record<string, unknown>;
+    const idToken = signedIdToken({
       iss: "https://idp.example",
       aud: "other-client",
       sub: "idp-user-1",
       exp: Math.floor(Date.now() / 1000) + 300,
-    });
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", id_token: idToken }), { status: 200 }));
+    }, privateKey.export({ format: "pem", type: "pkcs8" }).toString());
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", id_token: idToken }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ keys: [{ ...publicJwk, kid: "test-key", use: "sig", alg: "RS256" }] }), { status: 200 }));
     const pg = new FakePg();
     pg.ssoConfigs.push({
       id: "sso-1",
@@ -477,6 +488,7 @@ describe("auth routes", () => {
       client_id: "client-1",
       client_secret_ref: "env:TEST_OIDC_SECRET",
       issuer_url: "https://idp.example",
+      oidc_jwks_url: "https://idp.example/keys",
       attribute_mapping: { email: "email", name: "name", groups: "groups" },
     });
     const app = await buildApp(pg);

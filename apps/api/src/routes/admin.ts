@@ -320,6 +320,7 @@ function normalizeSsoConfigBody(body: any, partial = false) {
     clientId: body.clientId === undefined ? undefined : String(body.clientId).trim(),
     clientSecretRef: body.clientSecretRef === undefined ? undefined : String(body.clientSecretRef).trim(),
     issuerUrl: body.issuerUrl === undefined ? undefined : String(body.issuerUrl).trim(),
+    oidcJwksUrl: body.oidcJwksUrl === undefined ? undefined : String(body.oidcJwksUrl).trim(),
     authorizationUrl: body.authorizationUrl === undefined ? undefined : String(body.authorizationUrl).trim(),
     tokenUrl: body.tokenUrl === undefined ? undefined : String(body.tokenUrl).trim(),
     userinfoUrl: body.userinfoUrl === undefined ? undefined : String(body.userinfoUrl).trim(),
@@ -346,6 +347,7 @@ function validateSsoConfigReadiness(config: any) {
     }
     if (provider === "oidc") {
       if (!config.issuerUrl) errors.push("OIDC issuer URL is required before activation");
+      if (!config.oidcJwksUrl) warnings.push("OIDC JWKS URL should be configured explicitly; otherwise runtime validation depends on issuer discovery");
       if (!config.authorizationUrl) errors.push("OIDC authorization URL is required before activation");
       if (!config.tokenUrl) errors.push("OIDC token URL is required before activation");
       if (!config.userinfoUrl) errors.push("OIDC userinfo URL is required before activation");
@@ -382,6 +384,7 @@ function ssoConfigRow(row: any) {
     clientId: row.client_id || "",
     clientSecretRef: row.client_secret_ref || "",
     issuerUrl: row.issuer_url || "",
+    oidcJwksUrl: row.oidc_jwks_url || "",
     authorizationUrl: row.authorization_url || "",
     tokenUrl: row.token_url || "",
     userinfoUrl: row.userinfo_url || "",
@@ -1837,7 +1840,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     try {
       const result = await fastify.pg.query(
         `SELECT id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, oidc_jwks_url, authorization_url,
                 token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at
          FROM sso_configs
          ORDER BY status DESC, name`
@@ -1864,12 +1867,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       const result = await fastify.pg.query(
         `INSERT INTO sso_configs (
            name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-           metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+           metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, oidc_jwks_url, authorization_url,
            token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
          RETURNING id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                   metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                   metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, oidc_jwks_url, authorization_url,
                    token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at`,
         [
           config.name,
@@ -1886,6 +1889,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
           config.clientId || null,
           config.clientSecretRef || null,
           config.issuerUrl || null,
+          config.oidcJwksUrl || null,
           config.authorizationUrl || null,
           config.tokenUrl || null,
           config.userinfoUrl || null,
@@ -1918,7 +1922,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     try {
       const existing = await fastify.pg.query(
         `SELECT id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, oidc_jwks_url, authorization_url,
                 token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at
          FROM sso_configs WHERE id = $1`,
         [id]
@@ -1939,6 +1943,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         clientId: config.clientId ?? existingRow.client_id,
         clientSecretRef: config.clientSecretRef ?? existingRow.client_secret_ref,
         issuerUrl: config.issuerUrl ?? existingRow.issuer_url,
+        oidcJwksUrl: config.oidcJwksUrl ?? existingRow.oidc_jwks_url,
         authorizationUrl: config.authorizationUrl ?? existingRow.authorization_url,
         tokenUrl: config.tokenUrl ?? existingRow.token_url,
         userinfoUrl: config.userinfoUrl ?? existingRow.userinfo_url,
@@ -1962,17 +1967,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
            client_id = COALESCE($13, client_id),
            client_secret_ref = COALESCE($14, client_secret_ref),
            issuer_url = COALESCE($15, issuer_url),
-           authorization_url = COALESCE($16, authorization_url),
-           token_url = COALESCE($17, token_url),
-           userinfo_url = COALESCE($18, userinfo_url),
-           scopes = COALESCE($19, scopes),
-           enforce_sso = COALESCE($20, enforce_sso),
-           default_role = COALESCE($21, default_role),
-           attribute_mapping = COALESCE($22, attribute_mapping),
+           oidc_jwks_url = COALESCE($16, oidc_jwks_url),
+           authorization_url = COALESCE($17, authorization_url),
+           token_url = COALESCE($18, token_url),
+           userinfo_url = COALESCE($19, userinfo_url),
+           scopes = COALESCE($20, scopes),
+           enforce_sso = COALESCE($21, enforce_sso),
+           default_role = COALESCE($22, default_role),
+           attribute_mapping = COALESCE($23, attribute_mapping),
            updated_at = NOW()
          WHERE id = $1
          RETURNING id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                   metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                   metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, oidc_jwks_url, authorization_url,
                    token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at`,
         [
           id,
@@ -1990,6 +1996,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
           config.clientId || null,
           config.clientSecretRef || null,
           config.issuerUrl || null,
+          config.oidcJwksUrl || null,
           config.authorizationUrl || null,
           config.tokenUrl || null,
           config.userinfoUrl || null,
