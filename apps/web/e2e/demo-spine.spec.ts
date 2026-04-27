@@ -63,7 +63,7 @@ test.describe("demo spine smoke coverage", () => {
 
     await page.getByPlaceholder("Search name, ID, or environment").fill(name);
     await page.getByRole("button", { name: "Apply" }).click();
-    await expect(page.getByRole("cell", { name, exact: true })).toBeVisible();
+    await expect(page.locator("tbody").getByText(name, { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: `Edit ${name}` }).click();
     await editor.getByLabel("Name").fill(updatedName);
@@ -73,7 +73,7 @@ test.describe("demo spine smoke coverage", () => {
 
     await page.getByPlaceholder("Search name, ID, or environment").fill(updatedName);
     await page.getByRole("button", { name: "Apply" }).click();
-    await expect(page.getByRole("cell", { name: updatedName, exact: true })).toBeVisible();
+    await expect(page.locator("tbody").getByText(updatedName, { exact: true })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Dallas" })).toBeVisible();
 
     page.once("dialog", (dialog) => dialog.accept());

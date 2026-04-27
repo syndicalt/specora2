@@ -81,6 +81,7 @@ services:
       - JWT_SECRET=dev-secret-change-me
       - API_PUBLIC_URL=${API_PUBLIC_URL:-}
       - WEB_PUBLIC_URL=${WEB_PUBLIC_URL:-}
+      - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-2000}
       - WORKER_GRPC_HOST=worker:50051
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PROVARA_URL=${PROVARA_URL}

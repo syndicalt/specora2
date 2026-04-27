@@ -14,19 +14,19 @@ What is working well:
 - Customer Portal now provides the core self-service front door with catalog requests, AI intent resolution, and contextual support handoff primitives.
 - Provara is back as the primary LLM router with tool-call support.
 - CSDMv5-aligned seed data provides a connected 5,000-CI CMDB narrative.
-- API route coverage is improving and currently passes at 375 tests.
+- API route coverage is improving and currently passes at 395 tests.
 - Optional premium app primitives exist, with IT Visibility DCIM as the first package-style example.
 - DCIM now has persisted floorplans, racks, facility objects, and React Flow connection edges.
 
 Known gaps:
 
-- Browser E2E coverage now covers the demo spine and one DCIM floorplan write path; more critical write journeys are still needed.
+- Browser E2E coverage now covers the demo spine, Tables import/upsert, Tables stewardship, Admin access analysis, package provisioning, Discovery staging, and a DCIM floorplan write path.
 - Several apps are demo/beta hybrids and need interaction polish before production claims.
 - DCIM has enough concept depth to demo, but needs a dedicated polish pass for resize, connection editing, object deletion, floorplan controls, and richer physical inventory.
 - Discovery is still an impressive concept but not yet a complete operational ETL system.
 - Admin RBAC now has server-side field read/write enforcement for Tables, field restriction management, app/tool/table access explainers, drift detection, bulk grants, and searchable/exportable audit evidence.
 - Package installation now has an authoritative server-side installation state and completed provisioning job audit trail; production entitlement/payment/rollback depth is still backlog work.
-- The Next build cache/worker issue recurs and should be investigated separately from product work.
+- The shell bootstrap path now has bounded registry/preferences waits and cached fallback behavior; stale Next dev artifacts can still be cleared with a clean alternate-port server or `.next` cache reset when local development gets wedged.
 - Reporting is now API-first with governed datasets, RBAC-aware query/export endpoints, saved definitions, signed CSV exports, and audit events. KPI depth and BI integration examples remain roadmap work.
 - Operability now includes runtime readiness, configuration audit, job queue summary/dead-letter/requeue endpoints, and supporting queue indexes. Worker heartbeat semantics, HA/DR drills, and release automation remain roadmap work.
 - Release readiness now has `pnpm release:check` and `pnpm prod:ready` gates. Authentication now uses short-lived access tokens, rotating refresh sessions, OAuth provider hooks, and SSO discovery primitives.
@@ -162,6 +162,8 @@ Priority work:
 Implemented:
 
 - Added browser E2E coverage for the Tables CMDB write path: select table, choose columns, create a Location record, filter/search it, edit it, verify updated attributes, and delete it.
+- Hardened the platform bootstrap path with bounded app-registry and user-preference waits, cached registry fallback, and retryable loading diagnostics.
+- Raised the development/demo API rate-limit default to keep full browser readiness suites from tripping one-minute request caps while preserving environment override for production.
 - Added browser E2E coverage for the Admin Access Analyzer: open Admin Console, analyze `security_admin` access to `rbac:read`, and verify the decision trace.
 - Improved Admin Console select controls with associated labels so the RBAC analyzer is easier to operate and test.
 - Added browser E2E coverage for optional package provisioning: uninstall IT Visibility DCIM through Arc, reinstall it through Discover, and verify install/uninstall jobs in Admin Console.
@@ -205,6 +207,7 @@ Implemented:
 - Added an audited bulk cleanup review queue for selected records, registered as a platform table for follow-up stewardship work.
 - Added a Tables-native Stewardship Queue workbench for cleanup review triage, record opening, start, resolve, and dismiss actions.
 - Added CSV, JSON, and first-sheet XLSX import with explicit create/update/upsert modes, generated IDs, server-side match-key dry-run previews, conflict blocking, RBAC/field-write enforcement, and audited batch/record events.
+- Added browser E2E coverage for JSON create imports and upsert imports that preview one update plus one create before commit.
 - Preserved existing saved filters, column sets, density, inline edit, export, delete, and audit diff behavior.
 
 Exit criteria:

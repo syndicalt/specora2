@@ -70,6 +70,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 ## Technical Debt
 
 - Web dev server crashes with `ELIFECYCLE` when run via `turbo run dev`; use `node ./node_modules/next/dist/bin/next dev` as the workaround.
+- Local Next dev sessions can still get stale after heavy iteration; shell bootstrap now has bounded waits and fallback behavior, but clean alternate-port runs or clearing `.next` remain the reliable local recovery path.
 - Vitest coverage parser cannot parse some TSX under the current Rolldown path; tests pass, coverage remains non-blocking.
 - `GraphExplorer.tsx` remains in `components/` but appears unused; delete after migration confirmation.
 - Keep Provara and OpenAI fallback routing covered by tests as the chat/tool-call path evolves.

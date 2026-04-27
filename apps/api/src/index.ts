@@ -63,7 +63,7 @@ declare module "fastify" {
 async function main() {
   await fastify.register(cors, { origin: true });
   await fastify.register(rateLimit, {
-    max: Number(process.env.RATE_LIMIT_MAX || 600),
+    max: Number(process.env.RATE_LIMIT_MAX || 2000),
     timeWindow: "1 minute",
     skipOnError: false,
   });
