@@ -204,6 +204,21 @@ function validationIssues(table: TableDef | null, record: TableRecord): Validati
   return issues;
 }
 
+function validationIssuesForForm(table: TableDef, form: Record<string, string>): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  if (isMissing(form.name)) issues.push({ field: "name", label: "Name", severity: "error" });
+  for (const attr of table.attributes) {
+    if (!canReadAttr(attr)) continue;
+    const value = form[attr.name];
+    if (attr.isMandatory && isMissing(value)) {
+      issues.push({ field: attr.name, label: attr.displayName || attr.name, severity: "error" });
+    } else if (attr.isHealthRequired && isMissing(value)) {
+      issues.push({ field: attr.name, label: attr.displayName || attr.name, severity: "warn" });
+    }
+  }
+  return issues;
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -256,6 +271,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [bulkEditorOpen, setBulkEditorOpen] = useState(false);
   const [bulkField, setBulkField] = useState("environment");
   const [bulkValue, setBulkValue] = useState("");
+  const [issuePopover, setIssuePopover] = useState<string | null>(null);
   const handledLaunchRef = useRef<string | null>(null);
 
   const availableColumns = useMemo<ColumnDef[]>(() => {
@@ -1088,7 +1104,13 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                       ) : (
                         <span className="flex min-w-0 items-center gap-2">
                           <span className="block truncate">{String(cellValue(record, column.key))}</span>
-                          {column.key === "name" && <ValidationBadge issues={validationIssues(selected, record)} />}
+                          {column.key === "name" && (
+                            <ValidationBadge
+                              issues={validationIssues(selected, record)}
+                              open={issuePopover === record.id}
+                              onToggle={() => setIssuePopover((current) => current === record.id ? null : record.id)}
+                            />
+                          )}
                         </span>
                       )}
                     </td>
@@ -1225,14 +1247,64 @@ function MetricPill({ label, value, tone = "neutral" }: { label: string; value: 
   );
 }
 
-function ValidationBadge({ issues }: { issues: ValidationIssue[] }) {
+function ValidationBadge({ issues, open, onToggle }: { issues: ValidationIssue[]; open: boolean; onToggle: () => void }) {
   if (!issues.length) return <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-200">Clean</span>;
   const hard = issues.filter((issue) => issue.severity === "error").length;
   const title = issues.map((issue) => issue.label).join(", ");
   return (
-    <span title={`Missing: ${title}`} className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${hard ? "bg-red-500/10 text-red-200" : "bg-amber-500/10 text-amber-200"}`}>
-      {issues.length} issue{issues.length === 1 ? "" : "s"}
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        title={`Missing: ${title}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggle();
+        }}
+        className={`cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium hover:ring-1 hover:ring-current ${hard ? "bg-red-500/10 text-red-200" : "bg-amber-500/10 text-amber-200"}`}
+      >
+        {issues.length} issue{issues.length === 1 ? "" : "s"}
+      </button>
+      {open && (
+        <span className="absolute left-0 top-6 z-30 w-56 rounded-lg border border-gray-700 bg-gray-950 p-2 text-xs shadow-2xl">
+          <span className="mb-1 block font-semibold text-gray-200">Validation issues</span>
+          {issues.map((issue) => (
+            <span key={`${issue.field}:${issue.severity}`} className="block rounded px-2 py-1 text-gray-300">
+              <span className={issue.severity === "error" ? "text-red-300" : "text-amber-300"}>{issue.severity === "error" ? "Required" : "Health"}</span>
+              <span className="text-gray-600"> / </span>
+              {issue.label} is missing
+            </span>
+          ))}
+        </span>
+      )}
     </span>
+  );
+}
+
+function ValidationIssuePanel({ issues }: { issues: ValidationIssue[] }) {
+  if (!issues.length) {
+    return (
+      <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">
+        Required stewardship fields are populated.
+      </div>
+    );
+  }
+  const required = issues.filter((issue) => issue.severity === "error").length;
+  return (
+    <div className={`rounded-lg border px-3 py-3 ${required ? "border-red-500/20 bg-red-500/10" : "border-amber-500/20 bg-amber-500/10"}`}>
+      <div className={`text-sm font-medium ${required ? "text-red-100" : "text-amber-100"}`}>
+        {issues.length} stewardship issue{issues.length === 1 ? "" : "s"} to resolve
+      </div>
+      <div className="mt-2 space-y-1">
+        {issues.map((issue) => (
+          <div key={`${issue.field}:${issue.severity}`} className="flex items-center justify-between gap-3 rounded border border-gray-800/70 bg-gray-950/60 px-2 py-1.5 text-xs">
+            <span className="truncate text-gray-200">{issue.label}</span>
+            <span className={issue.severity === "error" ? "text-red-300" : "text-amber-300"}>
+              {issue.severity === "error" ? "Required" : "Health field"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1314,6 +1386,7 @@ function RecordEditor({
   onClose: () => void;
   onSave: () => void;
 }) {
+  const editorIssues = validationIssuesForForm(table, editor.form);
   return (
     <aside data-testid="tables-record-editor" className="flex w-[420px] shrink-0 flex-col border-l border-gray-800 bg-gray-950 shadow-[-12px_0_32px_rgba(0,0,0,0.35)]">
       <div className="flex items-center gap-3 border-b border-gray-800 px-4 py-4">
@@ -1330,6 +1403,7 @@ function RecordEditor({
       </div>
 
       <div className="scrollbar-thin min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 pb-28">
+        <ValidationIssuePanel issues={editorIssues} />
         {editor.mode === "create" && (
           <Field label="ID" hint="Generated automatically when the record is saved.">
             <input value="Auto-generated" readOnly disabled className="w-full cursor-not-allowed rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm text-gray-500 outline-none" />
