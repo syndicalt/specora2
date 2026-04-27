@@ -361,6 +361,34 @@ function sanitizeColumns(table: TableDefinition, columns: unknown): string[] {
   return Array.from(new Set(columns.filter((column): column is string => typeof column === "string" && allowed.has(column)))).slice(0, 50);
 }
 
+function exportColumns(table: TableDefinition, columns: unknown, access: Map<string, FieldAccess>): string[] {
+  const sanitized = sanitizeColumns(table, columns);
+  const fallback = tableFieldNames(table).slice(0, 12);
+  return (sanitized.length ? sanitized : fallback).filter((column) => access.get(column)?.read !== false);
+}
+
+function csvCell(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
+}
+
+function recordValueForColumn(record: any, column: string): unknown {
+  if (column === "id") return record.id;
+  if (column === "name") return record.name;
+  if (column === "number") return record.number;
+  if (column === "environment") return record.environment;
+  return (record.attributes || {})[column] ?? record[column];
+}
+
+function recordsToCsv(records: any[], columns: string[]): string {
+  const rows = [columns.map(csvCell).join(",")];
+  for (const record of records) {
+    rows.push(columns.map((column) => csvCell(recordValueForColumn(record, column))).join(","));
+  }
+  return `${rows.join("\n")}\n`;
+}
+
 function normalizeDensity(value: unknown) {
   return value === "compact" || value === "spacious" ? value : "comfortable";
 }
@@ -667,6 +695,15 @@ async function getPostgresRecord(fastify: FastifyInstance, table: TableDefinitio
   if (!row) return null;
   const record = postgresRecord(table, row);
   return access ? redactRecord(record, access) : record;
+}
+
+async function getPostgresRecordsById(fastify: FastifyInstance, table: TableDefinition, ids: string[], access: Map<string, FieldAccess>) {
+  if (!table.tableName || !ids.length) return [];
+  const result = await fastify.pg.query(
+    `SELECT * FROM ${quoteIdentifier(table.tableName)} WHERE id::text = ANY($1) ORDER BY ${quoteIdentifier(table.nameField || "id")} NULLS LAST LIMIT 1000`,
+    [ids]
+  );
+  return result.rows.map((row: any) => redactRecord(postgresRecord(table, row), access));
 }
 
 function postgresWriteFields(table: TableDefinition, body: { name?: string; attributes?: Record<string, unknown> }) {
@@ -978,6 +1015,63 @@ export async function tableRoutes(fastify: FastifyInstance) {
     };
   });
 
+  fastify.post("/api/tables/:table/export", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const { table: tableId } = request.params as { table: string };
+    const body = request.body as { recordIds?: unknown; columns?: unknown };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    const recordIds = Array.isArray(body.recordIds)
+      ? Array.from(new Set(body.recordIds.filter((id): id is string => typeof id === "string" && id.trim()).map((id) => id.trim()))).slice(0, 1000)
+      : [];
+    if (!recordIds.length) return reply.status(400).send({ error: "recordIds required" });
+    const columns = exportColumns(tableForUser, body.columns, access);
+    if (!columns.length) return reply.status(403).send({ error: "Forbidden: no readable export columns" });
+
+    let records: any[] = [];
+    if (table.provider === "postgres-table") {
+      records = await getPostgresRecordsById(fastify, tableForUser, recordIds, access);
+    } else {
+      const session = fastify.neo4j.session();
+      try {
+        const result = await session.run(
+          `MATCH (n:ConfigurationItem)
+           WHERE n.class = $className AND n.id IN $ids
+           RETURN n
+           ORDER BY n.name
+           LIMIT 1000`,
+          { className: table.className, ids: recordIds }
+        );
+        records = result.records.map((record) => redactRecord(parseNode(record.get("n")), access));
+      } finally {
+        await session.close();
+      }
+    }
+
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "table.records.exported",
+      entityType: table.id,
+      entityId: table.id,
+      metadata: {
+        source: "api.tables",
+        provider: table.provider,
+        recordCount: records.length,
+        requestedRecordCount: recordIds.length,
+        columns,
+      },
+    });
+
+    return reply
+      .type("text/csv; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="${table.id.replace(/[^a-zA-Z0-9_.-]/g, "_")}-records.csv"`)
+      .send(recordsToCsv(records, columns));
+  });
+
   fastify.post("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const role = await getRole(fastify, request.user as any);
     if (!(await canUseTable(fastify, role, "write"))) {
@@ -1064,10 +1158,19 @@ export async function tableRoutes(fastify: FastifyInstance) {
       return { table: tableForUser, record: redactRecord(record, access) };
     }
 
-    const hasAttributes = body.attributes !== undefined;
-    const attrs = splitAttrs(body.attributes);
     const session = fastify.neo4j.session();
     try {
+      const beforeResult = await session.run(
+        `MATCH (n:ConfigurationItem {id: $id})
+         WHERE n.class = $className
+         RETURN n`,
+        { id, className: table.className }
+      );
+      const beforeNode = beforeResult.records[0]?.get("n");
+      if (!beforeNode) return reply.status(404).send({ error: "Record not found" });
+      const before = parseNode(beforeNode);
+      const hasAttributes = body.attributes !== undefined;
+      const attrs = hasAttributes ? { ...(before.attributes || {}), ...splitAttrs(body.attributes) } : before.attributes || {};
       const result = await session.run(
         `MATCH (n:ConfigurationItem {id: $id})
          WHERE n.class = $className
@@ -1086,13 +1189,13 @@ export async function tableRoutes(fastify: FastifyInstance) {
         }
       );
       const record = result.records[0]?.get("n");
-      if (!record) return reply.status(404).send({ error: "Record not found" });
       const updated = parseNode(record);
       await recordAuditEvent(fastify, {
         actorId: (request.user as any)?.id,
         action: "table.record.updated",
         entityType: table.id,
         entityId: id,
+        oldValues: before,
         newValues: updated,
         metadata: { source: "api.tables", provider: table.provider, className: table.className },
       });

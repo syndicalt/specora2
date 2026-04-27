@@ -220,8 +220,28 @@ describe("tableRoutes", () => {
     expect(JSON.parse(res.body).entries[0]).toMatchObject({ action: "table.record.updated", entryHash: "hash" });
   });
 
+  it("exports selected table records as audited CSV", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", environment: "Production", attributes: "{\"city\":\"Austin\"}" }) })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/export",
+      payload: { recordIds: ["loc-1"], columns: ["name", "city", "environment"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/csv");
+    expect(res.body).toContain("name,city,environment");
+    expect(res.body).toContain("HQ,Austin,Production");
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.exported", "cmdb.Location", "cmdb.Location"]));
+  });
+
   it("creates, updates, reads, and deletes a table record", async () => {
     const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-2", name: "Remote", class: "Location", attributes: "{\"city\":\"Denver\"}" }) })],
       [makeRecord({ n: makeNode({ id: "loc-2", name: "Remote", class: "Location", attributes: "{\"city\":\"Denver\"}" }) })],
       [makeRecord({ n: makeNode({ id: "loc-2", name: "Remote 2", class: "Location", attributes: "{\"city\":\"Boulder\"}" }) })],
       [makeRecord({ n: makeNode({ id: "loc-2", name: "Remote 2", class: "Location", attributes: "{\"city\":\"Boulder\"}" }) })],

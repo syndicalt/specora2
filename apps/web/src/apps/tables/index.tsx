@@ -7,6 +7,7 @@ import {
   Check,
   Columns3,
   Database,
+  Download,
   Edit3,
   Filter,
   History,
@@ -16,6 +17,7 @@ import {
   Search,
   TableProperties,
   Trash2,
+  Undo2,
   X,
 } from "lucide-react";
 
@@ -91,6 +93,18 @@ type AuditEntry = {
   createdAt: string;
 };
 
+type InlineEdit = {
+  recordId: string;
+  columnKey: string;
+  value: string;
+};
+
+type DiffRow = {
+  field: string;
+  before: unknown;
+  after: unknown;
+};
+
 const PAGE_SIZE = 100;
 const TABLES_LAUNCH_KEY = "specora_tables_launch";
 
@@ -136,6 +150,40 @@ function coerceValue(raw: string, attr?: AttributeDef): unknown {
   return raw;
 }
 
+function flattenForDiff(value?: Record<string, unknown> | null): Record<string, unknown> {
+  if (!value) return {};
+  const attrs = value.attributes && typeof value.attributes === "object" ? value.attributes as Record<string, unknown> : {};
+  const next: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "attributes") continue;
+    next[key] = item;
+  }
+  for (const [key, item] of Object.entries(attrs)) {
+    next[`attributes.${key}`] = item;
+  }
+  return next;
+}
+
+function auditDiffRows(before?: Record<string, unknown> | null, after?: Record<string, unknown> | null): DiffRow[] {
+  const oldValues = flattenForDiff(before);
+  const newValues = flattenForDiff(after);
+  const keys = Array.from(new Set([...Object.keys(oldValues), ...Object.keys(newValues)])).sort();
+  return keys
+    .filter((key) => JSON.stringify(oldValues[key] ?? null) !== JSON.stringify(newValues[key] ?? null))
+    .map((key) => ({ field: key.replace(/^attributes\./, ""), before: oldValues[key], after: newValues[key] }));
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function initialForm(table: TableDef, record?: TableRecord): Record<string, string> {
   const next: Record<string, string> = {
     id: record?.id || "",
@@ -167,6 +215,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [pendingTableAction, setPendingTableAction] = useState<PendingTableAction | null>(null);
   const [editor, setEditor] = useState<{ mode: EditorMode; record?: TableRecord; form: Record<string, string> } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [inlineEdit, setInlineEdit] = useState<InlineEdit | null>(null);
+  const [inlineSaving, setInlineSaving] = useState(false);
+  const [selectedRows, setSelectedRows] = useState<Record<string, boolean>>({});
+  const [bulkBusy, setBulkBusy] = useState(false);
   const handledLaunchRef = useRef<string | null>(null);
 
   const availableColumns = useMemo<ColumnDef[]>(() => {
@@ -196,6 +248,9 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       .map((item) => ({ field: item.field, operator: item.operator, value: item.value }));
   }, [filters]);
 
+  const selectedRecordIds = useMemo(() => records.filter((record) => selectedRows[record.id]).map((record) => record.id), [records, selectedRows]);
+  const allLoadedSelected = records.length > 0 && selectedRecordIds.length === records.length;
+
   function tableAttr(key: string) {
     return selected?.attributes.find((attr) => attr.name === key);
   }
@@ -205,6 +260,12 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     return attr ? canReadAttr(attr) : true;
   }
 
+  function canWriteColumn(key: string) {
+    if (key === "id" || key === "number") return false;
+    if (key === "name" || key === "environment") return true;
+    return canWriteAttr(tableAttr(key));
+  }
+
   function selectTable(table: TableDef) {
     setSelected(table);
     setQuery("");
@@ -212,6 +273,8 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setAuditEntries([]);
     setPickerOpen(false);
     setEditor(null);
+    setInlineEdit(null);
+    setSelectedRows({});
   }
 
   function toggleColumn(key: string) {
@@ -256,6 +319,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       const data = await res.json();
       setRecords(data.records || []);
       setTotal(data.total || 0);
+      setSelectedRows({});
     } catch (err: any) {
       shell.notify(err.message || "Failed to fetch table records", "error");
     } finally {
@@ -353,6 +417,15 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     const attr = tableAttr(key);
     if (attr && !canReadAttr(attr)) return "Restricted";
     return formatValue((record.attributes || {})[key] ?? record[key]);
+  }
+
+  function rawCellValue(record: TableRecord, key: string) {
+    if (key === "name") return record.name || "";
+    if (key === "environment") return record.environment || "";
+    const attr = tableAttr(key);
+    if (attr && !canReadAttr(attr)) return "";
+    const value = (record.attributes || {})[key] ?? record[key] ?? "";
+    return value === null || value === undefined ? "" : String(value);
   }
 
   function addFilter() {
@@ -460,6 +533,106 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       shell.notify(err.message || "Failed to save record", "error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function startInlineEdit(record: TableRecord, columnKey: string) {
+    if (!canWriteColumn(columnKey)) return;
+    setInlineEdit({ recordId: record.id, columnKey, value: rawCellValue(record, columnKey) });
+  }
+
+  async function commitInlineEdit() {
+    if (!selected || !inlineEdit) return;
+    const record = records.find((item) => item.id === inlineEdit.recordId);
+    if (!record) return;
+    const current = rawCellValue(record, inlineEdit.columnKey);
+    if (current === inlineEdit.value) {
+      setInlineEdit(null);
+      return;
+    }
+    if (inlineEdit.columnKey === "name" && !inlineEdit.value.trim()) {
+      shell.notify("Name is required", "error");
+      return;
+    }
+    const attr = tableAttr(inlineEdit.columnKey);
+    const payload = inlineEdit.columnKey === "name"
+      ? { name: inlineEdit.value.trim() }
+      : inlineEdit.columnKey === "environment"
+        ? { environment: inlineEdit.value.trim() || undefined }
+        : { attributes: { [inlineEdit.columnKey]: coerceValue(inlineEdit.value, attr) } };
+    setInlineSaving(true);
+    try {
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/records/${encodeURIComponent(record.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to update cell");
+      }
+      const data = await res.json();
+      setRecords((current) => current.map((item) => item.id === record.id ? data.record : item));
+      setEditor((current) => current?.record?.id === record.id ? { ...current, record: data.record, form: initialForm(selected, data.record) } : current);
+      if (editor?.record?.id === record.id) await loadAudit(selected, record.id);
+      shell.notify("Cell updated", "success");
+      setInlineEdit(null);
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to update cell", "error");
+    } finally {
+      setInlineSaving(false);
+    }
+  }
+
+  function toggleLoadedSelection() {
+    if (allLoadedSelected) {
+      setSelectedRows({});
+      return;
+    }
+    setSelectedRows(Object.fromEntries(records.map((record) => [record.id, true])));
+  }
+
+  async function exportRows(recordIds = selectedRecordIds.length ? selectedRecordIds : records.map((record) => record.id)) {
+    if (!selected || !recordIds.length) return;
+    setBulkBusy(true);
+    try {
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recordIds, columns: visibleColumns.map((column) => column.key) }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to export records");
+      }
+      const blob = await res.blob();
+      downloadBlob(blob, `${selected.id.replace(/[^a-zA-Z0-9_.-]/g, "_")}-records.csv`);
+      shell.notify(`Exported ${recordIds.length} records`, "success");
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to export records", "error");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function deleteSelectedRows() {
+    if (!selected || !selectedRecordIds.length) return;
+    if (!confirm(`Delete ${selectedRecordIds.length} selected records? This cannot be undone.`)) return;
+    setBulkBusy(true);
+    try {
+      for (const id of selectedRecordIds) {
+        const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/records/${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `Failed to delete ${id}`);
+        }
+      }
+      shell.notify(`Deleted ${selectedRecordIds.length} records`, "success");
+      await loadRecords();
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to delete selected records", "error");
+    } finally {
+      setBulkBusy(false);
     }
   }
 
@@ -602,6 +775,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             <p className="font-mono text-xs text-gray-500">{selected ? `${selected.id} / ${total} records` : "No table selected"}</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => exportRows(records.map((record) => record.id))} disabled={!selected || records.length === 0 || bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-40">
+              <Download className="h-4 w-4" />
+              Export
+            </button>
             <button onClick={openCreate} disabled={!selected} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-40">
               <Plus className="h-4 w-4" />
               New
@@ -698,10 +875,37 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
           )}
         </section>
 
+        {selectedRecordIds.length > 0 && (
+          <section className="flex shrink-0 items-center gap-3 border-b border-cyan-500/20 bg-cyan-950/20 px-5 py-2 text-sm">
+            <div className="font-medium text-cyan-100">{selectedRecordIds.length} selected</div>
+            <button onClick={() => exportRows()} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-1.5 text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
+              <Download className="h-4 w-4" />
+              Export selected
+            </button>
+            <button onClick={deleteSelectedRows} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 px-3 py-1.5 text-red-200 hover:bg-red-500/10 disabled:opacity-50">
+              <Trash2 className="h-4 w-4" />
+              Delete selected
+            </button>
+            <button onClick={() => setSelectedRows({})} className="ml-auto inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-gray-400 hover:text-white">
+              <Undo2 className="h-4 w-4" />
+              Clear
+            </button>
+          </section>
+        )}
+
         <div className="scrollbar-thin flex-1 overflow-auto pb-32">
           <table className="w-full text-sm">
             <thead className="sticky top-0 z-10 bg-gray-950">
               <tr className="border-b border-gray-800 text-left text-xs uppercase tracking-wider text-gray-500">
+                <th className="w-10 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={allLoadedSelected}
+                    onChange={toggleLoadedSelection}
+                    aria-label="Select loaded records"
+                    className="rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
+                  />
+                </th>
                 {visibleColumns.map((column) => <th key={column.key} className="whitespace-nowrap px-4 py-3">{column.label}</th>)}
                 <th className="w-24 px-4 py-3 text-right">Actions</th>
               </tr>
@@ -709,9 +913,34 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             <tbody>
               {records.map((record) => (
                 <tr key={record.id} data-testid={`tables-record-${record.id}`} className="border-b border-gray-900 hover:bg-gray-900/60">
+                  <td className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={!!selectedRows[record.id]}
+                      onChange={(event) => setSelectedRows((current) => ({ ...current, [record.id]: event.target.checked }))}
+                      aria-label={`Select record ${record.id}`}
+                      className="rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
+                    />
+                  </td>
                   {visibleColumns.map((column) => (
-                    <td key={column.key} className={`max-w-[260px] truncate px-4 ${density === "compact" ? "py-2" : density === "spacious" ? "py-4" : "py-3"} ${column.key === "id" ? "font-mono text-xs text-gray-500" : column.key === "name" ? "font-medium text-gray-200" : "text-gray-300"}`}>
-                      {String(cellValue(record, column.key))}
+                    <td
+                      key={column.key}
+                      onDoubleClick={() => startInlineEdit(record, column.key)}
+                      className={`max-w-[260px] px-4 ${density === "compact" ? "py-2" : density === "spacious" ? "py-4" : "py-3"} ${column.key === "id" ? "font-mono text-xs text-gray-500" : column.key === "name" ? "font-medium text-gray-200" : "text-gray-300"} ${canWriteColumn(column.key) ? "cursor-text" : ""}`}
+                      title={canWriteColumn(column.key) ? "Double-click to edit" : undefined}
+                    >
+                      {inlineEdit?.recordId === record.id && inlineEdit.columnKey === column.key ? (
+                        <InlineCellEditor
+                          attr={tableAttr(column.key)}
+                          value={inlineEdit.value}
+                          saving={inlineSaving}
+                          onChange={(value) => setInlineEdit((current) => current ? { ...current, value } : current)}
+                          onCommit={commitInlineEdit}
+                          onCancel={() => setInlineEdit(null)}
+                        />
+                      ) : (
+                        <span className="block truncate">{String(cellValue(record, column.key))}</span>
+                      )}
                     </td>
                   ))}
                   <td className={`px-4 ${density === "compact" ? "py-2" : density === "spacious" ? "py-4" : "py-3"}`}>
@@ -728,14 +957,14 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               ))}
               {recordLoading && (
                 <tr>
-                  <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="px-4 py-12 text-center text-gray-500">
+                  <td colSpan={Math.max(visibleColumns.length + 2, 1)} className="px-4 py-12 text-center text-gray-500">
                     Loading records...
                   </td>
                 </tr>
               )}
               {!recordLoading && records.length === 0 && (
                 <tr>
-                  <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="px-4 py-12 text-center text-gray-500">
+                  <td colSpan={Math.max(visibleColumns.length + 2, 1)} className="px-4 py-12 text-center text-gray-500">
                     No records found.
                   </td>
                 </tr>
@@ -784,6 +1013,67 @@ function FilterValueInput({ filter, attr, onChange }: { filter: TableFilter; att
       type={attr?.attrType === "number" ? "number" : attr?.attrType === "date" ? "date" : "text"}
       placeholder="Value"
       className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
+    />
+  );
+}
+
+function InlineCellEditor({
+  attr,
+  value,
+  saving,
+  onChange,
+  onCommit,
+  onCancel,
+}: {
+  attr?: AttributeDef;
+  value: string;
+  saving: boolean;
+  onChange: (value: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+}) {
+  const className = "w-full min-w-32 rounded border border-indigo-500 bg-gray-950 px-2 py-1 text-sm text-gray-100 outline-none focus:border-cyan-400";
+  const closedRef = useRef(false);
+  const commitOnce = () => {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    onCommit();
+  };
+  const cancelOnce = () => {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    onCancel();
+  };
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>) => {
+    if (event.key === "Enter") commitOnce();
+    if (event.key === "Escape") cancelOnce();
+  };
+  if (attr?.attrType === "boolean") {
+    return (
+      <select autoFocus disabled={saving} value={value || "false"} onBlur={commitOnce} onKeyDown={onKeyDown} onChange={(event) => onChange(event.target.value)} className={className}>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    );
+  }
+  if (attr?.attrType === "enum" && attr.enumValues?.length) {
+    return (
+      <select autoFocus disabled={saving} value={value} onBlur={commitOnce} onKeyDown={onKeyDown} onChange={(event) => onChange(event.target.value)} className={className}>
+        <option value="">Select value</option>
+        {attr.enumValues.map((item) => <option key={item} value={item}>{item}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      disabled={saving}
+      value={value}
+      onBlur={commitOnce}
+      onKeyDown={onKeyDown}
+      onChange={(event) => onChange(event.target.value)}
+      type={attr?.attrType === "number" ? "number" : attr?.attrType === "date" ? "date" : "text"}
+      className={className}
     />
   );
 }
@@ -856,8 +1146,7 @@ function RecordEditor({
                     <div className="text-[10px] text-gray-600">{new Date(entry.createdAt).toLocaleString()}</div>
                   </div>
                   <div className="mt-2 grid gap-2 text-xs text-gray-500">
-                    <DiffSummary label="Before" value={entry.oldValues} />
-                    <DiffSummary label="After" value={entry.newValues} />
+                    <AuditDiff before={entry.oldValues} after={entry.newValues} />
                   </div>
                   {entry.entryHash && <div className="mt-2 truncate font-mono text-[10px] text-gray-700">hash {entry.entryHash}</div>}
                 </div>
@@ -879,14 +1168,29 @@ function RecordEditor({
   );
 }
 
-function DiffSummary({ label, value }: { label: string; value?: Record<string, unknown> | null }) {
-  const text = value ? JSON.stringify(value) : "-";
-  return (
-    <div>
-      <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">{label}</div>
-      <div className="max-h-20 overflow-hidden rounded border border-gray-800 bg-gray-950 px-2 py-1 font-mono text-[11px] leading-5 text-gray-400">
-        {text}
+function AuditDiff({ before, after }: { before?: Record<string, unknown> | null; after?: Record<string, unknown> | null }) {
+  const rows = auditDiffRows(before, after);
+  if (!rows.length) {
+    const snapshot = after || before;
+    return (
+      <div className="rounded border border-gray-800 bg-gray-950 px-2 py-2 text-gray-500">
+        {snapshot ? "Snapshot captured; no field-level delta." : "No field values captured."}
       </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {rows.slice(0, 8).map((row) => (
+        <div key={row.field} className="rounded border border-gray-800 bg-gray-950 p-2">
+          <div className="mb-1 font-medium text-gray-300">{row.field}</div>
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 font-mono text-[11px]">
+            <div className="truncate rounded bg-red-950/30 px-2 py-1 text-red-200">{formatValue(row.before)}</div>
+            <div className="text-gray-700">to</div>
+            <div className="truncate rounded bg-emerald-950/30 px-2 py-1 text-emerald-200">{formatValue(row.after)}</div>
+          </div>
+        </div>
+      ))}
+      {rows.length > 8 && <div className="text-[11px] text-gray-600">{rows.length - 8} more changes hidden.</div>}
     </div>
   );
 }
