@@ -29,6 +29,7 @@ Known gaps:
 - The Next build cache/worker issue recurs and should be investigated separately from product work.
 - Reporting is now API-first with governed datasets, RBAC-aware query/export endpoints, saved definitions, signed CSV exports, and audit events. KPI depth and BI integration examples remain roadmap work.
 - Operability now includes runtime readiness, configuration audit, job queue summary/dead-letter/requeue endpoints, and supporting queue indexes. Worker heartbeat semantics, HA/DR drills, and release automation remain roadmap work.
+- Release readiness now has `pnpm release:check` and `pnpm prod:ready` gates. JWT expiration and refresh flow is the next security sprint.
 
 ## Sprint 1: Stabilize the Demo Spine
 
@@ -278,6 +279,9 @@ Implemented:
 - Added PostgreSQL indexes for job status, stale running jobs, and dead-letter review.
 - Updated deployment operations docs with readiness, config audit, and job queue runbooks.
 - Added focused API/service tests for readiness, config audit, queue summary, dead-letter, and stale requeue behavior.
+- Added `scripts/release-check.sh` with fast/full modes for artifact cleanup, migration status/dry-run, typechecks, tests, builds, seed validation, and browser E2E.
+- Added root scripts `pnpm release:check` and `pnpm prod:ready`.
+- Documented release-readiness flags for dirty worktree enforcement, builds, seed validation, E2E, managed Playwright servers, and Next cache cleanup.
 
 Exit criteria:
 
@@ -301,6 +305,7 @@ Important but not next-sprint critical:
 - Add knowledge freshness automation that turns stale articles into stewarded tasks.
 - Add incident prevention automation that opens prevention candidates from repeated incident patterns.
 - Add advanced DCIM facility modeling only when needed: imported floorplan images, CAD-like walls, zones, elevations, and environmental telemetry overlays.
+- Add JWT expiration, refresh token rotation, session revocation, and auth telemetry.
 
 ## Product Direction Guardrails
 

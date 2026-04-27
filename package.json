@@ -14,7 +14,9 @@
     "migrate:dry-run": "pnpm --filter @specora/db migrate:dry-run",
     "migrate:baseline": "pnpm --filter @specora/db migrate:baseline",
     "validate:seed": "bash scripts/validate-seed.sh",
-    "demo:ready": "bash scripts/demo-readiness.sh"
+    "demo:ready": "bash scripts/demo-readiness.sh",
+    "release:check": "bash scripts/release-check.sh",
+    "prod:ready": "RELEASE_CHECK_MODE=full bash scripts/release-check.sh"
   },
   "devDependencies": {
     "prettier": "^3.8.3",

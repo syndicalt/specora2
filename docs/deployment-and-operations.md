@@ -249,6 +249,31 @@ The seed command is appropriate for demo/dev environments. Production graph impo
 
 ## Build and Verification
 
+Release-readiness gate:
+
+```bash
+pnpm release:check
+```
+
+`release:check` runs the fast local gate: artifact cleanup, migration status, migration dry-run, API typecheck, web typecheck, database tests, and API tests. It intentionally skips slower or environment-heavy checks unless requested.
+
+Full production-readiness gate:
+
+```bash
+pnpm prod:ready
+```
+
+`prod:ready` runs the full gate: fast checks plus web unit tests, API/web production builds, seed validation, and browser E2E. Use this before release candidates or external demo branches.
+
+Useful flags:
+
+- `ALLOW_DIRTY=0 pnpm release:check` fails if the worktree has uncommitted changes.
+- `RUN_BUILDS=1 pnpm release:check` adds API and web builds to fast mode.
+- `RUN_SEED_VALIDATION=1 pnpm release:check` adds demo seed validation.
+- `RUN_E2E=1 pnpm release:check` adds browser E2E against already-running servers.
+- `E2E_START_SERVERS=1 RUN_E2E=1 pnpm release:check` lets Playwright manage servers.
+- `CLEAN_NEXT=1 pnpm release:check` removes the Next build cache before checks.
+
 Type/build checks:
 
 ```bash
