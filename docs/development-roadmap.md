@@ -225,8 +225,6 @@ Priority work:
 - Define canonical reporting domains: Incident, Change, Request, Knowledge, CMDB health, Discovery, Asset, Audit, RBAC, and Operational Readiness.
 - Add RBAC-aware reporting endpoints with stable JSON contracts and CSV export where appropriate.
 - Add time-window, grouping, filter, and pagination conventions shared across reports.
-- Add reporting API tests against seeded enterprise data.
-- Document Grafana/PowerBI/Tableau integration patterns and recommended dashboards.
 
 Implemented:
 
@@ -241,6 +239,9 @@ Implemented:
 - Added metadata contracts for Grafana, PowerBI, Tableau, and warehouse integration.
 - Added operational KPI endpoints for SLA risk, incident deflection, change collision risk, knowledge freshness, request backlog, CMDB completeness, and audit/security posture.
 - Added API tests for BI contracts and KPI responses.
+- Added enterprise-seed reporting tests for grouped dataset queries, signed CSV export, KPI summaries, and warehouse contracts.
+- Documented Grafana, PowerBI, Tableau, and warehouse dashboard integration patterns.
+- Added a lightweight Reporting native app for KPI cards, saved reports, dataset preview, CSV export, and BI contract handoff.
 
 Exit criteria:
 

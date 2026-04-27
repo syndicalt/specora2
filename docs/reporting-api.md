@@ -79,6 +79,29 @@ Implemented KPI IDs:
 
 Each KPI response includes `value`, `unit`, `status`, `direction`, `window`, and supporting `details`. KPI visibility is governed by `reporting:read` plus the underlying resource permissions required by that KPI.
 
+## BI Integration Patterns
+
+Recommended external dashboard shape:
+
+- Executive overview: `GET /api/reports/kpis` for SLA risk, deflection, change risk, request backlog, CMDB completeness, and audit posture.
+- Incident operations: `incidents` grouped by `status`, `severity`, `priority`, `service`, and `assignment_group`.
+- Change governance: `changes` grouped by `status`, `ci_id`, and scheduled windows, paired with `change_collision_risk`.
+- Knowledge health: `knowledge` grouped by `status`, `type`, and `service`, paired with `knowledge_freshness`.
+- Audit/security: `audit` grouped by `action`, `entity_type`, and `actor_id`, paired with `audit_security_posture`.
+- Data quality: `cmdb_completeness` plus `assets`, `discovery`, and future CMDB health datasets.
+
+Grafana should use the `grafana` contract and JSON query endpoints with dashboard time range mapped to `from`/`to`. PowerBI and Tableau should use the `powerbi` or `tableau` contract and prefer signed CSV extracts for scheduled refreshes. Warehouse loaders should use the `warehouse` contract with `limit`/`offset` pagination and `from`/`to` watermarks.
+
+## Native App
+
+Specora includes a lightweight Reporting native app that consumes these APIs directly and focuses on operational visibility, not full BI authoring:
+
+- KPI cards from `/api/reports/kpis`.
+- Dataset picker and metadata inspection.
+- Saved report list and basic table/chart preview.
+- CSV export action.
+- BI contract copy/download links for Grafana, PowerBI, Tableau, and warehouse loaders.
+
 Near-term additions:
 
 - CMDB health and CSDM data quality.

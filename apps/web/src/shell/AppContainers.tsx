@@ -24,6 +24,7 @@ const BUILT_IN_COMPONENTS: Record<string, () => Promise<{ default: React.Compone
   "health-monitor": () => import("@/apps/health-monitor"),
   "it-visibility-dcim": () => import("@/apps/it-visibility-dcim"),
   "audit-log": () => import("@/apps/audit-log"),
+  "reporting": () => import("@/apps/reporting"),
   "admin-console": () => import("@/apps/admin-console"),
   "ci-class-manager": () => import("@/apps/ci-class-manager"),
   "tables": () => import("@/apps/tables"),
@@ -154,6 +155,8 @@ const PERMISSION_CAPABILITIES: Record<string, string[]> = {
   "it-visibility:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
   "it-visibility:operate": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
   "audit-log:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
+  "reporting:read": ["sendMessage", "onMessage", "notify", "fetch"],
+  "reporting:write": ["sendMessage", "onMessage", "notify", "fetch"],
   "rbac:read": ["sendMessage", "onMessage", "notify", "fetch"],
   "rbac:write": ["sendMessage", "onMessage", "notify", "fetch"],
   "number-sequences:read": ["sendMessage", "onMessage", "notify", "fetch"],
@@ -176,7 +179,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "read:cmdb", "read:relationships", "read:discovery",
     "itsm:change:read", "itsm:incident:read", "itsm:knowledge:read", "itsm:prevention:read", "itsm:asset:read", "itsm:discovery:read", "itsm:health:read",
     "audit-log:read", "read:profile", "read:chat",
-    "tables:read", "data-foundations:read", "customer-portal:read", "customer-portal:write", "engage:agent:read"
+    "reporting:read", "tables:read", "data-foundations:read", "customer-portal:read", "customer-portal:write", "engage:agent:read"
   ],
   operator: [
     "read:cmdb", "write:cmdb", "read:relationships", "write:relationships",
@@ -190,7 +193,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "itsm:health:read", "itsm:health:write",
     "it-visibility:read",
     "audit-log:read", "read:profile", "read:chat",
-    "tables:read", "tables:write", "data-foundations:read", "customer-portal:read", "customer-portal:write", "engage:agent:read", "engage:agent:write"
+    "reporting:read", "reporting:write", "tables:read", "tables:write", "data-foundations:read", "customer-portal:read", "customer-portal:write", "engage:agent:read", "engage:agent:write"
   ],
   admin: [
     "read:cmdb", "write:cmdb", "read:relationships", "write:relationships",
@@ -206,7 +209,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "audit-log:read", "read:profile", "read:chat",
     "app:install", "app:uninstall", "admin:cmdb",
     "number-sequences:read", "number-sequences:write",
-    "tables:read", "tables:write", "data-foundations:read", "data-foundations:write", "customer-portal:read", "customer-portal:write", "engage:agent:read", "engage:agent:write"
+    "reporting:read", "reporting:write", "tables:read", "tables:write", "data-foundations:read", "data-foundations:write", "customer-portal:read", "customer-portal:write", "engage:agent:read", "engage:agent:write"
   ],
   security_admin: [
     "rbac:read", "rbac:write",
@@ -220,7 +223,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "itsm:prevention:read", "itsm:prevention:write", "itsm:prevention:govern",
     "itsm:asset:read", "itsm:asset:write", "itsm:asset:govern",
     "it-visibility:read", "it-visibility:write", "it-visibility:operate",
-    "tables:read", "tables:write", "data-foundations:read", "data-foundations:write", "customer-portal:read", "customer-portal:write", "engage:agent:read", "engage:agent:write"
+    "reporting:read", "reporting:write", "tables:read", "tables:write", "data-foundations:read", "data-foundations:write", "customer-portal:read", "customer-portal:write", "engage:agent:read", "engage:agent:write"
   ],
 };
 

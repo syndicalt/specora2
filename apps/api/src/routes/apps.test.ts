@@ -81,6 +81,7 @@ describe("appsRoutes", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     const ids = body.apps.map((app: any) => app.id);
+    expect(ids).toContain("reporting");
     expect(ids).toContain("ci-class-manager");
     expect(ids).toContain("external-app");
   });
