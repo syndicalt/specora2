@@ -255,7 +255,6 @@ Goal: graduate Discovery from impressive beta/demo to a credible RC candidate.
 
 Priority work:
 
-- Add rollback records and rollback UI for committed discovery jobs.
 - Add saved mapping profiles independent from individual pipelines.
 - Add credential vault integration or a documented credential-provider abstraction.
 - Add richer AI mapping explanations with per-field rationale, confidence, and deterministic fallback.
@@ -268,6 +267,12 @@ Exit criteria:
 - A user can configure a source, map data, preview, stage, approve, commit, and rollback with coherent audit history.
 - Discovery errors are actionable and tied to source, transform, credential, or reconciliation stage.
 - Discovery can be described as RC-ready for controlled environments, with edge/agent work clearly bounded if still external.
+
+Implemented:
+
+- Added rollback snapshots for committed discovery jobs, capturing created/updated CIs and committed relationships.
+- Added rollback apply endpoints with audit events and job status updates.
+- Added Discovery run UI for viewing and applying rollback snapshots.
 
 ## Sprint 9: Operability And Scale Hardening
 

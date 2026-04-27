@@ -439,7 +439,50 @@ describe("discoveryRoutes", () => {
       expect.stringContaining("INSERT INTO reconciliation_logs"),
       expect.arrayContaining(["dj-1", "disc-server-web01", "create"])
     );
+    expect((app as any).pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO discovery_rollbacks"),
+      expect.arrayContaining(["dj-1", expect.objectContaining({ created: 1, updated: 0 })])
+    );
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.job_committed", "DiscoveryJob", "dj-1"]));
+  });
+
+  it("lists rollback records for a discovery job", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push({ rows: [{ id: "rb-1", discovery_job_id: "dj-1", status: "available", summary: { created: 1 } }] });
+
+    const response = await app.inject({ method: "GET", url: "/discovery/jobs/dj-1/rollback" });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).rollbacks[0]).toMatchObject({ id: "rb-1", status: "available" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("FROM discovery_rollbacks"), ["dj-1"]);
+  });
+
+  it("applies discovery rollback records", async () => {
+    const app = await buildApp(async (sql: string) => {
+      if (sql.includes("RETURN count")) return { records: [{ get: () => ({ toNumber: () => 1 }) }] };
+      return { records: [{ get: () => ({ properties: { id: "disc-server-web01" } }) }] };
+    });
+    (app as any).pg.queuedResults.push(
+      {
+        rows: [{
+          id: "rb-1",
+          discovery_job_id: "dj-1",
+          status: "available",
+          summary: { created: 1 },
+          records: [{ ciId: "disc-server-web01", existedBefore: false }],
+          relationships: [],
+        }],
+      },
+      { rows: [{ id: "rb-1", discovery_job_id: "dj-1", status: "applied", summary: { rollback: { deleted: 1 } } }] },
+      { rows: [] }
+    );
+
+    const response = await app.inject({ method: "POST", url: "/discovery/rollbacks/rb-1/apply" });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ alreadyApplied: false, deleted: 1 });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("UPDATE discovery_rollbacks"), expect.arrayContaining(["rb-1", "u1"]));
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.rollback_applied", "DiscoveryRollback", "rb-1"]));
   });
 
   it("rejects commit when staged data has blocking issues", async () => {

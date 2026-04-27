@@ -6,7 +6,7 @@ import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
 import { enqueueJob } from "../services/jobQueue";
 import { proposeTransform } from "../services/discoveryTransform";
-import { approveAllSafeStagedRecords, commitStagedDiscoveryJob, getStagedDiscoveryJob, previewDiscoveryPipelineWithReconciliation, updateStagedDiscoveryRecords } from "../services/discoveryExecution";
+import { applyDiscoveryRollback, approveAllSafeStagedRecords, commitStagedDiscoveryJob, getStagedDiscoveryJob, listDiscoveryRollbacks, previewDiscoveryPipelineWithReconciliation, updateStagedDiscoveryRecords } from "../services/discoveryExecution";
 import { nextDiscoveryRunAt, normalizeScheduleInterval, runSavedDiscoveryPipeline } from "../services/discoveryScheduler";
 import { hasPermission, resolveUserRole } from "../services/rbac";
 import { recordRouteAudit } from "./auditHelpers";
@@ -282,7 +282,7 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
   fastify.post("/discovery/jobs/:id/commit", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
     const { id } = request.params as { id: string };
-    const result = await commitStagedDiscoveryJob(fastify, id);
+    const result = await commitStagedDiscoveryJob(fastify, id, (request.user as any)?.id);
     if (!result) return reply.status(404).send({ error: "Job not found" });
     if (result.blocked) return reply.status(409).send({ error: "Staged discovery has blocking issues", ...result });
     await recordRouteAudit(fastify, request, {
@@ -291,6 +291,33 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
       entityId: id,
       newValues: result,
       metadata: { source: "api.discovery", surface: "discovery" },
+    });
+    return result;
+  });
+
+  fastify.get("/discovery/rollbacks", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const query = request.query as { jobId?: string };
+    return { rollbacks: await listDiscoveryRollbacks(fastify, query.jobId) };
+  });
+
+  fastify.get("/discovery/jobs/:id/rollback", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const { id } = request.params as { id: string };
+    return { rollbacks: await listDiscoveryRollbacks(fastify, id) };
+  });
+
+  fastify.post("/discovery/rollbacks/:id/apply", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const { id } = request.params as { id: string };
+    const result = await applyDiscoveryRollback(fastify, id, (request.user as any)?.id);
+    if (!result) return reply.status(404).send({ error: "Rollback not found" });
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.rollback_applied",
+      entityType: "DiscoveryRollback",
+      entityId: id,
+      newValues: result,
+      metadata: { source: "api.discovery", surface: "discovery", alreadyApplied: result.alreadyApplied },
     });
     return result;
   });

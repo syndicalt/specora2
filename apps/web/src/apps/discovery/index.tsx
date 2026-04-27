@@ -157,6 +157,15 @@ type StagedDiscoveryJob = {
   relationships: Array<{ id: string; row_number: number; rel_type: string; from_class: string; to_class: string; target_hint?: string; status: string; message?: string }>;
 };
 
+type DiscoveryRollback = {
+  id: string;
+  discovery_job_id: string;
+  status: string;
+  summary?: Record<string, any>;
+  created_at?: string;
+  applied_at?: string | null;
+};
+
 type FlowSnapshot = {
   nodes: Node<DiscoveryFlowNodeData>[];
   edges: Edge[];
@@ -475,6 +484,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [currentPipelineId, setCurrentPipelineId] = useState<string | null>(null);
   const [preview, setPreview] = useState<PipelinePreview | null>(null);
   const [staged, setStaged] = useState<StagedDiscoveryJob | null>(null);
+  const [rollbacks, setRollbacks] = useState<DiscoveryRollback[]>([]);
   const [sourceForm, setSourceForm] = useState<SourceForm>({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "" });
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
@@ -901,9 +911,22 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       const res = await shell.fetch(`/discovery/jobs/${jobId}/staged`);
       if (!res.ok) throw new Error(await res.text());
       setStaged(await res.json());
+      await loadRollbacks(jobId);
       setView("runs");
     } catch {
       shell.notify("Staged discovery data could not be loaded", "error");
+    }
+  }
+
+  async function loadRollbacks(jobId?: string) {
+    try {
+      const path = jobId ? `/discovery/jobs/${jobId}/rollback` : "/discovery/rollbacks";
+      const res = await shell.fetch(path);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setRollbacks(data.rollbacks || []);
+    } catch {
+      shell.notify("Rollback history could not be loaded", "error");
     }
   }
 
@@ -918,6 +941,22 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       refresh();
     } catch (err: any) {
       shell.notify(err.message || "Discovery commit failed", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function applyRollback(rollbackId: string, jobId: string) {
+    setLoading(true);
+    try {
+      const res = await shell.fetch(`/discovery/rollbacks/${rollbackId}/apply`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Rollback failed");
+      shell.notify(`Rollback applied: ${data.deleted} deleted, ${data.restored} restored`, "success");
+      await loadStagedJob(jobId);
+      refresh();
+    } catch (err: any) {
+      shell.notify(err.message || "Discovery rollback failed", "error");
     } finally {
       setLoading(false);
     }
@@ -1311,6 +1350,48 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                       {relationship.message && <div className="mt-1 text-xs text-amber-100/80">{relationship.message}</div>}
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+            {staged && (
+              <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-gray-100">Rollback</h2>
+                    <p className="mt-1 text-xs text-gray-500">Restore or remove CMDB changes created by this committed discovery run.</p>
+                  </div>
+                  <button onClick={() => loadRollbacks(staged.job.id)} className="rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800">
+                    Refresh
+                  </button>
+                </div>
+                <div className="mt-4 space-y-2">
+                  {rollbacks.length ? rollbacks.map((rollback) => {
+                    const rollbackStats = rollback.summary?.rollback;
+                    return (
+                      <div key={rollback.id} className="rounded-md border border-gray-800 bg-gray-950 p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm text-gray-200">Rollback #{rollback.id.slice(0, 8)}</div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              {rollback.status}
+                              {rollback.summary?.created !== undefined ? ` · ${rollback.summary.created} created` : ""}
+                              {rollback.summary?.updated !== undefined ? ` · ${rollback.summary.updated} updated` : ""}
+                              {rollbackStats ? ` · ${rollbackStats.deleted || 0} deleted · ${rollbackStats.restored || 0} restored` : ""}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => applyRollback(rollback.id, staged.job.id)}
+                            disabled={loading || rollback.status === "applied"}
+                            className="rounded-md border border-rose-500/50 px-3 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }) : (
+                    <div className="rounded-md border border-dashed border-gray-800 p-5 text-center text-sm text-gray-500">No rollback snapshot for this run.</div>
+                  )}
                 </div>
               </div>
             )}
