@@ -83,6 +83,12 @@ interface RbacTarget {
   source?: string;
 }
 
+interface RbacApp {
+  id: string;
+  name: string;
+  permissions: string[];
+}
+
 interface AccessAnalysis {
   allowed: boolean;
   reason: string;
@@ -93,6 +99,34 @@ interface AccessAnalysis {
   action: string;
   relatedApps: { id: string; name: string; permissions: string[] }[];
   missing: { resource: string; action: string }[];
+  trace: { status: "allow" | "deny" | "info"; label: string; detail: string }[];
+}
+
+interface AppAccessExplanation {
+  allowed: boolean;
+  user: RbacUser | null;
+  role: string;
+  app: {
+    id: string;
+    name: string;
+    description?: string;
+    permissions: string[];
+    chatCapabilities: number;
+    chatTools: number;
+    events: string[];
+    adminPanels: number;
+  };
+  requirements: Array<{
+    declaredPermission: string;
+    resource: string;
+    action: string;
+    allowed: boolean;
+    reason: string;
+    risk: string;
+    description: string;
+  }>;
+  missing: Array<{ resource: string; action: string; risk: string }>;
+  remediation: Array<{ role: string; resource: string; action: string; risk: string; reason: string }>;
   trace: { status: "allow" | "deny" | "info"; label: string; detail: string }[];
 }
 
@@ -196,8 +230,11 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [numberSequenceOptions, setNumberSequenceOptions] = useState<NumberSequenceOption[]>([]);
   const [rbacUsers, setRbacUsers] = useState<RbacUser[]>([]);
   const [rbacTargets, setRbacTargets] = useState<RbacTarget[]>([]);
+  const [rbacApps, setRbacApps] = useState<RbacApp[]>([]);
   const [accessProbe, setAccessProbe] = useState({ userId: "", role: "", target: "" });
   const [accessAnalysis, setAccessAnalysis] = useState<AccessAnalysis | null>(null);
+  const [appAccessProbe, setAppAccessProbe] = useState({ userId: "", role: "", appId: "" });
+  const [appAccessExplanation, setAppAccessExplanation] = useState<AppAccessExplanation | null>(null);
   const [provisioningJobs, setProvisioningJobs] = useState<ProvisioningJob[]>([]);
   const [operationalIntelligence, setOperationalIntelligence] = useState<OperationalIntelligence | null>(null);
   const [loading, setLoading] = useState(true);
@@ -260,6 +297,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setNumberSequenceOptions(sequenceOptionsData.options || []);
       setRbacUsers(rbacOptionsData.users || []);
       setRbacTargets(rbacOptionsData.targets || []);
+      setRbacApps(rbacOptionsData.apps || []);
       setProvisioningJobs(jobsData.jobs || []);
       setOperationalIntelligence(opsData);
       setAccessProbe((current) => {
@@ -270,6 +308,16 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
           userId: firstUser?.id || "",
           role: firstUser?.role || "",
           target: firstTarget ? encodePermissionValue(firstTarget.resource, firstTarget.action) : "",
+        };
+      });
+      setAppAccessProbe((current) => {
+        if (current.userId || current.role || current.appId) return current;
+        const firstUser = rbacOptionsData.users?.[0];
+        const firstApp = rbacOptionsData.apps?.[0];
+        return {
+          userId: firstUser?.id || "",
+          role: firstUser?.role || "",
+          appId: firstApp?.id || "",
         };
       });
     } catch (err: any) {
@@ -344,6 +392,40 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function explainAppAccess(e?: React.FormEvent) {
+    e?.preventDefault();
+    if ((!appAccessProbe.userId && !appAccessProbe.role) || !appAccessProbe.appId) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/rbac/explain-access`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({
+          userId: appAccessProbe.userId || undefined,
+          role: appAccessProbe.userId ? undefined : appAccessProbe.role,
+          appId: appAccessProbe.appId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to explain access");
+      setAppAccessExplanation(data.result);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function prepareGrant(role: string, resource: string, action: string) {
+    setNewRole(role);
+    setNewResource(resource);
+    setNewAction(action);
+    setGrantScope("All");
+    setGrantSearch(resource);
   }
 
   async function addSystemProperty(e: React.FormEvent) {
@@ -747,6 +829,136 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     if (activeTab === "rbac") {
       return (
         <div className="space-y-6">
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                  <ShieldCheck className="h-4 w-4 text-cyan-300" />
+                  Explain App Access
+                </h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Troubleshoot whether a user or role can open and operate a registered application.
+                </p>
+              </div>
+              {appAccessExplanation && (
+                <div className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  appAccessExplanation.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
+                }`}>
+                  {appAccessExplanation.allowed ? "Complete" : `${appAccessExplanation.missing.length} missing`}
+                </div>
+              )}
+            </div>
+
+            <form onSubmit={explainAppAccess} className="mt-4 grid items-end gap-3 lg:grid-cols-[1.2fr_1fr_1.2fr_auto]">
+              <FieldSelect
+                label="User"
+                value={appAccessProbe.userId}
+                onChange={(value) => {
+                  const user = rbacUsers.find((candidate) => candidate.id === value);
+                  setAppAccessProbe((current) => ({ ...current, userId: value, role: user?.role || current.role }));
+                }}
+                options={[
+                  { value: "", label: "Explain role only" },
+                  ...rbacUsers.map((user) => ({ value: user.id, label: `${user.name || user.email} (${user.role})` })),
+                ]}
+              />
+              <FieldSelect
+                label="Role"
+                value={appAccessProbe.role}
+                onChange={(value) => setAppAccessProbe((current) => ({ ...current, role: value, userId: "" }))}
+                options={allRoles.map((role) => ({ value: role, label: role }))}
+              />
+              <FieldSelect
+                label="Application"
+                value={appAccessProbe.appId}
+                onChange={(value) => setAppAccessProbe((current) => ({ ...current, appId: value }))}
+                options={rbacApps.map((app) => ({ value: app.id, label: `${app.name} (${app.permissions.length})` }))}
+              />
+              <button
+                type="submit"
+                disabled={saving || (!appAccessProbe.userId && !appAccessProbe.role) || !appAccessProbe.appId}
+                className="flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500 disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Explain
+              </button>
+            </form>
+
+            {appAccessExplanation && (
+              <div className="mt-5 grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+                <div className={`rounded-lg border p-4 ${
+                  appAccessExplanation.allowed ? "border-emerald-500/30 bg-emerald-500/10" : "border-red-500/30 bg-red-500/10"
+                }`}>
+                  <div className="flex items-center gap-2">
+                    {appAccessExplanation.allowed ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <XCircle className="h-5 w-5 text-red-300" />}
+                    <div className="font-medium text-gray-100">
+                      {appAccessExplanation.role} {appAccessExplanation.allowed ? "has" : "does not have"} full access to {appAccessExplanation.app.name}
+                    </div>
+                  </div>
+                  <div className="mt-3 text-sm leading-6 text-gray-400">{appAccessExplanation.app.description}</div>
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <MiniMetric label="Requirements" value={appAccessExplanation.requirements.length} />
+                    <MiniMetric label="Missing" value={appAccessExplanation.missing.length} />
+                    <MiniMetric label="Chat capabilities" value={appAccessExplanation.app.chatCapabilities} />
+                    <MiniMetric label="Events" value={appAccessExplanation.app.events.length} />
+                  </div>
+                  {appAccessExplanation.trace.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                      {appAccessExplanation.trace.map((step, index) => (
+                        <div key={`${step.label}-${index}`} className="rounded-md border border-gray-800 bg-gray-950 px-3 py-2">
+                          <div className="flex items-center gap-2 text-xs font-medium text-gray-300">
+                            <span className={`h-2 w-2 rounded-full ${
+                              step.status === "allow" ? "bg-emerald-400" : step.status === "deny" ? "bg-red-400" : "bg-cyan-400"
+                            }`} />
+                            {step.label}
+                          </div>
+                          <div className="mt-1 text-xs leading-5 text-gray-500">{step.detail}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-gray-200">Permission Requirements</div>
+                    <div className="text-xs text-gray-600">{appAccessExplanation.app.permissions.join(", ")}</div>
+                  </div>
+                  <div className="space-y-2">
+                    {appAccessExplanation.requirements.map((requirement) => (
+                      <div key={`${requirement.resource}:${requirement.action}`} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`h-2 w-2 rounded-full ${requirement.allowed ? "bg-emerald-400" : "bg-red-400"}`} />
+                              <span className="font-mono text-xs text-gray-300">{requirement.resource}:{requirement.action}</span>
+                              <span className={`rounded border px-1.5 py-0.5 text-[10px] ${riskClass(requirement.risk)}`}>{requirement.risk}</span>
+                            </div>
+                            <div className="mt-2 text-sm leading-5 text-gray-500">{requirement.description}</div>
+                            <div className="mt-1 text-xs text-gray-600">{requirement.reason.replaceAll("_", " ")}</div>
+                          </div>
+                          {!requirement.allowed && (
+                            <button
+                              type="button"
+                              onClick={() => prepareGrant(appAccessExplanation.role, requirement.resource, requirement.action)}
+                              className="shrink-0 rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10"
+                            >
+                              Prepare grant
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {appAccessExplanation.remediation.length > 0 && (
+                    <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                      Add the missing grants below in Grant Builder, then rerun this explanation to verify access.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
             <div className="flex items-start justify-between gap-4">
               <div>

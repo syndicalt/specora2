@@ -471,6 +471,129 @@ async function analyzeAccess(
   };
 }
 
+async function resolveAccessSubject(
+  fastify: FastifyInstance,
+  body: { userId?: string; email?: string; role?: string }
+) {
+  let user: any = null;
+  if (body.userId) {
+    const result = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE id = $1", [body.userId]);
+    user = result.rows[0] || null;
+  } else if (body.email) {
+    const result = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE email = $1", [body.email]);
+    user = result.rows[0] || null;
+  }
+  const role = body.role || user?.role;
+  return { user, role };
+}
+
+function evaluateGrant(role: string, grants: any[], resource: string, action: string) {
+  const directGrant = grants.find((grant: any) => grant.resource === resource && grant.action === action) || null;
+  if (role === "security_admin") {
+    return { allowed: true, reason: "security_admin_implicit_allow", directGrant };
+  }
+  if (role === "admin" && resource !== "rbac") {
+    return { allowed: true, reason: "admin_implicit_allow", directGrant };
+  }
+  if (directGrant) {
+    return { allowed: true, reason: "direct_role_grant", directGrant };
+  }
+  return { allowed: false, reason: "missing_permission", directGrant };
+}
+
+async function explainAppAccess(
+  fastify: FastifyInstance,
+  body: { userId?: string; email?: string; role?: string; appId?: string }
+) {
+  const appId = body.appId?.trim();
+  if (!appId) return { error: "appId required" };
+
+  const { user, role } = await resolveAccessSubject(fastify, body);
+  if (!role) return { error: "user or role required" };
+
+  const apps = await getAllRegisteredApps(fastify);
+  const app = apps.find((candidate) => candidate.id === appId);
+  if (!app) return { error: "app not found" };
+
+  const grantsResult = await fastify.pg.query(
+    "SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY resource, action",
+    [role]
+  );
+  const grants = grantsResult.rows;
+  const requirements = app.permissions
+    .map((permission) => {
+      const parsed = permissionToResourceAction(permission);
+      if (!parsed) return null;
+      const evaluation = evaluateGrant(role, grants, parsed.resource, parsed.action);
+      const target = permissionTarget(parsed.resource, parsed.action, {
+        label: app.name,
+        source: `Native app: ${app.name}`,
+        category: "Application",
+      });
+      return {
+        declaredPermission: permission,
+        resource: parsed.resource,
+        action: parsed.action,
+        allowed: evaluation.allowed,
+        reason: evaluation.reason,
+        directGrant: evaluation.directGrant,
+        risk: target.risk,
+        description: target.description,
+      };
+    })
+    .filter((requirement): requirement is NonNullable<typeof requirement> => Boolean(requirement));
+  const missing = requirements
+    .filter((requirement) => !requirement.allowed)
+    .map((requirement) => ({ resource: requirement.resource, action: requirement.action, risk: requirement.risk }));
+
+  const trace: Array<{ status: "allow" | "deny" | "info"; label: string; detail: string }> = [
+    {
+      status: "info",
+      label: "Registered app",
+      detail: `${app.name} declares ${requirements.length} permission requirement${requirements.length === 1 ? "" : "s"}.`,
+    },
+  ];
+  if (role === "security_admin") {
+    trace.push({ status: "allow", label: "Security admin override", detail: "security_admin satisfies all app requirements implicitly." });
+  } else if (role === "admin") {
+    trace.push({ status: "info", label: "Admin implicit access", detail: "admin satisfies non-RBAC requirements implicitly; RBAC permissions still require explicit grants." });
+  }
+  if (missing.length) {
+    trace.push({ status: "deny", label: "Missing grants", detail: `${role} is missing ${missing.map((item) => `${item.resource}:${item.action}`).join(", ")}.` });
+  } else {
+    trace.push({ status: "allow", label: "Requirements satisfied", detail: `${role} satisfies every declared permission for ${app.name}.` });
+  }
+
+  return {
+    result: {
+      allowed: missing.length === 0,
+      user,
+      role,
+      app: {
+        id: app.id,
+        name: app.name,
+        description: app.description,
+        permissions: app.permissions,
+        chatCapabilities: Array.isArray(app.chatCapabilities) ? app.chatCapabilities.length : 0,
+        chatTools: Array.isArray(app.chatTools) ? app.chatTools.length : 0,
+        events: Array.isArray(app.events) ? app.events : [],
+        adminPanels: Array.isArray(app.adminPanels) ? app.adminPanels.length : 0,
+      },
+      requirements,
+      missing,
+      grants,
+      trace,
+      remediation: missing.map((item) => ({
+        role,
+        resource: item.resource,
+        action: item.action,
+        risk: item.risk,
+        reason: `Grant ${item.resource}:${item.action} to ${role} to satisfy ${app.name} access.`,
+      })),
+    },
+  };
+}
+
 export async function getStateMachineConfig(pg: any): Promise<any> {
   const result = await pg.query("SELECT value FROM system_properties WHERE key = 'change_manager.state_machine'");
   if (!result.rows.length) return null;
@@ -602,6 +725,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to analyze access" });
+    }
+  });
+
+  fastify.post("/api/admin/rbac/explain-access", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (request, reply) => {
+    try {
+      const result = await explainAppAccess(fastify, request.body as any);
+      if ("error" in result) return reply.status(400).send(result);
+      return result;
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to explain app access" });
     }
   });
 

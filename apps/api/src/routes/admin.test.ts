@@ -154,6 +154,41 @@ describe("adminRoutes", () => {
     expect(body.result.relatedApps[0].id).toBe("incident-manager");
   });
 
+  it("explains app access requirements and missing grants", async () => {
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1 AND resource = $2 AND action = $3")) {
+        return Promise.resolve({ rows: [{ id: "admin-rbac", role: "security_admin", resource: "rbac", action: "read" }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT id, name, email, role FROM users WHERE id = $1")) {
+        return Promise.resolve({ rows: [{ id: params?.[0], name: "Olivia Ops", email: "olivia@example.com", role: "operator" }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY")) {
+        return Promise.resolve({ rows: [{ id: "perm-1", role: "operator", resource: "incident-manager", action: "read" }], rowCount: 1 });
+      }
+      if (sql.includes("FROM marketplace_apps")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/rbac/explain-access",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { userId: "u-ops", appId: "incident-manager" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.result.allowed).toBe(false);
+    expect(body.result.app.id).toBe("incident-manager");
+    expect(body.result.requirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: "incident-manager", action: "read", allowed: true }),
+      expect.objectContaining({ resource: "incident-manager", action: "write", allowed: false }),
+    ]));
+    expect(body.result.remediation[0]).toMatchObject({ role: "operator", resource: "incident-manager", action: "write" });
+  });
+
   it("manages number sequences", async () => {
     const app = await buildApp((sql: string) => {
       if (sql.includes("app_permissions WHERE role = $1")) {
