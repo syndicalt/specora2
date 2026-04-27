@@ -108,6 +108,36 @@ interface ProvisioningJob {
   completed_at: string | null;
 }
 
+interface OperationalDomain {
+  id: string;
+  label: string;
+  score: number;
+  posture: "healthy" | "watch" | "attention" | string;
+  metrics: { label: string; value: string | number | null }[];
+}
+
+interface OperationalSignal {
+  severity: "critical" | "warning" | "info" | string;
+  title: string;
+  detail: string;
+  action: string;
+  appId: string;
+}
+
+interface OperationalIntelligence {
+  generatedAt: string;
+  overall: { score: number; posture: string; summary: string };
+  domains: OperationalDomain[];
+  signals: OperationalSignal[];
+  governance: {
+    permissionGrants: number;
+    activeSequences: number;
+    auditEvents24h: number;
+    activePackageJobs: number;
+  };
+  cmdb: { ciCount: number | null; relationshipCount: number | null };
+}
+
 
 
 const PANEL_COMPONENTS: Record<string, React.ComponentType<{ shell: any }>> = {
@@ -146,6 +176,17 @@ function riskClass(risk?: string) {
   return "border-emerald-400/30 bg-emerald-500/10 text-emerald-200";
 }
 
+function postureClass(posture?: string) {
+  if (posture === "attention") return "border-red-500/30 bg-red-500/10 text-red-100";
+  if (posture === "watch") return "border-amber-500/30 bg-amber-500/10 text-amber-100";
+  return "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
+}
+
+function scoreText(score?: number) {
+  if (score === undefined || score === null) return "-";
+  return `${Math.round(score)}`;
+}
+
 export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [activeTab, setActiveTab] = useState<string>("overview");
   const [panels, setPanels] = useState<AdminPanel[]>([]);
@@ -158,6 +199,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [accessProbe, setAccessProbe] = useState({ userId: "", role: "", target: "" });
   const [accessAnalysis, setAccessAnalysis] = useState<AccessAnalysis | null>(null);
   const [provisioningJobs, setProvisioningJobs] = useState<ProvisioningJob[]>([]);
+  const [operationalIntelligence, setOperationalIntelligence] = useState<OperationalIntelligence | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -188,7 +230,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, jobsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -196,6 +238,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/apps/provisioning-jobs`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/operational-intelligence`, { headers: { Authorization: `Bearer ${token || ""}` } }),
       ]);
 
       if (!permRes.ok) throw new Error("Failed to fetch permissions");
@@ -208,6 +251,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const rbacOptionsData = rbacOptionsRes.ok ? await rbacOptionsRes.json() : { users: [], targets: [] };
       const jobsData = jobsRes.ok ? await jobsRes.json() : { jobs: [] };
+      const opsData = opsRes.ok ? await opsRes.json() : null;
 
       setPermissions(permData.permissions || []);
       setSystemProps(propData.properties || []);
@@ -217,6 +261,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setRbacUsers(rbacOptionsData.users || []);
       setRbacTargets(rbacOptionsData.targets || []);
       setProvisioningJobs(jobsData.jobs || []);
+      setOperationalIntelligence(opsData);
       setAccessProbe((current) => {
         if (current.userId || current.role || current.target) return current;
         const firstUser = rbacOptionsData.users?.[0];
@@ -509,10 +554,125 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     { label: "Admin panels", value: panels.length + 3, tone: "text-amber-200", detail: "Core and app-owned" },
   ];
 
+  function openNativeApp(appId: string) {
+    const permissionMap: Record<string, string[]> = {
+      "incident-manager": ["itsm:incident:read", "itsm:incident:write"],
+      "change-manager": ["itsm:change:read", "itsm:change:write"],
+      "knowledge-core": ["itsm:knowledge:read", "itsm:knowledge:write"],
+      "asset-command": ["itsm:asset:read", "itsm:asset:write"],
+      discovery: ["read:discovery", "write:discovery"],
+    };
+    shell.dispatch?.({
+      type: "OPEN_APP",
+      id: appId,
+      installKey: `builtin_${appId}`,
+      mode: "canvas",
+      permissions: permissionMap[appId] || [],
+    });
+  }
+
   const renderTabContent = () => {
     if (activeTab === "overview") {
       return (
         <div className="space-y-6">
+          {operationalIntelligence && (
+            <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                    <Activity className="h-4 w-4 text-cyan-300" />
+                    Operational Intelligence
+                  </div>
+                  <p className="mt-1 max-w-3xl text-sm leading-6 text-gray-500">
+                    Cross-module readiness signals that show whether Specora is operating like a connected platform instead of isolated apps.
+                  </p>
+                </div>
+                <div className={`rounded-lg border px-4 py-3 text-right ${postureClass(operationalIntelligence.overall.posture)}`}>
+                  <div className="text-xs uppercase tracking-wide opacity-70">Platform Score</div>
+                  <div className="mt-1 text-3xl font-semibold">{scoreText(operationalIntelligence.overall.score)}</div>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-lg border border-gray-800 bg-gray-950 px-4 py-3 text-sm leading-6 text-gray-400">
+                {operationalIntelligence.overall.summary}
+              </div>
+
+              <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                {operationalIntelligence.domains.map((domain) => (
+                  <div key={domain.id} className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-gray-100">{domain.label}</div>
+                        <div className="mt-1 text-xs capitalize text-gray-500">{domain.posture}</div>
+                      </div>
+                      <div className={`rounded-md border px-2.5 py-1 text-sm font-semibold ${postureClass(domain.posture)}`}>
+                        {scoreText(domain.score)}
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      {domain.metrics.map((metric) => (
+                        <div key={metric.label} className="rounded-md border border-gray-800 bg-gray-900 px-3 py-2">
+                          <div className="text-[11px] uppercase tracking-wide text-gray-600">{metric.label}</div>
+                          <div className="mt-1 text-sm font-medium text-gray-200">{metric.value ?? "-"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+                <div className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-medium text-gray-200">
+                    <AlertTriangle className="h-4 w-4 text-amber-300" />
+                    Priority Signals
+                  </div>
+                  <div className="space-y-2">
+                    {operationalIntelligence.signals.length ? operationalIntelligence.signals.map((signal) => (
+                      <div key={`${signal.appId}-${signal.title}`} className={`rounded-lg border p-3 ${signal.severity === "critical" ? "border-red-500/30 bg-red-500/10" : "border-amber-500/30 bg-amber-500/10"}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium text-gray-100">{signal.title}</div>
+                            <div className="mt-1 text-sm leading-5 text-gray-400">{signal.detail}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => openNativeApp(signal.appId)}
+                            className="shrink-0 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800"
+                          >
+                            {signal.action}
+                          </button>
+                        </div>
+                      </div>
+                    )) : (
+                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-100">
+                        No high-priority cross-module signals are active.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-medium text-gray-200">
+                    <Database className="h-4 w-4 text-indigo-300" />
+                    Governance And Data Spine
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <MiniMetric label="Permission grants" value={operationalIntelligence.governance.permissionGrants} />
+                    <MiniMetric label="Active counters" value={operationalIntelligence.governance.activeSequences} />
+                    <MiniMetric label="Audit events 24h" value={operationalIntelligence.governance.auditEvents24h} />
+                    <MiniMetric label="Package jobs" value={operationalIntelligence.governance.activePackageJobs} />
+                    <MiniMetric label="CMDB CIs" value={operationalIntelligence.cmdb.ciCount ?? "-"} />
+                    <MiniMetric label="CMDB relationships" value={operationalIntelligence.cmdb.relationshipCount ?? "-"} />
+                  </div>
+                  <div className="mt-3 text-xs text-gray-600">
+                    Refreshed {new Date(operationalIntelligence.generatedAt).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="grid gap-4 lg:grid-cols-4">
             {adminReadiness.map((item) => (
               <div key={item.label} className="rounded-lg border border-gray-800 bg-gray-900 p-4">
@@ -1177,6 +1337,15 @@ function FieldInput({ label, value, onChange, placeholder, type = "text" }: { la
         placeholder={placeholder}
         className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
       />
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-md border border-gray-800 bg-gray-900 px-3 py-2">
+      <div className="text-[11px] uppercase tracking-wide text-gray-600">{label}</div>
+      <div className="mt-1 text-sm font-medium text-gray-200">{value}</div>
     </div>
   );
 }

@@ -360,6 +360,46 @@ describe("adminRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["system_property.updated", "SystemProperty", "change-manager.state_machine"]));
   });
 
+  it("GET /api/admin/operational-intelligence returns cross-module readiness signals", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("FROM incidents")) {
+        return Promise.resolve({ rows: [{ total: 3, open: 2, high_open: 1, ai_pending: 1, avg_ai_confidence: 0.82 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM change_requests")) {
+        return Promise.resolve({ rows: [{ total: 4, pending_approval: 1, high_risk_active: 1, upcoming: 2, pending_without_brief: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM knowledge_items")) {
+        return Promise.resolve({ rows: [{ total: 5, published: 4, stale: 1, avg_health: 0.72, open_gaps: 2 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM catalog_requests")) {
+        return Promise.resolve({ rows: [{ total: 6, open: 3, high_priority: 1, active_handoffs: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM asset_records")) {
+        return Promise.resolve({ rows: [{ total: 7, active: 6, weak_evidence: 1, open_exceptions: 2, entitlement_overage: 0 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM discovery_pipelines")) {
+        return Promise.resolve({ rows: [{ pipelines: 2, published_pipelines: 1, unhealthy_sources: 1, failed_jobs_7d: 1, staged_records: 3 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM app_permissions")) {
+        return Promise.resolve({ rows: [{ permission_grants: 20, active_sequences: 7, audit_events_24h: 11, active_package_jobs: 0 }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/admin/operational-intelligence",
+      headers: authHeader(app),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.overall.score).toBeGreaterThan(0);
+    expect(body.domains.map((domain: any) => domain.id)).toContain("incidents");
+    expect(body.signals.some((signal: any) => signal.appId === "incident-manager")).toBe(true);
+    expect(body.governance.permissionGrants).toBe(20);
+  });
+
   it("rejects non-security_admin users", async () => {
     const app = await buildApp((sql: string) => {
       if (sql.includes("app_permissions WHERE role = $1")) {
