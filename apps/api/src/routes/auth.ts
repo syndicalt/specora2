@@ -139,6 +139,29 @@ function normalizeGroupClaims(value: unknown) {
   return [];
 }
 
+function decodeJwtPayload(token: string): Record<string, any> {
+  const parts = token.split(".");
+  if (parts.length < 2) throw new Error("OIDC ID token is malformed");
+  try {
+    return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  } catch {
+    throw new Error("OIDC ID token payload is invalid");
+  }
+}
+
+function validateOidcIdTokenClaims(config: SsoConfig, idToken?: string) {
+  if (!idToken) throw new Error("OIDC token response did not include an ID token");
+  const payload = decodeJwtPayload(idToken);
+  if (config.issuer_url && payload.iss !== config.issuer_url) throw new Error("OIDC ID token issuer does not match provider configuration");
+  const audience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (config.client_id && !audience.includes(config.client_id)) throw new Error("OIDC ID token audience does not include this client");
+  const now = Math.floor(Date.now() / 1000);
+  const skew = 300;
+  if (typeof payload.nbf === "number" && payload.nbf > now + skew) throw new Error("OIDC ID token is not yet valid");
+  if (typeof payload.exp !== "number" || payload.exp <= now - skew) throw new Error("OIDC ID token has expired");
+  return payload;
+}
+
 function configuredOAuthProviders() {
   return [
     { id: "google", name: "Google", configured: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) },
@@ -413,6 +436,7 @@ async function exchangeOidcCode(config: SsoConfig, code: string): Promise<OAuthP
   if (!tokenResponse.ok) throw new Error("OIDC token exchange failed");
   const tokens = await tokenResponse.json() as { access_token?: string; id_token?: string };
   if (!tokens.access_token) throw new Error("OIDC token response did not include an access token");
+  const idTokenClaims = validateOidcIdTokenClaims(config, tokens.id_token);
   const userResponse = await fetch(config.userinfo_url, {
     headers: { Authorization: `Bearer ${tokens.access_token}`, Accept: "application/json" },
   });
@@ -426,7 +450,7 @@ async function exchangeOidcCode(config: SsoConfig, code: string): Promise<OAuthP
     email: String(profile[emailKey] || ""),
     name: String(profile[nameKey] || profile[emailKey] || "SSO User"),
     emailVerified: profile.email_verified !== false,
-    raw: { ...profile, idTokenPresent: Boolean(tokens.id_token) },
+    raw: { ...profile, idToken: { issuer: idTokenClaims.iss, audience: idTokenClaims.aud, subject: idTokenClaims.sub } },
   };
 }
 

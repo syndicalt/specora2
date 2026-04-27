@@ -187,6 +187,12 @@ async function buildApp(pg: FakePg, user: any = { id: "550e8400-e29b-41d4-a716-4
   return app;
 }
 
+function unsignedIdToken(payload: Record<string, unknown>) {
+  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return `${header}.${body}.`;
+}
+
 describe("auth routes", () => {
   it("logs in with short-lived access token and opaque refresh token", async () => {
     const hash = await bcrypt.hash("secret123", 10);
@@ -408,7 +414,13 @@ describe("auth routes", () => {
 
   it("syncs OIDC group claims into identity groups", async () => {
     process.env.TEST_OIDC_SECRET = "secret";
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+    const idToken = unsignedIdToken({
+      iss: "https://idp.example",
+      aud: "client-1",
+      sub: "idp-user-1",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", id_token: idToken }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         sub: "idp-user-1",
         email: "alice@example.com",
@@ -428,6 +440,7 @@ describe("auth routes", () => {
       userinfo_url: "https://idp.example/userinfo",
       client_id: "client-1",
       client_secret_ref: "env:TEST_OIDC_SECRET",
+      issuer_url: "https://idp.example",
       default_role: "operator",
       attribute_mapping: { email: "email", name: "name", groups: "groups" },
     });
@@ -439,6 +452,40 @@ describe("auth routes", () => {
     expect(res.statusCode).toBe(302);
     expect(pg.identityGroups.map((group) => group.name)).toEqual(["Service Desk", "Change Managers"]);
     expect(pg.identityMemberships).toHaveLength(2);
+    fetchMock.mockRestore();
+    delete process.env.TEST_OIDC_SECRET;
+  });
+
+  it("rejects OIDC callbacks with invalid ID token audience", async () => {
+    process.env.TEST_OIDC_SECRET = "secret";
+    const idToken = unsignedIdToken({
+      iss: "https://idp.example",
+      aud: "other-client",
+      sub: "idp-user-1",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", id_token: idToken }), { status: 200 }));
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "sso-1",
+      name: "Okta",
+      provider: "oidc",
+      status: "active",
+      email_domains: ["example.com"],
+      token_url: "https://idp.example/token",
+      userinfo_url: "https://idp.example/userinfo",
+      client_id: "client-1",
+      client_secret_ref: "env:TEST_OIDC_SECRET",
+      issuer_url: "https://idp.example",
+      attribute_mapping: { email: "email", name: "name", groups: "groups" },
+    });
+    const app = await buildApp(pg);
+    const state = Buffer.from(JSON.stringify({ typ: "sso-state", configId: "sso-1", returnTo: "/admin" })).toString("base64url");
+
+    const res = await app.inject({ method: "GET", url: `/api/auth/sso/sso-1/callback?code=abc&state=${state}` });
+
+    expect(res.statusCode).toBe(401);
+    expect(pg.users).toHaveLength(0);
     fetchMock.mockRestore();
     delete process.env.TEST_OIDC_SECRET;
   });
