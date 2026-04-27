@@ -347,6 +347,113 @@ describe("adminRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["rbac.field_restriction.created", "FieldRestriction", "field:pg.incidents.title"]));
   });
 
+  it("reports RBAC policy drift across registered app requirements", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("SELECT id, role, resource, action FROM app_permissions ORDER BY role")) {
+        return Promise.resolve({
+          rows: [
+            { id: "perm-1", role: "operator", resource: "incident-manager", action: "read" },
+            { id: "perm-2", role: "operator", resource: "legacy-app", action: "write" },
+          ],
+          rowCount: 2,
+        });
+      }
+      if (sql.includes("FROM marketplace_apps")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/admin/rbac/policy-drift",
+      headers: authHeader(app),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.summary.registeredTargets).toBeGreaterThan(0);
+    expect(body.summary.orphaned).toBe(1);
+    expect(body.orphaned[0]).toMatchObject({ role: "operator", resource: "legacy-app", action: "write" });
+    expect(body.roleCoverage[0].missing.length).toBeGreaterThan(0);
+  });
+
+  it("bulk grants permissions with dedupe and audit", async () => {
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("INSERT INTO app_permissions")) {
+        if (params?.[1] === "incident-manager" && params?.[2] === "read") {
+          return Promise.resolve({ rows: [{ id: "perm-1", role: params?.[0], resource: params?.[1], action: params?.[2] }], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/rbac/bulk-permissions",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: {
+        role: "operator",
+        grants: [
+          { resource: "incident-manager", action: "read" },
+          { resource: "incident-manager", action: "read" },
+          { resource: "incident-manager", action: "write" },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.created).toHaveLength(1);
+    expect(body.skipped).toEqual([expect.objectContaining({ resource: "incident-manager", action: "write", reason: "already_granted" })]);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["rbac.permission.bulk_created", "AppPermission", "operator"]));
+  });
+
+  it("searches and exports audit events", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("FROM audit_log a") && sql.includes("COUNT")) {
+        return Promise.resolve({ rows: [{ total: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM audit_log a")) {
+        return Promise.resolve({
+          rows: [{
+            id: "audit-1",
+            actor_id: "00000000-0000-4000-8000-000000000001",
+            actor_email: "admin@example.com",
+            actor_name: "Admin",
+            action: "rbac.permission.created",
+            entity_type: "AppPermission",
+            entity_id: "perm-1",
+            old_values: null,
+            new_values: { role: "operator" },
+            metadata: { source: "api.admin" },
+            created_at: "2026-04-26T12:00:00.000Z",
+          }],
+          rowCount: 1,
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/api/admin/audit-log?q=rbac&limit=25",
+      headers: authHeader(app),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.payload).entries[0]).toMatchObject({ action: "rbac.permission.created", actorEmail: "admin@example.com" });
+
+    const exported = await app.inject({
+      method: "GET",
+      url: "/api/admin/audit-log?q=rbac&format=csv",
+      headers: authHeader(app),
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.headers["content-type"]).toContain("text/csv");
+    expect(exported.payload).toContain("rbac.permission.created");
+  });
+
   it("manages number sequences", async () => {
     const app = await buildApp((sql: string) => {
       if (sql.includes("app_permissions WHERE role = $1")) {

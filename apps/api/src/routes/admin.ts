@@ -121,6 +121,34 @@ function permissionTarget(resource: string, action: string, overrides: Record<st
   };
 }
 
+function parsePositiveInt(value: any, fallback: number, max: number) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+}
+
+function csvCell(value: any) {
+  if (value === null || value === undefined) return "";
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function auditRow(row: any) {
+  return {
+    id: row.id,
+    actorId: row.actor_id,
+    actorEmail: row.actor_email || null,
+    actorName: row.actor_name || null,
+    action: row.action,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    oldValues: row.old_values,
+    newValues: row.new_values,
+    metadata: row.metadata,
+    createdAt: row.created_at,
+  };
+}
+
 type AdminTableField = { name: string; label: string; writable: boolean };
 
 function tableFieldsForExplanation(table: any): AdminTableField[] {
@@ -695,6 +723,93 @@ function registeredAppTools() {
     .sort((a, b) => `${a.appId}:${a.toolName}`.localeCompare(`${b.appId}:${b.toolName}`));
 }
 
+async function buildPolicyDrift(fastify: FastifyInstance) {
+  const [permissionsResult, apps] = await Promise.all([
+    fastify.pg.query("SELECT id, role, resource, action FROM app_permissions ORDER BY role, resource, action"),
+    getAllRegisteredApps(fastify),
+  ]);
+  const grants = permissionsResult.rows;
+  const roles = Array.from(new Set(grants.map((grant: any) => grant.role).filter(Boolean))).sort();
+  const requiredTargets = new Map<string, any>();
+
+  for (const app of apps) {
+    for (const permission of app.permissions || []) {
+      const parsed = permissionToResourceAction(permission);
+      if (!parsed) continue;
+      const key = `${parsed.resource}\u0000${parsed.action}`;
+      const current = requiredTargets.get(key) || {
+        resource: parsed.resource,
+        action: parsed.action,
+        label: app.name,
+        risk: permissionRisk(parsed.resource, parsed.action),
+        apps: [],
+      };
+      current.apps.push({ id: app.id, name: app.name });
+      requiredTargets.set(key, current);
+    }
+  }
+
+  for (const tool of registeredAppTools()) {
+    const key = `${tool.resource}\u0000${tool.action}`;
+    const current = requiredTargets.get(key) || {
+      resource: tool.resource,
+      action: tool.action,
+      label: `${tool.appId} automation`,
+      risk: permissionRisk(tool.resource, tool.action),
+      apps: [],
+    };
+    if (!current.apps.some((app: any) => app.id === tool.appId)) {
+      current.apps.push({ id: tool.appId, name: tool.appId });
+    }
+    requiredTargets.set(key, current);
+  }
+
+  const orphaned = grants
+    .filter((grant: any) => !requiredTargets.has(`${grant.resource}\u0000${grant.action}`) && !grant.resource.startsWith("field:"))
+    .map((grant: any) => ({
+      id: grant.id,
+      role: grant.role,
+      resource: grant.resource,
+      action: grant.action,
+      risk: permissionRisk(grant.resource, grant.action),
+      reason: "No registered native app or app tool currently declares this target.",
+    }));
+
+  const roleCoverage = roles.map((role) => {
+    const missing = Array.from(requiredTargets.values())
+      .filter((target) => !evaluateGrant(role, grants.filter((grant: any) => grant.role === role), target.resource, target.action).allowed)
+      .map((target) => ({ role, resource: target.resource, action: target.action, risk: target.risk, apps: target.apps }));
+    return {
+      role,
+      required: requiredTargets.size,
+      granted: requiredTargets.size - missing.length,
+      missing,
+      score: requiredTargets.size ? Math.round(((requiredTargets.size - missing.length) / requiredTargets.size) * 100) : 100,
+    };
+  });
+
+  const missingCritical = roleCoverage.flatMap((coverage) =>
+    coverage.missing.filter((item: any) => item.risk === "critical" || item.risk === "high")
+  );
+  const duplicateCount = grants.length - new Set(grants.map((grant: any) => `${grant.role}:${grant.resource}:${grant.action}`)).size;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      roles: roles.length,
+      registeredTargets: requiredTargets.size,
+      grants: grants.length,
+      orphaned: orphaned.length,
+      missingHighRisk: missingCritical.length,
+      duplicates: duplicateCount,
+      posture: orphaned.length || missingCritical.length ? "attention" : "healthy",
+    },
+    roleCoverage,
+    orphaned,
+    registeredTargets: Array.from(requiredTargets.values()).sort((a, b) => `${a.resource}:${a.action}`.localeCompare(`${b.resource}:${b.action}`)),
+  };
+}
+
 async function explainToolAccess(
   fastify: FastifyInstance,
   body: { userId?: string; email?: string; role?: string; appId?: string; toolName?: string }
@@ -1129,6 +1244,62 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.get("/api/admin/rbac/policy-drift", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (_request, reply) => {
+    try {
+      return await buildPolicyDrift(fastify);
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to build policy drift report" });
+    }
+  });
+
+  fastify.post("/api/admin/rbac/bulk-permissions", { onRequest: [fastify.authenticate, requirePermission("rbac", "write")] }, async (request, reply) => {
+    const body = request.body as { role?: string; grants?: Array<{ resource?: string; action?: string }> };
+    const role = body.role?.trim();
+    const grants = Array.isArray(body.grants) ? body.grants : [];
+    if (!role || !grants.length) {
+      return reply.status(400).send({ error: "role and grants required" });
+    }
+    const normalized = Array.from(new Map(grants
+      .map((grant) => ({ resource: grant.resource?.trim(), action: grant.action?.trim() }))
+      .filter((grant): grant is { resource: string; action: string } => Boolean(grant.resource && grant.action))
+      .map((grant) => [`${grant.resource}\u0000${grant.action}`, grant])).values());
+    if (!normalized.length || normalized.length > 100) {
+      return reply.status(400).send({ error: "bulk grants must include 1-100 valid resource/action pairs" });
+    }
+    try {
+      const created: any[] = [];
+      const skipped: any[] = [];
+      for (const grant of normalized) {
+        const result = await fastify.pg.query(
+          `INSERT INTO app_permissions (role, resource, action)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (role, resource, action) DO NOTHING
+           RETURNING id, role, resource, action`,
+          [role, grant.resource, grant.action]
+        );
+        if (result.rows[0]) {
+          created.push(result.rows[0]);
+        } else {
+          skipped.push({ role, resource: grant.resource, action: grant.action, reason: "already_granted" });
+        }
+      }
+      if (created.length) clearPermissionCache();
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "rbac.permission.bulk_created",
+        entityType: "AppPermission",
+        entityId: role,
+        newValues: { created },
+        metadata: { source: "api.admin", surface: "admin-console", requested: normalized.length, skipped },
+      });
+      return { role, created, skipped, requested: normalized.length };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to bulk grant permissions" });
+    }
+  });
+
   fastify.get("/api/admin/operational-intelligence", { onRequest: [fastify.authenticate, requirePermission("system-properties", "read")] }, async (_request, reply) => {
     try {
       return await buildOperationalIntelligence(fastify);
@@ -1289,6 +1460,60 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to fetch permissions" });
+    }
+  });
+
+  fastify.get("/api/admin/audit-log", { onRequest: [fastify.authenticate, requirePermission("audit-log", "read")] }, async (request, reply) => {
+    const query = request.query as { q?: string; action?: string; entityType?: string; actorId?: string; format?: string; limit?: string; offset?: string };
+    const limit = parsePositiveInt(query.limit, query.format === "csv" ? 500 : 50, 1000);
+    const offset = parsePositiveInt(query.offset, 1, 1000000) - 1;
+    const where = ["1=1"];
+    const params: any[] = [];
+    const add = (clause: string, value: any) => {
+      params.push(value);
+      where.push(clause.replace("?", `$${params.length}`));
+    };
+    if (query.q?.trim()) {
+      const q = `%${query.q.trim()}%`;
+      params.push(q, q, q, q);
+      where.push(`(a.action ILIKE $${params.length - 3} OR a.entity_type ILIKE $${params.length - 2} OR a.entity_id ILIKE $${params.length - 1} OR u.email ILIKE $${params.length})`);
+    }
+    if (query.action?.trim()) add("a.action = ?", query.action.trim());
+    if (query.entityType?.trim()) add("a.entity_type = ?", query.entityType.trim());
+    if (query.actorId?.trim()) add("a.actor_id = ?::uuid", query.actorId.trim());
+    try {
+      const result = await fastify.pg.query(
+        `SELECT a.id, a.actor_id, u.email AS actor_email, u.name AS actor_name, a.action, a.entity_type, a.entity_id,
+                a.old_values, a.new_values, a.metadata, a.created_at
+         FROM audit_log a
+         LEFT JOIN users u ON u.id = a.actor_id
+         WHERE ${where.join(" AND ")}
+         ORDER BY a.created_at DESC, a.id DESC
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
+      );
+      const count = await fastify.pg.query(
+        `SELECT COUNT(*)::int AS total
+         FROM audit_log a
+         LEFT JOIN users u ON u.id = a.actor_id
+         WHERE ${where.join(" AND ")}`,
+        params
+      );
+      const rows = result.rows.map(auditRow);
+      if (query.format === "csv") {
+        const csv = [
+          ["id", "createdAt", "actorId", "actorEmail", "action", "entityType", "entityId", "metadata"].join(","),
+          ...rows.map((row) => [row.id, row.createdAt, row.actorId, row.actorEmail, row.action, row.entityType, row.entityId, row.metadata].map(csvCell).join(",")),
+        ].join("\n");
+        return reply
+          .header("content-type", "text/csv; charset=utf-8")
+          .header("content-disposition", "attachment; filename=\"specora-audit-log.csv\"")
+          .send(csv);
+      }
+      return { entries: rows, total: count.rows[0]?.total || 0, limit, offset };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to fetch audit log" });
     }
   });
 

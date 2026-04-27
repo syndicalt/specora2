@@ -227,6 +227,39 @@ interface TableAccessExplanation {
   trace: { status: "allow" | "deny" | "info"; label: string; detail: string }[];
 }
 
+interface PolicyDriftReport {
+  generatedAt: string;
+  summary: {
+    roles: number;
+    registeredTargets: number;
+    grants: number;
+    orphaned: number;
+    missingHighRisk: number;
+    duplicates: number;
+    posture: string;
+  };
+  roleCoverage: Array<{
+    role: string;
+    required: number;
+    granted: number;
+    score: number;
+    missing: Array<{ role: string; resource: string; action: string; risk: string; apps: Array<{ id: string; name: string }> }>;
+  }>;
+  orphaned: Array<{ id: string; role: string; resource: string; action: string; risk: string; reason: string }>;
+}
+
+interface AuditEntry {
+  id: string;
+  actorId: string | null;
+  actorEmail: string | null;
+  actorName: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  metadata: any;
+  createdAt: string;
+}
+
 interface ProvisioningJob {
   id: string;
   app_id: string;
@@ -340,12 +373,19 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [tableAccessExplanation, setTableAccessExplanation] = useState<TableAccessExplanation | null>(null);
   const [fieldRestrictionTables, setFieldRestrictionTables] = useState<FieldRestrictionTable[]>([]);
   const [fieldRestrictionTableId, setFieldRestrictionTableId] = useState("");
+  const [policyDrift, setPolicyDrift] = useState<PolicyDriftReport | null>(null);
+  const [selectedBulkGrants, setSelectedBulkGrants] = useState<Record<string, boolean>>({});
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditSearch, setAuditSearch] = useState("");
   const [openRbacUtilities, setOpenRbacUtilities] = useState<Record<string, boolean>>({
     app: true,
     tool: false,
     table: true,
     fieldRestrictions: false,
     analyzer: false,
+    drift: false,
+    audit: false,
   });
   const [provisioningJobs, setProvisioningJobs] = useState<ProvisioningJob[]>([]);
   const [operationalIntelligence, setOperationalIntelligence] = useState<OperationalIntelligence | null>(null);
@@ -379,7 +419,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, fieldRestrictionsRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -387,6 +427,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/field-restrictions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/rbac/policy-drift`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/audit-log?limit=25`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/apps/provisioning-jobs`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/operational-intelligence`, { headers: { Authorization: `Bearer ${token || ""}` } }),
       ]);
@@ -401,6 +443,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const rbacOptionsData = rbacOptionsRes.ok ? await rbacOptionsRes.json() : { users: [], targets: [] };
       const fieldRestrictionsData = fieldRestrictionsRes.ok ? await fieldRestrictionsRes.json() : { tables: [] };
+      const driftData = driftRes.ok ? await driftRes.json() : null;
+      const auditData = auditRes.ok ? await auditRes.json() : { entries: [], total: 0 };
       const jobsData = jobsRes.ok ? await jobsRes.json() : { jobs: [] };
       const opsData = opsRes.ok ? await opsRes.json() : null;
 
@@ -416,6 +460,9 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setRbacTables(rbacOptionsData.tables || []);
       setFieldRestrictionTables(fieldRestrictionsData.tables || []);
       setFieldRestrictionTableId((current) => current || fieldRestrictionsData.tables?.[0]?.id || "");
+      setPolicyDrift(driftData);
+      setAuditEntries(auditData.entries || []);
+      setAuditTotal(auditData.total || 0);
       setProvisioningJobs(jobsData.jobs || []);
       setOperationalIntelligence(opsData);
       setAccessProbe((current) => {
@@ -485,6 +532,67 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setError(err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function bulkGrantPermissions(role: string, grants: Array<{ resource: string; action: string }>) {
+    if (!role || !grants.length) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/rbac/bulk-permissions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({ role, grants }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to bulk grant permissions");
+      setSelectedBulkGrants({});
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function searchAuditLog(e?: React.FormEvent) {
+    e?.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const params = new URLSearchParams({ limit: "50" });
+      if (auditSearch.trim()) params.set("q", auditSearch.trim());
+      const res = await fetch(`${API_URL}/api/admin/audit-log?${params.toString()}`, { headers: { Authorization: `Bearer ${token || ""}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to search audit log");
+      setAuditEntries(data.entries || []);
+      setAuditTotal(data.total || 0);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function exportAuditLog() {
+    const params = new URLSearchParams({ limit: "500", format: "csv" });
+    if (auditSearch.trim()) params.set("q", auditSearch.trim());
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/audit-log?${params.toString()}`, { headers: { Authorization: `Bearer ${token || ""}` } });
+      if (!res.ok) throw new Error("Failed to export audit log");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "specora-audit-log.csv";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setError(err.message);
     }
   }
 
@@ -791,6 +899,9 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     const text = `${target.label || ""} ${target.resource} ${target.action} ${target.description || ""} ${target.source || ""}`.toLowerCase();
     return scopeMatch && (!needle || text.includes(needle));
   }).slice(0, 80);
+  const selectedBulkGrantTargets = filteredGrantTargets
+    .filter((target) => selectedBulkGrants[encodePermissionValue(target.resource, target.action)])
+    .map((target) => ({ resource: target.resource, action: target.action }));
   const existingGrant = selectedGrantTarget && newRole
     ? permissions.find((permission) => permission.role === newRole && permission.resource === selectedGrantTarget.resource && permission.action === selectedGrantTarget.action)
     : null;
@@ -1196,6 +1307,163 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
               </div>
             )}
               </>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                  <ClipboardCheck className="h-4 w-4 text-emerald-300" />
+                  Policy Drift
+                </h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Compare registered native app and automation requirements against current role grants.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {policyDrift && (
+                  <div className={`rounded-full px-3 py-1 text-xs font-medium ${postureClass(policyDrift.summary.posture)}`}>
+                    {policyDrift.summary.orphaned} orphaned / {policyDrift.summary.missingHighRisk} high-risk gaps
+                  </div>
+                )}
+                <button type="button" onClick={() => toggleRbacUtility("drift")} className="rounded-lg border border-gray-700 p-2 text-gray-400 hover:text-gray-100">
+                  {openRbacUtilities.drift ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            {openRbacUtilities.drift && policyDrift && (
+              <div className="mt-4 grid gap-4 xl:grid-cols-[0.75fr_1.25fr]">
+                <div className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                  <div className="grid grid-cols-2 gap-2">
+                    <MiniMetric label="Roles" value={policyDrift.summary.roles} />
+                    <MiniMetric label="Targets" value={policyDrift.summary.registeredTargets} />
+                    <MiniMetric label="Grants" value={policyDrift.summary.grants} />
+                    <MiniMetric label="Orphaned" value={policyDrift.summary.orphaned} />
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {policyDrift.roleCoverage.map((coverage) => (
+                      <div key={coverage.role} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-medium text-gray-200">{coverage.role}</div>
+                          <div className={coverage.score >= 90 ? "text-emerald-300" : coverage.score >= 70 ? "text-amber-200" : "text-red-200"}>{coverage.score}%</div>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded bg-gray-800">
+                          <div className="h-full bg-indigo-500" style={{ width: `${coverage.score}%` }} />
+                        </div>
+                        <div className="mt-2 text-xs text-gray-500">{coverage.granted} of {coverage.required} registered targets covered</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-gray-800 bg-gray-950">
+                    <div className="border-b border-gray-800 px-3 py-2 text-xs uppercase tracking-wide text-gray-500">Missing High-Risk Grants</div>
+                    <div className="scrollbar-thin max-h-72 overflow-y-auto p-2">
+                      {policyDrift.roleCoverage.flatMap((coverage) => coverage.missing.filter((item) => item.risk === "critical" || item.risk === "high")).slice(0, 20).map((item) => (
+                        <div key={`${item.role}:${item.resource}:${item.action}`} className="mb-2 rounded-lg border border-gray-800 bg-gray-900 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium text-gray-100">{item.role}</span>
+                                <span className={`rounded border px-1.5 py-0.5 text-[10px] ${riskClass(item.risk)}`}>{item.risk}</span>
+                              </div>
+                              <div className="mt-1 font-mono text-xs text-gray-500">{item.resource}:{item.action}</div>
+                              <div className="mt-1 text-xs text-gray-600">{item.apps.map((app) => app.name).join(", ")}</div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => bulkGrantPermissions(item.role, [{ resource: item.resource, action: item.action }])}
+                              disabled={saving}
+                              className="shrink-0 rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10 disabled:opacity-50"
+                            >
+                              Grant
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {!policyDrift.roleCoverage.some((coverage) => coverage.missing.some((item) => item.risk === "critical" || item.risk === "high")) && (
+                        <div className="px-3 py-8 text-center text-sm text-gray-500">No high-risk app drift detected.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-800 bg-gray-950">
+                    <div className="border-b border-gray-800 px-3 py-2 text-xs uppercase tracking-wide text-gray-500">Orphaned Grants</div>
+                    <div className="scrollbar-thin max-h-48 overflow-y-auto p-2">
+                      {policyDrift.orphaned.slice(0, 20).map((grant) => (
+                        <div key={grant.id} className="mb-2 rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm text-gray-200">{grant.role}</div>
+                              <div className="truncate font-mono text-xs text-gray-500">{grant.resource}:{grant.action}</div>
+                            </div>
+                            <span className={`rounded border px-2 py-0.5 text-[11px] ${riskClass(grant.risk)}`}>{grant.risk}</span>
+                          </div>
+                        </div>
+                      ))}
+                      {!policyDrift.orphaned.length && <div className="px-3 py-8 text-center text-sm text-gray-500">No orphaned grants detected.</div>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                  <Activity className="h-4 w-4 text-cyan-300" />
+                  Audit Search
+                </h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Search administrative evidence and export the current result set for review.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-gray-700 bg-gray-950 px-3 py-1 text-xs text-gray-400">{auditTotal} events</div>
+                <button type="button" onClick={() => toggleRbacUtility("audit")} className="rounded-lg border border-gray-700 p-2 text-gray-400 hover:text-gray-100">
+                  {openRbacUtilities.audit ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            {openRbacUtilities.audit && (
+              <div className="mt-4 space-y-4">
+                <form onSubmit={searchAuditLog} className="flex flex-col gap-3 md:flex-row">
+                  <div className="relative flex-1">
+                    <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-gray-500" />
+                    <input
+                      value={auditSearch}
+                      onChange={(event) => setAuditSearch(event.target.value)}
+                      placeholder="Search action, entity, actor email..."
+                      className="w-full rounded-lg border border-gray-700 bg-gray-800 py-2 pl-9 pr-3 text-sm text-gray-200 outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <button type="submit" disabled={saving} className="flex items-center justify-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500 disabled:opacity-50">
+                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
+                  </button>
+                  <button type="button" onClick={exportAuditLog} className="flex items-center justify-center gap-2 rounded-lg border border-gray-700 px-4 py-2 text-sm font-medium text-gray-200 hover:bg-gray-800">
+                    <Download className="h-4 w-4" /> Export CSV
+                  </button>
+                </form>
+                <div className="scrollbar-thin max-h-80 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950">
+                  {auditEntries.map((entry) => (
+                    <div key={entry.id} className="border-b border-gray-800 px-3 py-3 last:border-0">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-mono text-xs text-gray-300">{entry.action}</div>
+                        <div className="text-xs text-gray-600">{new Date(entry.createdAt).toLocaleString()}</div>
+                      </div>
+                      <div className="mt-1 text-sm text-gray-400">{entry.entityType} <span className="font-mono text-xs text-gray-600">{entry.entityId}</span></div>
+                      <div className="mt-1 text-xs text-gray-600">{entry.actorEmail || entry.actorName || entry.actorId || "system"}</div>
+                    </div>
+                  ))}
+                  {!auditEntries.length && <div className="px-3 py-8 text-center text-sm text-gray-500">No audit events match this search.</div>}
+                </div>
+              </div>
             )}
           </div>
 
@@ -1760,33 +2028,48 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
 
               <div className="min-h-[320px] rounded-lg border border-gray-800 bg-gray-950">
                 <div className="border-b border-gray-800 px-3 py-2 text-xs uppercase tracking-wide text-gray-500">
-                  Permission Catalog
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Permission Catalog</span>
+                    <span>{selectedBulkGrantTargets.length} selected</span>
+                  </div>
                 </div>
                 <div className="scrollbar-thin max-h-[430px] overflow-y-auto p-2">
                   {filteredGrantTargets.map((target) => {
                     const selected = selectedPermissionTarget === encodePermissionValue(target.resource, target.action);
+                    const bulkKey = encodePermissionValue(target.resource, target.action);
+                    const bulkSelected = Boolean(selectedBulkGrants[bulkKey]);
                     return (
-                      <button
+                      <div
                         key={`${target.resource}:${target.action}`}
-                        type="button"
-                        onClick={() => {
-                          setNewResource(target.resource);
-                          setNewAction(target.action);
-                        }}
                         className={`mb-2 w-full rounded-lg border px-3 py-3 text-left transition-colors ${
                           selected ? "border-indigo-400 bg-indigo-500/15" : "border-gray-800 bg-gray-900 hover:border-gray-700"
                         }`}
                       >
                         <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedBulkGrants((current) => ({ ...current, [bulkKey]: !current[bulkKey] }))}
+                            className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border ${bulkSelected ? "border-indigo-400 bg-indigo-500 text-white" : "border-gray-700 text-transparent"}`}
+                            title={bulkSelected ? "Remove from bulk grant" : "Select for bulk grant"}
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewResource(target.resource);
+                              setNewAction(target.action);
+                            }}
+                            className="min-w-0 flex-1 text-left"
+                          >
                             <div className="truncate text-sm font-medium text-gray-100">{target.label || target.resource}</div>
                             <div className="mt-1 truncate font-mono text-xs text-gray-500">{target.resource}:{target.action}</div>
-                          </div>
+                          </button>
                           <span className={`shrink-0 rounded border px-2 py-0.5 text-[11px] ${riskClass(target.risk)}`}>{target.risk}</span>
                         </div>
                         <div className="mt-2 text-sm leading-5 text-gray-500">{target.description}</div>
                         <div className="mt-2 text-xs text-gray-600">{target.source || target.category}</div>
-                      </button>
+                      </div>
                     );
                   })}
                   {!filteredGrantTargets.length && (
@@ -1825,6 +2108,14 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                         )
                       ) : "Select a role to preview who receives this grant."}
                     </div>
+                    <button
+                      type="button"
+                      disabled={saving || !newRole || !selectedBulkGrantTargets.length}
+                      onClick={() => bulkGrantPermissions(newRole, selectedBulkGrantTargets)}
+                      className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/40 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50"
+                    >
+                      <ClipboardCheck className="h-4 w-4" /> Bulk Grant Selected ({selectedBulkGrantTargets.length})
+                    </button>
                     <button
                       type="submit"
                       disabled={saving || !newRole || !newResource || !newAction || Boolean(existingGrant)}
