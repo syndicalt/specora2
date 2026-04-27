@@ -82,6 +82,16 @@ type DiscoverySource = {
   updatedAt?: string;
 };
 
+type DiscoveryCredentialReference = {
+  id: string;
+  ref: string;
+  name: string;
+  provider: string;
+  lastTestedAt?: string | null;
+  lastStatus?: string | null;
+  lastError?: string | null;
+};
+
 type SourceForm = { name: string; type: string; sample: string; endpoint: string; credentialRef: string };
 
 type TransformProposal = {
@@ -485,6 +495,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   shellRef.current = shell;
   const [jobs, setJobs] = useState<DiscoveryJob[]>([]);
   const [sources, setSources] = useState<DiscoverySource[]>([]);
+  const [credentialRefs, setCredentialRefs] = useState<DiscoveryCredentialReference[]>([]);
   const [classes, setClasses] = useState<TargetClass[]>([]);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [mappingProfiles, setMappingProfiles] = useState<MappingProfile[]>([]);
@@ -509,6 +520,12 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   const profile = useMemo(() => parseCsv(sample), [sample]);
   const selectedSource = useMemo(() => sources.find((source) => source.id === selectedSourceId) || null, [sources, selectedSourceId]);
+  const credentialRefOptions = useMemo(() => {
+    const activeRefs = credentialRefs.map((credential) => credential.ref);
+    return sourceForm.credentialRef && !activeRefs.includes(sourceForm.credentialRef)
+      ? [{ id: "current", ref: sourceForm.credentialRef, name: sourceForm.credentialRef, provider: "current" }, ...credentialRefs]
+      : credentialRefs;
+  }, [credentialRefs, sourceForm.credentialRef]);
   const generatedFlow = useMemo(() => proposalToFlow(proposal, sourceName), [proposal, sourceName]);
   const [nodes, setNodes] = useNodesState<DiscoveryFlowNodeData>(generatedFlow.nodes as Node<DiscoveryFlowNodeData>[]);
   const [edges, setEdges] = useEdgesState(generatedFlow.edges);
@@ -677,6 +694,15 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
         setMappingProfiles(profileData.profiles || []);
       } catch {
         errorKey += "profiles";
+      }
+
+      try {
+        const credentialRes = await api.fetch("/discovery/credential-references");
+        if (!credentialRes.ok) throw new Error(`Credential request failed: ${credentialRes.status}`);
+        const credentialData = await credentialRes.json();
+        setCredentialRefs(credentialData.credentials || []);
+      } catch {
+        errorKey += "credentials";
       }
 
       if (errorKey && loadErrorRef.current !== errorKey) {
@@ -1332,7 +1358,21 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                   <label className="block text-xs text-gray-500">Endpoint or connection placeholder</label>
                   <input value={sourceForm.endpoint} onChange={(event) => setSourceForm({ ...sourceForm, endpoint: event.target.value })} className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500" placeholder="https://inventory.example/api/assets" />
                   <label className="block text-xs text-gray-500">Credential reference</label>
-                  <input value={sourceForm.credentialRef} onChange={(event) => setSourceForm({ ...sourceForm, credentialRef: event.target.value })} className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500" placeholder="vault://future/credential" />
+                  <select
+                    value={sourceForm.credentialRef}
+                    onChange={(event) => setSourceForm({ ...sourceForm, credentialRef: event.target.value })}
+                    className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                  >
+                    <option value="">Select a Discovery credential</option>
+                    {credentialRefOptions.map((credential) => (
+                      <option key={credential.ref} value={credential.ref}>
+                        {credential.name} · {credential.provider} · {credential.ref}
+                      </option>
+                    ))}
+                  </select>
+                  {!credentialRefOptions.length && (
+                    <div className="text-xs leading-5 text-gray-500">Create an active Discovery-scoped credential in Admin before testing external sources.</div>
+                  )}
                 </>
               )}
               <button onClick={editingSourceId ? updateSource : createSource} className="w-full rounded-md bg-cyan-500 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-400">

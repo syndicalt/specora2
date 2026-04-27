@@ -40,6 +40,27 @@ async function requireDiscoveryPermission(fastify: FastifyInstance, request: any
 }
 
 export async function discoveryRoutes(fastify: FastifyInstance) {
+  fastify.get("/discovery/credential-references", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const result = await fastify.pg.query(
+      `SELECT id, ref, name, provider, last_tested_at, last_status, last_error
+       FROM credential_references
+       WHERE status = 'active' AND scope = 'discovery'
+       ORDER BY name, ref`
+    );
+    return {
+      credentials: result.rows.map((row: any) => ({
+        id: row.id,
+        ref: row.ref,
+        name: row.name,
+        provider: row.provider,
+        lastTestedAt: row.last_tested_at || null,
+        lastStatus: row.last_status || null,
+        lastError: row.last_error || null,
+      })),
+    };
+  });
+
   fastify.get("/discovery/mapping-profiles", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
     const result = await fastify.pg.query(

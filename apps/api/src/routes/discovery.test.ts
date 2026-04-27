@@ -79,6 +79,28 @@ describe("discoveryRoutes", () => {
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("FROM discovery_pipelines"));
   });
 
+  it("lists only active discovery-scoped credential references", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push({
+      rows: [{
+        id: "cred-1",
+        ref: "managed://discovery/inventory-api",
+        name: "Inventory API",
+        provider: "managed",
+        last_status: "ok",
+      }],
+    });
+
+    const response = await app.inject({ method: "GET", url: "/discovery/credential-references" });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).credentials).toEqual([
+      expect.objectContaining({ ref: "managed://discovery/inventory-api", name: "Inventory API", provider: "managed", lastStatus: "ok" }),
+    ]);
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("scope = 'discovery'"));
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("status = 'active'"));
+  });
+
   it("creates discovery pipelines", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push({ rows: [{ id: "pipe-1", name: "CSV import", status: "draft", definition: { nodes: [] } }] });
