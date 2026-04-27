@@ -17,7 +17,7 @@ Specora runs as three application services plus two primary data services:
 | Neo4j | `7474`, `7687` | CMDB graph system of record |
 | PostgreSQL | `5432` | Users, permissions, app registry, audit/events, ITSM/ITAM/DCIM/discovery workflow data |
 
-Redis is optional in the current local stack. The API defaults to `redis://localhost:6379` for multi-instance pub/sub, but `docker-compose.yml` does not currently start Redis. For a multi-API deployment, provide Redis and set `REDIS_URL`.
+Redis is included in the local Compose stack and wired to the API as `redis://redis:6379`. The API uses it for multi-instance event propagation and permission cache sharing, while still degrading to local in-process behavior if Redis is unavailable.
 
 ## Data Ownership
 
@@ -229,7 +229,7 @@ Start dependencies first:
 
 1. PostgreSQL
 2. Neo4j
-3. Redis, if using multi-instance API event propagation
+3. Redis for multi-instance API event propagation and shared permission cache
 4. Worker
 5. API
 6. Web
@@ -385,7 +385,7 @@ Known gaps before production claims:
 
 - PostgreSQL has a migration runner, runtime readiness, queue indexes, and a local restore rehearsal command; release automation still needs rehearsal in a production-like environment.
 - Worker health is exposed through the API, but the worker process still does not expose its own standard HTTP or gRPC health service for infrastructure-level probes.
-- Redis is documented and supported by API code but not included in local compose.
+- Redis is included in local Compose; production deployments should still use managed Redis or equivalent operational controls.
 - Package provisioning jobs complete immediately; entitlement checks, rollback, and install progress are roadmap work.
 - Field-level RBAC and identity-group permission inheritance are implemented and explainable through Admin RBAC utilities. Condition-based record ACLs remain a roadmap item.
 - Backup/restore procedures are documented separately and have a local rehearsal command; managed production restore runbooks still need environment-specific validation.

@@ -66,6 +66,14 @@ services:
       - ./packages/db/migrations/043_enterprise_performance_indexes.sql:/docker-entrypoint-initdb.d/043_enterprise_performance_indexes.sql
       - ./packages/db/migrations/044_change_cab_brief_snapshots.sql:/docker-entrypoint-initdb.d/044_change_cab_brief_snapshots.sql
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
   api:
     build:
       context: .
@@ -82,6 +90,7 @@ services:
       - API_PUBLIC_URL=${API_PUBLIC_URL:-}
       - WEB_PUBLIC_URL=${WEB_PUBLIC_URL:-}
       - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-2000}
+      - REDIS_URL=redis://redis:6379
       - WORKER_GRPC_HOST=worker:50051
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PROVARA_URL=${PROVARA_URL}
@@ -90,6 +99,7 @@ services:
     depends_on:
       - neo4j
       - postgres
+      - redis
     volumes:
       - .:/app
       - /app/node_modules
@@ -135,3 +145,4 @@ services:
 volumes:
   neo4j_data:
   postgres_data:
+  redis_data:
