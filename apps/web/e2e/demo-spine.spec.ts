@@ -237,6 +237,10 @@ test.describe("demo spine smoke coverage", () => {
 
     await expect(page.getByRole("heading", { name: "Admin Console" })).toBeVisible();
     await page.getByRole("button", { name: "RBAC" }).click();
+    await expect(page.getByRole("heading", { name: "Field Restrictions" })).toBeVisible();
+    await page.getByRole("heading", { name: "Field Restrictions" }).locator("xpath=following::button[1]").click();
+    await expect(page.getByText("Field Policy")).toBeVisible();
+    await expect(page.getByText(/field:(pg|cmdb)\./).first()).toBeVisible();
     await expect(page.getByRole("heading", { name: "Access Analyzer" })).toBeVisible();
     await page.getByRole("heading", { name: "Access Analyzer" }).locator("xpath=following::button[1]").click();
     await page.getByLabel("User").last().selectOption("");

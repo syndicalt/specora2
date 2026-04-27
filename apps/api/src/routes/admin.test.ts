@@ -291,6 +291,62 @@ describe("adminRoutes", () => {
     ]));
   });
 
+  it("manages field restrictions through validated table metadata", async () => {
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1 AND resource = $2 AND action = $3")) {
+        if (params?.[1] === "rbac") {
+          return Promise.resolve({ rows: [{ id: "admin-rbac", role: "security_admin", resource: "rbac", action: params?.[2] }], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      if (sql.includes("FROM ci_classes")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      if (sql.includes("information_schema.columns")) {
+        return Promise.resolve({
+          rows: [
+            { table_name: "incidents", column_name: "id", data_type: "uuid", udt_name: "uuid", is_nullable: "NO", column_default: null },
+            { table_name: "incidents", column_name: "title", data_type: "text", udt_name: "text", is_nullable: "YES", column_default: null },
+            { table_name: "incidents", column_name: "description", data_type: "text", udt_name: "text", is_nullable: "YES", column_default: null },
+          ],
+          rowCount: 3,
+        });
+      }
+      if (sql.includes("SELECT value FROM system_properties WHERE key = 'security.field_restrictions'")) {
+        return Promise.resolve({ rows: [{ value: JSON.stringify([{ tableId: "pg.incidents", field: "description" }]) }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO system_properties")) {
+        return Promise.resolve({ rows: [{ key: "security.field_restrictions", value: params?.[0], updated_at: "2024-01-01" }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/api/admin/rbac/field-restrictions",
+      headers: authHeader(app),
+    });
+    expect(listed.statusCode).toBe(200);
+    const body = JSON.parse(listed.payload);
+    expect(body.restrictions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: "field:pg.incidents.description" }),
+    ]));
+    expect(body.tables[0].fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "description", restricted: true }),
+    ]));
+
+    const updated = await app.inject({
+      method: "PUT",
+      url: "/api/admin/rbac/field-restrictions",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { tableId: "pg.incidents", field: "title", restricted: true },
+    });
+
+    expect(updated.statusCode).toBe(200);
+    expect(JSON.parse(updated.payload).restriction).toMatchObject({ resource: "field:pg.incidents.title" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["rbac.field_restriction.created", "FieldRestriction", "field:pg.incidents.title"]));
+  });
+
   it("manages number sequences", async () => {
     const app = await buildApp((sql: string) => {
       if (sql.includes("app_permissions WHERE role = $1")) {

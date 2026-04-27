@@ -108,6 +108,23 @@ interface RbacTable {
   fields: Array<{ name: string; label: string; writable: boolean }>;
 }
 
+interface FieldRestrictionField {
+  name: string;
+  label: string;
+  writable: boolean;
+  resource: string;
+  restricted: boolean;
+}
+
+interface FieldRestrictionTable {
+  id: string;
+  name: string;
+  label: string;
+  provider: string;
+  category?: string;
+  fields: FieldRestrictionField[];
+}
+
 interface AccessAnalysis {
   allowed: boolean;
   reason: string;
@@ -321,10 +338,13 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [toolAccessExplanation, setToolAccessExplanation] = useState<ToolAccessExplanation | null>(null);
   const [tableAccessProbe, setTableAccessProbe] = useState({ userId: "", role: "", tableId: "", fieldName: "", accessMode: "read" });
   const [tableAccessExplanation, setTableAccessExplanation] = useState<TableAccessExplanation | null>(null);
+  const [fieldRestrictionTables, setFieldRestrictionTables] = useState<FieldRestrictionTable[]>([]);
+  const [fieldRestrictionTableId, setFieldRestrictionTableId] = useState("");
   const [openRbacUtilities, setOpenRbacUtilities] = useState<Record<string, boolean>>({
     app: true,
     tool: false,
     table: true,
+    fieldRestrictions: false,
     analyzer: false,
   });
   const [provisioningJobs, setProvisioningJobs] = useState<ProvisioningJob[]>([]);
@@ -359,13 +379,14 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, fieldRestrictionsRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/rbac/field-restrictions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/apps/provisioning-jobs`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/operational-intelligence`, { headers: { Authorization: `Bearer ${token || ""}` } }),
       ]);
@@ -379,6 +400,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const rbacOptionsData = rbacOptionsRes.ok ? await rbacOptionsRes.json() : { users: [], targets: [] };
+      const fieldRestrictionsData = fieldRestrictionsRes.ok ? await fieldRestrictionsRes.json() : { tables: [] };
       const jobsData = jobsRes.ok ? await jobsRes.json() : { jobs: [] };
       const opsData = opsRes.ok ? await opsRes.json() : null;
 
@@ -392,6 +414,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setRbacApps(rbacOptionsData.apps || []);
       setRbacTools(rbacOptionsData.tools || []);
       setRbacTables(rbacOptionsData.tables || []);
+      setFieldRestrictionTables(fieldRestrictionsData.tables || []);
+      setFieldRestrictionTableId((current) => current || fieldRestrictionsData.tables?.[0]?.id || "");
       setProvisioningJobs(jobsData.jobs || []);
       setOperationalIntelligence(opsData);
       setAccessProbe((current) => {
@@ -604,6 +628,30 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setOpenRbacUtilities((current) => ({ ...current, [id]: !current[id] }));
   }
 
+  async function toggleFieldRestriction(tableId: string, field: FieldRestrictionField, restricted: boolean) {
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/rbac/field-restrictions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({ tableId, field: field.name, restricted }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update field restriction");
+      setFieldRestrictionTables((current) => current.map((table) => table.id === tableId
+        ? { ...table, fields: table.fields.map((candidate) => candidate.name === field.name ? { ...candidate, restricted } : candidate) }
+        : table
+      ));
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function addSystemProperty(e: React.FormEvent) {
     e.preventDefault();
     if (!newPropKey || !newPropValue) return;
@@ -750,6 +798,9 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const tableFieldOptions = selectedRbacTable
     ? [{ value: "", label: "All fields" }, ...selectedRbacTable.fields.map((field) => ({ value: field.name, label: `${field.label}${field.writable ? "" : " (read only)"}` }))]
     : [{ value: "", label: "All fields" }];
+  const selectedFieldRestrictionTable = fieldRestrictionTables.find((table) => table.id === fieldRestrictionTableId) || fieldRestrictionTables[0] || null;
+  const restrictedFieldCount = fieldRestrictionTables.reduce((sum, table) => sum + table.fields.filter((field) => field.restricted).length, 0);
+  const fieldRestrictionGrantRole = tableAccessProbe.role || appAccessProbe.role || accessProbe.role || allRoles[0] || "security_admin";
   const registeredSequenceKeys = new Set(numberSequences.map((sequence) => `${sequence.app_id || ""}:${sequence.table_name}:${sequence.record_type}`));
   const availableSequenceOptions = numberSequenceOptions.filter((option) => !registeredSequenceKeys.has(`${option.appId}:${option.tableName}:${option.recordType}`));
   const appOptions = Array.from(new Map(numberSequenceOptions.map((option) => [option.appId, option.appName])).entries());
@@ -1145,6 +1196,105 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
               </div>
             )}
               </>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                  <Shield className="h-4 w-4 text-amber-300" />
+                  Field Restrictions
+                </h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Mark sensitive fields as explicitly restricted, then grant read/write access by role.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-gray-700 bg-gray-950 px-3 py-1 text-xs text-gray-400">
+                  {restrictedFieldCount} restricted
+                </div>
+                <button type="button" onClick={() => toggleRbacUtility("fieldRestrictions")} className="rounded-lg border border-gray-700 p-2 text-gray-400 hover:text-gray-100">
+                  {openRbacUtilities.fieldRestrictions ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            {openRbacUtilities.fieldRestrictions && (
+              <div className="mt-4 grid gap-4 xl:grid-cols-[320px_1fr]">
+                <div className="space-y-3">
+                  <FieldSelect
+                    label="Table"
+                    value={selectedFieldRestrictionTable?.id || ""}
+                    onChange={setFieldRestrictionTableId}
+                    options={fieldRestrictionTables.map((table) => ({ value: table.id, label: `${table.label} (${table.provider})` }))}
+                  />
+                  {selectedFieldRestrictionTable && (
+                    <div className="rounded-lg border border-gray-800 bg-gray-950 p-3 text-sm text-gray-500">
+                      <div className="text-gray-200">{selectedFieldRestrictionTable.label}</div>
+                      <div className="mt-1 font-mono text-xs">{selectedFieldRestrictionTable.id}</div>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <MiniMetric label="Fields" value={selectedFieldRestrictionTable.fields.length} />
+                        <MiniMetric label="Restricted" value={selectedFieldRestrictionTable.fields.filter((field) => field.restricted).length} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-gray-800 bg-gray-950">
+                  <div className="border-b border-gray-800 px-3 py-2 text-xs uppercase tracking-wide text-gray-500">
+                    Field Policy
+                  </div>
+                  <div className="scrollbar-thin max-h-96 overflow-y-auto p-2">
+                    {selectedFieldRestrictionTable?.fields.map((field) => (
+                      <div key={field.resource} className="mb-2 rounded-lg border border-gray-800 bg-gray-900 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-medium text-gray-100">{field.label}</span>
+                              <span className="font-mono text-xs text-gray-500">{field.name}</span>
+                              {!field.writable && <span className="rounded border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-400">read only</span>}
+                              {field.restricted && <span className="rounded border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-100">restricted</span>}
+                            </div>
+                            <div className="mt-1 font-mono text-xs text-gray-600">{field.resource}</div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => prepareGrant(newRole || fieldRestrictionGrantRole, field.resource, "read")}
+                              className="rounded-md border border-indigo-500/40 px-2.5 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10"
+                            >
+                              Grant read
+                            </button>
+                            {field.writable && (
+                              <button
+                                type="button"
+                                onClick={() => prepareGrant(newRole || fieldRestrictionGrantRole, field.resource, "write")}
+                                className="rounded-md border border-indigo-500/40 px-2.5 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10"
+                              >
+                                Grant write
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={saving}
+                              onClick={() => toggleFieldRestriction(selectedFieldRestrictionTable.id, field, !field.restricted)}
+                              className={`rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
+                                field.restricted ? "border border-gray-700 text-gray-300 hover:bg-gray-800" : "bg-amber-600 text-white hover:bg-amber-500"
+                              }`}
+                            >
+                              {field.restricted ? "Unrestrict" : "Restrict"}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {!selectedFieldRestrictionTable && (
+                      <div className="px-3 py-8 text-center text-sm text-gray-500">No registered tables were returned.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
             )}
           </div>
 

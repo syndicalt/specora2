@@ -141,6 +141,52 @@ function tableFieldsForExplanation(table: any): AdminTableField[] {
   return fields;
 }
 
+async function loadFieldRestrictions(pg: any): Promise<Array<{ resource: string; tableId?: string; field?: string }>> {
+  const result = await pg.query("SELECT value FROM system_properties WHERE key = 'security.field_restrictions'");
+  const raw = result.rows[0]?.value;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => {
+        if (typeof item === "string" && item.startsWith("field:")) return { resource: item };
+        if (item && typeof item === "object") {
+          const resource = typeof item.resource === "string" ? item.resource : null;
+          const tableId = typeof item.tableId === "string" ? item.tableId : null;
+          const field = typeof item.field === "string" ? item.field : null;
+          if (resource) return { resource };
+          if (tableId && field) return { resource: `field:${tableId}.${field}`, tableId, field };
+        }
+        return null;
+      })
+      .filter((item): item is { resource: string; tableId?: string; field?: string } => Boolean(item?.resource));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeFieldRestriction(tableId: string, field: string) {
+  return { tableId, field, resource: `field:${tableId}.${field}` };
+}
+
+async function saveFieldRestrictions(pg: any, restrictions: Array<{ resource: string; tableId?: string; field?: string }>) {
+  const normalized = Array.from(new Map(restrictions
+    .filter((item) => item.resource?.startsWith("field:"))
+    .map((item) => [item.resource, item])).values())
+    .sort((a, b) => a.resource.localeCompare(b.resource));
+  const value = JSON.stringify(normalized.map((item) => item.tableId && item.field ? { tableId: item.tableId, field: item.field } : item.resource));
+  await pg.query(
+    `INSERT INTO system_properties (key, value)
+     VALUES ('security.field_restrictions', $1)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+     RETURNING key, value, updated_at`,
+    [value]
+  );
+  clearFieldRestrictionCache();
+  return normalized;
+}
+
 function permissionLabel(value: string) {
   return value
     .replace(/^field:/, "")
@@ -1020,6 +1066,66 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to explain table access" });
+    }
+  });
+
+  fastify.get("/api/admin/rbac/field-restrictions", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (_request, reply) => {
+    try {
+      const [restrictions, tables] = await Promise.all([
+        loadFieldRestrictions(fastify.pg),
+        getTables(fastify).catch(() => []),
+      ]);
+      const restricted = new Set(restrictions.map((item) => item.resource));
+      return {
+        restrictions,
+        tables: tables.map((table) => ({
+          id: table.id,
+          name: table.name,
+          label: table.label,
+          provider: table.provider,
+          category: table.category,
+          fields: tableFieldsForExplanation(table).map((field) => ({
+            ...field,
+            resource: `field:${table.id}.${field.name}`,
+            restricted: restricted.has(`field:${table.id}.${field.name}`),
+          })),
+        })),
+      };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to fetch field restrictions" });
+    }
+  });
+
+  fastify.put("/api/admin/rbac/field-restrictions", { onRequest: [fastify.authenticate, requirePermission("rbac", "write")] }, async (request, reply) => {
+    const body = request.body as { tableId?: string; field?: string; restricted?: boolean };
+    if (!body.tableId || !body.field || typeof body.restricted !== "boolean") {
+      return reply.status(400).send({ error: "tableId, field, and restricted required" });
+    }
+    try {
+      const tables = await getTables(fastify);
+      const table = tables.find((candidate) => candidate.id === body.tableId || candidate.name === body.tableId);
+      if (!table) return reply.status(404).send({ error: "Table not found" });
+      const field = tableFieldsForExplanation(table).find((candidate) => candidate.name === body.field);
+      if (!field) return reply.status(404).send({ error: "Field not found" });
+
+      const next = normalizeFieldRestriction(table.id, field.name);
+      const current = await loadFieldRestrictions(fastify.pg);
+      const withoutCurrent = current.filter((item) => item.resource !== next.resource);
+      const saved = await saveFieldRestrictions(fastify.pg, body.restricted ? [...withoutCurrent, next] : withoutCurrent);
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: body.restricted ? "rbac.field_restriction.created" : "rbac.field_restriction.deleted",
+        entityType: "FieldRestriction",
+        entityId: next.resource,
+        newValues: body.restricted ? next : undefined,
+        oldValues: body.restricted ? undefined : next,
+        metadata: { source: "api.admin", surface: "admin-console", tableId: table.id, field: field.name },
+      });
+      return { restriction: body.restricted ? next : null, restrictions: saved };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to update field restriction" });
     }
   });
 
