@@ -255,6 +255,15 @@ describe("adminRoutes", () => {
       if (sql.includes("INSERT INTO identity_group_permissions")) {
         return Promise.resolve({ rows: [{ id: "grant-1", group_id: params?.[0], resource: params?.[1], action: params?.[2] }], rowCount: 1 });
       }
+      if (sql.includes("SELECT id, name, slug, description, source, external_id, cmdb_ci_id FROM identity_groups WHERE id = $1")) {
+        return Promise.resolve({ rows: [{ id: "group-1", name: "Network Operations", slug: "network-operations", description: null, source: "local", external_id: null, cmdb_ci_id: "grp-network-ops" }], rowCount: 1 });
+      }
+      if (sql.includes("membership_count")) {
+        return Promise.resolve({ rows: [{ membership_count: 1, permission_count: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("DELETE FROM identity_groups")) {
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      }
       if (sql.includes("SELECT entry_hash FROM audit_log")) return Promise.resolve({ rows: [], rowCount: 0 });
       if (sql.includes("INSERT INTO audit_log")) return Promise.resolve({ rows: [], rowCount: 1 });
       return Promise.resolve({ rows: [], rowCount: 0 });
@@ -284,7 +293,15 @@ describe("adminRoutes", () => {
       payload: { resource: "discovery", action: "write" },
     });
     expect(grant.statusCode).toBe(200);
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/identity/groups/group-1",
+      headers: authHeader(app),
+    });
+    expect(deleted.statusCode).toBe(200);
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity_group.permission_granted", "IdentityGroup", "group-1"]));
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity_group.deleted", "IdentityGroup", "group-1"]));
   });
 
   it("analyzes RBAC access decisions", async () => {

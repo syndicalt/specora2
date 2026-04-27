@@ -1828,6 +1828,39 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.delete("/api/admin/identity/groups/:id", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "write")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      const existing = await fastify.pg.query("SELECT id, name, slug, description, source, external_id, cmdb_ci_id FROM identity_groups WHERE id = $1", [id]);
+      if (!existing.rows.length) return reply.status(404).send({ error: "Identity group not found" });
+      const childCounts = await fastify.pg.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM identity_group_memberships WHERE group_id = $1) AS membership_count,
+           (SELECT COUNT(*)::int FROM identity_group_permissions WHERE group_id = $1) AS permission_count`,
+        [id]
+      );
+      await fastify.pg.query("DELETE FROM identity_groups WHERE id = $1", [id]);
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "identity_group.deleted",
+        entityType: "IdentityGroup",
+        entityId: id,
+        oldValues: existing.rows[0],
+        metadata: {
+          source: "api.admin",
+          surface: "admin-console",
+          removedMemberships: childCounts.rows[0]?.membership_count || 0,
+          removedPermissions: childCounts.rows[0]?.permission_count || 0,
+        },
+      });
+      clearPermissionCache();
+      return { success: true };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to delete identity group" });
+    }
+  });
+
   fastify.post("/api/admin/identity/groups/:id/members", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "write")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { userId?: string; source?: string };

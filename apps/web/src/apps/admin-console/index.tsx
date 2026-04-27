@@ -1090,6 +1090,27 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     }
   }
 
+  async function deleteIdentityGroup(group: IdentityGroup, memberCount: number, grantCount: number) {
+    const impact = `${memberCount} member${memberCount === 1 ? "" : "s"} and ${grantCount} grant${grantCount === 1 ? "" : "s"}`;
+    if (!confirm(`Delete identity group "${group.name}"? This removes ${impact}.`)) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/identity/groups/${group.id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token || ""}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete identity group");
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function addIdentityGroupMember(groupId: string) {
     if (!groupMemberUserId) return;
     setSaving(true);
@@ -2692,9 +2713,17 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                         <div className="mt-1 text-xs text-gray-500">{group.slug} · {group.source}{group.cmdb_ci_id ? ` · ${cmdbGroupLabel(group.cmdb_ci_id)}` : ""}</div>
                         {group.description && <div className="mt-2 text-sm text-gray-400">{group.description}</div>}
                       </div>
-                      <div className="flex gap-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
                         <span className="rounded bg-gray-800 px-2 py-1 text-gray-300">{members.length} members</span>
                         <span className="rounded bg-gray-800 px-2 py-1 text-gray-300">{grants.length} grants</span>
+                        <button
+                          type="button"
+                          onClick={() => deleteIdentityGroup(group, members.length, grants.length)}
+                          disabled={saving}
+                          className="flex items-center gap-1 rounded border border-red-500/30 px-2 py-1 text-red-200 hover:border-red-400 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" /> Delete
+                        </button>
                       </div>
                     </div>
                     <div className="mt-4 grid gap-3 lg:grid-cols-2">
