@@ -60,6 +60,11 @@ services:
       - ./packages/db/migrations/037_dcim_floorplan_connections.sql:/docker-entrypoint-initdb.d/037_dcim_floorplan_connections.sql
       - ./packages/db/migrations/038_discovery_lifecycle.sql:/docker-entrypoint-initdb.d/038_discovery_lifecycle.sql
       - ./packages/db/migrations/039_app_provisioning.sql:/docker-entrypoint-initdb.d/039_app_provisioning.sql
+      - ./packages/db/migrations/040_customer_portal.sql:/docker-entrypoint-initdb.d/040_customer_portal.sql
+      - ./packages/db/migrations/041_engage_agent_workspace.sql:/docker-entrypoint-initdb.d/041_engage_agent_workspace.sql
+      - ./packages/db/migrations/042_incident_requester_reference.sql:/docker-entrypoint-initdb.d/042_incident_requester_reference.sql
+      - ./packages/db/migrations/043_enterprise_performance_indexes.sql:/docker-entrypoint-initdb.d/043_enterprise_performance_indexes.sql
+      - ./packages/db/migrations/044_change_cab_brief_snapshots.sql:/docker-entrypoint-initdb.d/044_change_cab_brief_snapshots.sql
 
   api:
     build:

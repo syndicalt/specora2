@@ -151,10 +151,14 @@ export function ChatOverlay() {
 
   useEffect(() => {
     const onPrefill = (event: Event) => {
-      const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
+      const detail = (event as CustomEvent<{ prompt?: string; autoSend?: boolean }>).detail;
+      const prompt = detail?.prompt;
       if (!prompt) return;
       setInput(prompt);
       setTimeout(() => inputRef.current?.focus(), 50);
+      if (detail?.autoSend) {
+        setTimeout(() => doSendRef.current(prompt), 80);
+      }
     };
     window.addEventListener("specora:chat-prefill", onPrefill);
     return () => window.removeEventListener("specora:chat-prefill", onPrefill);

@@ -132,9 +132,9 @@ const PERMISSION_CAPABILITIES: Record<string, string[]> = {
   "read:discovery": ["sendMessage", "onMessage", "notify", "query", "fetch"],
   "write:discovery": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
   "read:profile": ["sendMessage", "onMessage", "notify", "query", "fetch"],
-  "read:chat": ["sendMessage", "onMessage", "notify", "fetch"],
-  "itsm:change:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
-  "itsm:change:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
+  "read:chat": ["sendMessage", "onMessage", "notify", "fetch", "runChatPrompt"],
+  "itsm:change:read": ["sendMessage", "onMessage", "notify", "query", "fetch", "runChatPrompt"],
+  "itsm:change:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch", "runChatPrompt"],
   "itsm:incident:read": ["sendMessage", "onMessage", "notify", "query", "fetch"],
   "itsm:incident:write": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
   "itsm:incident:remediate": ["sendMessage", "onMessage", "notify", "query", "mutate", "fetch"],
@@ -262,6 +262,16 @@ function buildShellAPI(
           dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message, type } });
         }
       : () => {},
+    runChatPrompt: allowed.has("runChatPrompt")
+      ? (prompt, options = {}) => {
+          dispatch({ type: "SET_RIGHT_PANEL_OPEN", open: true });
+          window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("specora:chat-prefill", {
+              detail: { prompt, autoSend: options.autoSend === true },
+            }));
+          }, 80);
+        }
+      : () => console.warn(`App ${instance.id} lacks permission to run chat prompts`),
     query: allowed.has("query")
       ? (query, variables) => graphqlClient.request(query, variables)
       : () => Promise.reject(new Error(`App ${instance.id} lacks permission to query GraphQL`)),

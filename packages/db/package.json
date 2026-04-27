@@ -11,6 +11,7 @@
     "migrate:dry-run": "tsx src/migrateCli.ts dry-run",
     "migrate:baseline": "tsx src/migrateCli.ts baseline",
     "seed": "tsx src/cli.ts",
+    "seed:enterprise": "tsx src/enterpriseSeed.ts",
     "test": "vitest run --coverage"
   },
   "dependencies": {

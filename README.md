@@ -140,6 +140,7 @@ Do not commit `.env` files.
 - [docs/csdmv5-compliance.md](docs/csdmv5-compliance.md) documents CSDMv5 alignment, implemented subset, and roadmap gaps.
 - [docs/application-catalog.md](docs/application-catalog.md) catalogs the native applications and integration standards.
 - [docs/platform-marking-sheet.md](docs/platform-marking-sheet.md) provides the platform and per-application marking sheet.
+- [docs/database-performance-audit.md](docs/database-performance-audit.md) records database index coverage and enterprise storage guidance.
 - [docs/llm-routing.md](docs/llm-routing.md) explains current chat model routing and tool-call behavior.
 - [docs/seeding-e2e-and-coverage.md](docs/seeding-e2e-and-coverage.md) documents seed layers, current coverage, E2E direction, and testing lessons learned.
 - [CLAUDE.md](CLAUDE.md), [CURSOR.md](CURSOR.md), [README-KARPATHY.md](README-KARPATHY.md), [README.zh.md](README.zh.md), [EXAMPLES.md](EXAMPLES.md), and [skills/karpathy-guidelines/SKILL.md](skills/karpathy-guidelines/SKILL.md) are imported coding-agent behavior guidelines, not Specora product architecture.

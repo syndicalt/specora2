@@ -4,6 +4,7 @@ import { getStateMachineConfig } from "../../routes/admin";
 import { emit } from "../eventBus";
 import { computeImpactScore, previewImpactScore, recordRiskScoreHistory, getRiskScoreHistory } from "../impactScoring";
 import { assignRecordNumberToRow } from "../numberSequences";
+import { recordAuditEvent } from "../auditLog";
 
 export function registerChangeManagerTools() {
 async function validateStatusTransition(
@@ -35,6 +36,36 @@ function combineDateTime(date?: string, time?: string): string | null {
   if (!date) return null;
   const t = time && /^\d{2}:\d{2}$/.test(time) ? time : "00:00";
   return `${date}T${t}:00Z`;
+}
+
+async function loadRfcCiContext(pg: any, rfcId: string, fallbackCiId?: string | null) {
+  const cisResult = await pg.query(
+    `SELECT ci_id, role FROM change_request_cis WHERE change_request_id = $1`,
+    [rfcId]
+  );
+  let fallback = fallbackCiId || null;
+  if (!fallback) {
+    const rfcResult = await pg.query("SELECT ci_id FROM change_requests WHERE id = $1", [rfcId]);
+    fallback = rfcResult.rows[0]?.ci_id || null;
+  }
+  const primaryCi = cisResult.rows.find((r: any) => r.role === "primary")?.ci_id || fallback || cisResult.rows[0]?.ci_id || null;
+  const ciIds = Array.from(new Set([primaryCi, ...cisResult.rows.map((r: any) => r.ci_id)].filter(Boolean)));
+  return { primaryCi, ciIds, rows: cisResult.rows };
+}
+
+function normalizeCabBriefSnapshot(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    rfcId: row.change_request_id,
+    generatedBy: row.generated_by,
+    grade: row.grade || {},
+    conflicts: row.conflicts || {},
+    health: row.health || {},
+    impactPath: row.impact_path || {},
+    metadata: row.metadata || {},
+    createdAt: row.created_at,
+  };
 }
 
 registerTool<FastifyInstance>("change-manager", {
@@ -793,12 +824,9 @@ registerTool<FastifyInstance>("change-manager", {
   if (!rfcResult.rows.length) return { error: "RFC not found" };
   const rfc = rfcResult.rows[0];
 
-  const cisResult = await pg.query(
-    `SELECT ci_id, role FROM change_request_cis WHERE change_request_id = $1`,
-    [rfcId]
-  );
-  const affectedCount = cisResult.rows.length;
-  const primaryCi = cisResult.rows.find((r: any) => r.role === "primary")?.ci_id;
+  const ciContext = await loadRfcCiContext(pg, rfcId, rfc.ci_id);
+  const affectedCount = ciContext.ciIds.length;
+  const primaryCi = ciContext.primaryCi;
 
   // Check criticality via Neo4j
   const session = fastify.neo4j.session();
@@ -849,22 +877,18 @@ registerTool<FastifyInstance>("change-manager", {
   const { rfcId, windowHours = 48 } = args as any;
   const pg = fastify.pg;
 
-  const rfcResult = await pg.query("SELECT ci_id, planned_start_at, scheduled_at FROM change_requests WHERE id = $1", [rfcId]);
+  const rfcResult = await pg.query("SELECT ci_id, planned_start_at, planned_end_at, scheduled_at FROM change_requests WHERE id = $1", [rfcId]);
   if (!rfcResult.rows.length) return { error: "RFC not found" };
-  const { ci_id, planned_start_at, scheduled_at } = rfcResult.rows[0];
+  const { ci_id, planned_start_at, planned_end_at, scheduled_at } = rfcResult.rows[0];
   const startAt = planned_start_at || scheduled_at;
   if (!startAt) return { conflicts: [], message: "No scheduled date set, cannot check conflicts" };
 
   // Get all affected CIs for this RFC (primary + dependencies)
-  const cisResult = await pg.query(
-    `SELECT ci_id FROM change_request_cis WHERE change_request_id = $1`,
-    [rfcId]
-  );
-  const ciIds = cisResult.rows.map((r: any) => r.ci_id);
+  const { ciIds } = await loadRfcCiContext(pg, rfcId, ci_id);
 
   // Direct CI conflicts: other RFCs that share the same affected CIs
   const conflictResult = await pg.query(
-    `SELECT DISTINCT cr.id, cr.title, cr.ci_id, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at, cr.status, crc.ci_id as conflicting_ci
+    `SELECT DISTINCT cr.id, cr.number, cr.title, cr.ci_id, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at, cr.planned_end_at, cr.status, crc.ci_id as conflicting_ci
      FROM change_requests cr
      JOIN change_request_cis crc ON crc.change_request_id = cr.id
      WHERE cr.id <> $1
@@ -872,21 +896,21 @@ registerTool<FastifyInstance>("change-manager", {
        AND cr.status NOT IN ('closed', 'rejected', 'rolled_back')
        AND ABS(EXTRACT(EPOCH FROM (COALESCE(cr.planned_start_at, cr.scheduled_at) - $2))) <= $3 * 3600
        AND crc.ci_id = ANY($4)
-     ORDER BY COALESCE(cr.planned_start_at, cr.scheduled_at)`,
+     ORDER BY planned_start_at`,
     [rfcId, startAt, windowHours, ciIds]
   );
 
   // Dependency-aware conflicts: RFCs on different CIs that share a downstream dependency
   const directConflictIds = new Set(conflictResult.rows.map((r: any) => r.id));
   const potentialResult = await pg.query(
-    `SELECT DISTINCT cr.id, cr.title, cr.ci_id as primary_ci, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at, cr.status
+    `SELECT DISTINCT cr.id, cr.number, cr.title, cr.ci_id as primary_ci, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at, cr.planned_end_at, cr.status
      FROM change_requests cr
      WHERE cr.id <> $1
        AND COALESCE(cr.planned_start_at, cr.scheduled_at) IS NOT NULL
        AND cr.status NOT IN ('closed', 'rejected', 'rolled_back')
        AND ABS(EXTRACT(EPOCH FROM (COALESCE(cr.planned_start_at, cr.scheduled_at) - $2))) <= $3 * 3600
        AND cr.id <> ALL($4)
-     ORDER BY COALESCE(cr.planned_start_at, cr.scheduled_at)
+     ORDER BY planned_start_at
      LIMIT 20`,
     [rfcId, startAt, windowHours, Array.from(directConflictIds)]
   );
@@ -909,7 +933,9 @@ registerTool<FastifyInstance>("change-manager", {
           dependencyConflicts.push({
             ...other,
             conflictType: "dependency-aware",
+            severity: "medium",
             reason: `Primary CI ${otherCiId} is within 3 hops of an affected CI in this RFC`,
+            suggestedAction: "Review dependency blast radius with both change owners before approval.",
           });
         }
       }
@@ -919,13 +945,22 @@ registerTool<FastifyInstance>("change-manager", {
   }
 
   const allConflicts = [
-    ...conflictResult.rows.map((r: any) => ({ ...r, conflictType: "direct" })),
+    ...conflictResult.rows.map((r: any) => ({
+      ...r,
+      conflictType: "direct",
+      severity: r.conflicting_ci === ci_id ? "high" : "medium",
+      reason: r.conflicting_ci === ci_id
+        ? `Same primary CI ${r.conflicting_ci} is scheduled in the CAB window.`
+        : `Affected CI ${r.conflicting_ci} is also included in another active scheduled change.`,
+      suggestedAction: "Reschedule one change, combine CAB review, or require explicit joint approval.",
+    })),
     ...dependencyConflicts,
   ];
 
   return {
     primaryCi: ci_id,
     plannedStartAt: startAt,
+    plannedEndAt: planned_end_at,
     windowHours,
     conflicts: allConflicts,
     conflictCount: allConflicts.length,
@@ -947,11 +982,7 @@ registerTool<FastifyInstance>("change-manager", {
 }, async (args, fastify) => {
   const { rfcId } = args as any;
   const pg = fastify.pg;
-  const cisResult = await pg.query(
-    `SELECT ci_id FROM change_request_cis WHERE change_request_id = $1`,
-    [rfcId]
-  );
-  const ciIds = cisResult.rows.map((r: any) => r.ci_id);
+  const { ciIds } = await loadRfcCiContext(pg, rfcId);
   if (ciIds.length === 0) return { healthy: true, ciHealth: [] };
 
   const session = fastify.neo4j.session();
@@ -1015,12 +1046,9 @@ registerTool<FastifyInstance>("change-manager", {
 }, async (args, fastify) => {
   const { rfcId } = args as any;
   const pg = fastify.pg;
-  const cisResult = await pg.query(
-    `SELECT ci_id, role FROM change_request_cis WHERE change_request_id = $1`,
-    [rfcId]
-  );
-  const primaryCi = cisResult.rows.find((r: any) => r.role === "primary")?.ci_id;
-  const affected = cisResult.rows.filter((r: any) => r.role !== "primary");
+  const ciContext = await loadRfcCiContext(pg, rfcId);
+  const primaryCi = ciContext.primaryCi;
+  const affected = ciContext.rows.filter((r: any) => r.ci_id !== primaryCi);
 
   // Get dependency paths from primary to affected
   const session = fastify.neo4j.session();
@@ -1091,11 +1119,7 @@ registerTool<FastifyInstance>("change-manager", {
 }, async (args, fastify) => {
   const { rfcId } = args as any;
   const pg = fastify.pg;
-  const cisResult = await pg.query(
-    `SELECT ci_id, role FROM change_request_cis WHERE change_request_id = $1`,
-    [rfcId]
-  );
-  const primaryCi = cisResult.rows.find((r: any) => r.role === "primary")?.ci_id;
+  const { primaryCi } = await loadRfcCiContext(pg, rfcId);
   if (!primaryCi) return { error: "No primary CI found" };
 
   const session = fastify.neo4j.session();
@@ -1144,6 +1168,85 @@ registerTool<FastifyInstance>("change-manager", {
   } finally {
     await session.close();
   }
+});
+
+registerTool<FastifyInstance>("change-manager", {
+  name: "record_cab_brief_snapshot",
+  description: "Persist the generated CAB brief sections for a change request so reviewers can audit the exact review state later.",
+  parameters: {
+    type: "object",
+    properties: {
+      rfcId: { type: "string", description: "UUID of the RFC" },
+      grade: { type: "object", description: "Risk grading result" },
+      conflicts: { type: "object", description: "Conflict detection result" },
+      health: { type: "object", description: "CI health result" },
+      impactPath: { type: "object", description: "Impact path result" },
+      metadata: { type: "object", description: "Snapshot metadata" },
+    },
+    required: ["rfcId"],
+  },
+}, async (args, fastify) => {
+  const { rfcId, grade = {}, conflicts = {}, health = {}, impactPath = {}, metadata = {}, _userId } = args as any;
+  const exists = await fastify.pg.query("SELECT id FROM change_requests WHERE id = $1", [rfcId]);
+  if (!exists.rows.length) return { error: "RFC not found" };
+
+  const result = await fastify.pg.query(
+    `INSERT INTO change_cab_brief_snapshots
+       (change_request_id, generated_by, grade, conflicts, health, impact_path, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, change_request_id, generated_by, grade, conflicts, health, impact_path, metadata, created_at`,
+    [
+      rfcId,
+      _userId || null,
+      JSON.stringify(grade || {}),
+      JSON.stringify(conflicts || {}),
+      JSON.stringify(health || {}),
+      JSON.stringify(impactPath || {}),
+      JSON.stringify(metadata || {}),
+    ]
+  );
+  const snapshot = normalizeCabBriefSnapshot(result.rows[0]);
+
+  await recordAuditEvent(fastify, {
+    actorId: _userId || null,
+    action: "change.cab_brief_snapshot.created",
+    entityType: "ChangeRequest",
+    entityId: rfcId,
+    newValues: {
+      snapshotId: snapshot?.id,
+      conflictCount: conflicts?.conflictCount ?? 0,
+      riskScore: grade?.riskScore ?? null,
+    },
+    metadata: {
+      source: "change-manager.cab",
+      result: "success",
+    },
+  });
+
+  return snapshot;
+});
+
+registerTool<FastifyInstance>("change-manager", {
+  name: "get_latest_cab_brief_snapshot",
+  description: "Return the most recent persisted CAB brief snapshot for a change request.",
+  parameters: {
+    type: "object",
+    properties: {
+      rfcId: { type: "string", description: "UUID of the RFC" },
+    },
+    required: ["rfcId"],
+  },
+}, async (args, fastify) => {
+  const { rfcId } = args as any;
+  const result = await fastify.pg.query(
+    `SELECT id, change_request_id, generated_by, grade, conflicts, health, impact_path, metadata, created_at
+     FROM change_cab_brief_snapshots
+     WHERE change_request_id = $1
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [rfcId]
+  );
+  return { rfcId, snapshot: normalizeCabBriefSnapshot(result.rows[0]) };
 });
 
 registerTool<FastifyInstance>("change-manager", {

@@ -11,7 +11,7 @@ describe("CONSTRAINTS", () => {
 
   it("each constraint starts with CREATE CONSTRAINT or CREATE INDEX", () => {
     for (const c of CONSTRAINTS) {
-      expect(c).toMatch(/^CREATE (CONSTRAINT|INDEX)/);
+      expect(c).toMatch(/^CREATE (CONSTRAINT|INDEX|FULLTEXT INDEX)/);
     }
   });
 

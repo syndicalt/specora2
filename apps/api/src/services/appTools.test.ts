@@ -134,7 +134,7 @@ describe("appTools", () => {
 
     const result = await handler({ status: "draft", ciId: "ci-1" }, { pg });
 
-    expect(result).toEqual([{ id: "r1" }]);
+    expect(result).toEqual([expect.objectContaining({ id: "r1" })]);
     expect(pg.query.mock.calls[0][0]).toContain("status = $1");
     expect(pg.query.mock.calls[0][0]).toContain("ci_id = $2");
     expect(pg.query.mock.calls[0][1]).toEqual(["draft", "ci-1"]);
@@ -166,6 +166,76 @@ describe("appTools", () => {
 
     expect(result.affectedCis[0].name).toBe("Server 1");
     expect(result.edges).toEqual([{ sourceId: "ci-1", targetId: "ci-2", type: "DEPENDS_ON" }]);
+  });
+
+  it("find_critical_path falls back to change_requests.ci_id when no primary CI row exists", async () => {
+    await register();
+    const handler = tool("change-manager_find_critical_path");
+    const pgResults = [
+      { rows: [] },
+      { rows: [{ ci_id: "ci-fallback" }] },
+    ];
+    const pg = { query: vi.fn(async () => pgResults.shift() ?? { rows: [] }) };
+    const run = vi.fn(async () => ({
+      records: [{
+        get: (key: string) => ({
+          targetId: "bs-1",
+          targetName: "Billing Service",
+          hops: { toNumber: () => 2 },
+          pathWeight: 80,
+          nodes: [{ id: "ci-fallback", name: "API", class: "ApplicationService" }],
+        } as any)[key],
+      }],
+    }));
+    const close = vi.fn();
+    const neo4j = { session: () => ({ run, close }) };
+
+    const result = await handler({ rfcId: "r1" }, { pg, neo4j });
+
+    expect(result).toMatchObject({ primaryCi: "ci-fallback", criticalPath: { targetName: "Billing Service" } });
+    expect(run).toHaveBeenCalledWith(expect.any(String), { primaryId: "ci-fallback" });
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("records and reloads CAB brief snapshots", async () => {
+    await register();
+    const record = tool("change-manager_record_cab_brief_snapshot");
+    const latest = tool("change-manager_get_latest_cab_brief_snapshot");
+    const snapshotRow = {
+      id: "snap-1",
+      change_request_id: "r1",
+      generated_by: "u1",
+      grade: { riskScore: 72, priority: "high" },
+      conflicts: { conflictCount: 1, conflicts: [{ id: "r2", title: "Overlap" }] },
+      health: { healthy: false },
+      impact_path: { criticalPath: { targetName: "Billing" } },
+      metadata: { source: "cab-workbench" },
+      created_at: "2026-04-26T12:00:00.000Z",
+    };
+    const pg = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT id FROM change_requests")) return { rows: [{ id: "r1" }] };
+        if (sql.includes("INSERT INTO change_cab_brief_snapshots")) return { rows: [snapshotRow] };
+        if (sql.includes("INSERT INTO audit_log")) return { rows: [] };
+        if (sql.includes("FROM change_cab_brief_snapshots")) return { rows: [snapshotRow] };
+        return { rows: [] };
+      }),
+    };
+
+    const created = await record({
+      rfcId: "r1",
+      grade: snapshotRow.grade,
+      conflicts: snapshotRow.conflicts,
+      health: snapshotRow.health,
+      impactPath: snapshotRow.impact_path,
+      metadata: snapshotRow.metadata,
+      _userId: "u1",
+    }, { pg });
+    const loaded = await latest({ rfcId: "r1" }, { pg });
+
+    expect(created).toMatchObject({ id: "snap-1", rfcId: "r1", generatedBy: "u1", conflicts: { conflictCount: 1 } });
+    expect(loaded.snapshot).toMatchObject({ id: "snap-1", impactPath: { criticalPath: { targetName: "Billing" } } });
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.any(Array));
   });
 
   it("knowledge tools create, answer, capture gaps, and publish", async () => {

@@ -4,6 +4,7 @@ Specora has two seed layers:
 
 - Neo4j CMDB seed: `pnpm --filter @specora/db seed`
 - PostgreSQL operations seed: `packages/db/migrations/032_demo_itsm_itam_seed.sql`
+- PostgreSQL enterprise stress seed: `pnpm --filter @specora/db seed:enterprise`
 
 The Neo4j seed owns the 5,000 CSDMv5 configuration items and their graph relationships. The Postgres operations seed adds deterministic app data that references those stable CI IDs so the native apps tell one connected story.
 
@@ -27,6 +28,31 @@ The operations seed loads linked demo data for:
 - IT Visibility DCIM sites, rooms, racks, floorplans, power paths, facility events, and floorplan connections
 
 `032_demo_itsm_itam_seed.sql` uses fixed UUIDs and `ON CONFLICT` handlers. It can be re-run against the same database during demos without duplicating the seeded records.
+
+## Enterprise Stress Seed
+
+The enterprise stress seed is separate from migrations and normal demo seeding. It creates deterministic, idempotent synthetic data across every seed-owned public PostgreSQL table except `schema_migrations`. It is meant for planner review, UI pagination testing, index validation, and command-center stress testing.
+
+Profiles:
+
+```bash
+ENTERPRISE_SEED_PROFILE=smoke pnpm --filter @specora/db seed:enterprise
+ENTERPRISE_SEED_PROFILE=standard pnpm --filter @specora/db seed:enterprise
+ENTERPRISE_SEED_PROFILE=enterprise pnpm --filter @specora/db seed:enterprise
+```
+
+The default is `standard`. Use `smoke` for quick validation and `enterprise` only when the local machine or test database has enough CPU, memory, and disk headroom.
+
+Useful overrides:
+
+```bash
+ENTERPRISE_SEED_CORE_RECORDS=50000 \
+ENTERPRISE_SEED_USERS=1000 \
+ENTERPRISE_SEED_EVENTS_PER_RECORD=5 \
+pnpm --filter @specora/db seed:enterprise
+```
+
+The seed intentionally uses stable synthetic IDs and upserts. Re-running the same profile updates existing stress records instead of duplicating them. It does not delete demo data.
 
 ## Validation Commands
 

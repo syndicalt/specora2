@@ -11,6 +11,7 @@ This directory contains product, architecture, operations, and quality documenta
 - [Form Surface Review](form-surface-review.md)
 - [Development Roadmap](development-roadmap.md)
 - [Deployment and Operations Guide](deployment-and-operations.md)
+- [Database Performance Audit](database-performance-audit.md)
 - [Backup and Restore Guide](backup-and-restore.md)
 - [Audit Contract](audit-contract.md)
 

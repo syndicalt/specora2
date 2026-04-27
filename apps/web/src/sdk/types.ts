@@ -91,6 +91,7 @@ export interface ShellAPI {
   sendMessage: (msg: Omit<AppMessage, "from">) => void;
   onMessage: (handler: (msg: AppMessage) => void) => () => void;
   notify: (message: string, type?: "info" | "success" | "error") => void;
+  runChatPrompt: (prompt: string, options?: { autoSend?: boolean }) => void;
   query: (query: string, variables?: Record<string, unknown>) => Promise<any>;
   mutate: (mutation: string, variables?: Record<string, unknown>) => Promise<any>;
   fetch: (path: string, init?: RequestInit) => Promise<Response>;

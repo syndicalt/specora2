@@ -47,7 +47,26 @@ type CabBrief = {
   conflicts?: any;
   health?: any;
   criticalPath?: any;
+  snapshotId?: string;
+  generatedBy?: string | null;
+  createdAt?: string;
   generatedAt: number;
+};
+
+type ChangeConflict = {
+  id: string;
+  number?: string | null;
+  title?: string;
+  ci_id?: string;
+  primary_ci?: string;
+  conflicting_ci?: string;
+  planned_start_at?: string;
+  planned_end_at?: string;
+  status?: string;
+  conflictType?: string;
+  severity?: string;
+  reason?: string;
+  suggestedAction?: string;
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -89,6 +108,37 @@ function userLabel(user?: { id: string; name?: string | null; email?: string | n
   return user.name || user.email || user.id;
 }
 
+function getConflicts(brief?: CabBrief): ChangeConflict[] {
+  return Array.isArray(brief?.conflicts?.conflicts) ? brief.conflicts.conflicts : [];
+}
+
+function conflictSeverity(conflict: ChangeConflict) {
+  return conflict.severity || (conflict.conflictType === "direct" ? "high" : "medium");
+}
+
+function conflictTitle(conflict: ChangeConflict) {
+  return `${conflict.number || conflict.id}: ${conflict.title || "Untitled change"}`;
+}
+
+function conflictCi(conflict: ChangeConflict) {
+  return conflict.conflicting_ci || conflict.primary_ci || conflict.ci_id || "Unknown CI";
+}
+
+function snapshotToBrief(snapshot: any): CabBrief | null {
+  if (!snapshot) return null;
+  return {
+    rfcId: snapshot.rfcId,
+    grade: snapshot.grade || {},
+    conflicts: snapshot.conflicts || {},
+    health: snapshot.health || {},
+    criticalPath: snapshot.impactPath || {},
+    snapshotId: snapshot.id,
+    generatedBy: snapshot.generatedBy,
+    createdAt: snapshot.createdAt,
+    generatedAt: new Date(snapshot.createdAt || Date.now()).getTime(),
+  };
+}
+
 export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
   const shellRef = useRef(shell);
   shellRef.current = shell;
@@ -124,6 +174,13 @@ export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
       const data = await fetchJson(`/api/apps/change-manager/tools/get_rfc_details?rfcId=${encodeURIComponent(rfcId)}`);
       setSelected(data);
       setRfcs((prev) => prev.some((r) => r.id === data.id) ? prev.map((r) => r.id === data.id ? { ...r, ...data } : r) : [data, ...prev]);
+      try {
+        const snapshotData = await fetchJson(`/api/apps/change-manager/tools/get_latest_cab_brief_snapshot?rfcId=${encodeURIComponent(rfcId)}`);
+        const brief = snapshotToBrief(snapshotData.snapshot);
+        if (brief) setBriefs((prev) => ({ ...prev, [rfcId]: brief }));
+      } catch {
+        // Details should remain usable even if a historical CAB snapshot cannot be loaded.
+      }
     } catch (err: any) {
       shellRef.current.notify(err.message || "RFC details could not be loaded", "error");
     }
@@ -204,7 +261,16 @@ export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
         callTool("check_ci_health_before_change", { rfcId }),
         callTool("find_critical_path", { rfcId }),
       ]);
-      setBriefs((prev) => ({ ...prev, [rfcId]: { rfcId, grade, conflicts, health, criticalPath, generatedAt: Date.now() } }));
+      const snapshot = await callTool("record_cab_brief_snapshot", {
+        rfcId,
+        grade,
+        conflicts,
+        health,
+        impactPath: criticalPath,
+        metadata: { source: "cab-workbench" },
+      });
+      const brief = snapshotToBrief(snapshot) || { rfcId, grade, conflicts, health, criticalPath, generatedAt: Date.now() };
+      setBriefs((prev) => ({ ...prev, [rfcId]: brief }));
       shell.notify("CAB brief generated", "success");
     } catch (err: any) {
       shell.notify(err.message || "CAB brief failed", "error");
@@ -215,10 +281,10 @@ export default function ChangeManagerApp({ shell }: { shell: ShellAPI }) {
 
   function orchestrateCabFromChat(rfc?: RFC) {
     const prompt = rfc
-      ? `Prepare a CAB recommendation for RFC ${rfc.id}. Grade the change, check conflicts, check CI health, find the critical path, and recommend approve, reject, defer, or request more information.`
+      ? `Prepare a CAB recommendation for RFC ${rfc.id}. Grade the change, check conflicts, check CI health, find the impact path, and recommend approve, reject, defer, or request more information.`
       : "Prepare the CAB agenda for pending changes. Prioritize by risk, schedule conflicts, CI health, blast radius, and approval readiness.";
-    navigator.clipboard?.writeText(prompt).catch(() => undefined);
-    shell.notify("CAB prompt copied. Open chat with Ctrl+K and paste it.", "info");
+    shell.runChatPrompt(prompt, { autoSend: true });
+    shell.notify("CAB plan started in chat", "success");
   }
 
   const impactData = selected?.affectedCis?.length ? {
@@ -354,15 +420,139 @@ function ScheduleList({ rfcs, onSelect, dense = true }: { rfcs: RFC[]; onSelect:
 }
 
 function CabCard({ rfc, brief, busy, onSelect, onBrief, onApprove, onReject, onChat }: { rfc: RFC; brief?: CabBrief; busy: string | null; onSelect: (id: string) => void; onBrief: (id: string) => void; onApprove: (id: string) => void; onReject: (id: string) => void; onChat: () => void }) {
-  return <div className="rounded-lg border border-gray-800 bg-gray-900 p-4"><div className="flex items-start justify-between gap-3"><button onClick={() => onSelect(rfc.id)} className="min-w-0 text-left"><div className="truncate text-sm font-semibold">{rfc.title}</div><div className="mt-1 text-xs text-gray-500">{rfc.ci_id} · risk {rfc.risk_score ?? 0}/100 · blast radius {rfc.blast_radius ?? 0}</div></button><div className="flex gap-1"><Badge value={rfc.priority || riskBand(rfc.risk_score)} colors={PRIORITY_COLORS} /><Badge value={rfc.status} colors={STATUS_COLORS} /></div></div>{brief && <div className="mt-3 grid grid-cols-3 gap-2 text-xs"><CabSignal label="Conflicts" value={brief.conflicts?.conflictCount ?? 0} bad={(brief.conflicts?.conflictCount ?? 0) > 0} /><CabSignal label="CI Health" value={brief.health?.healthy === false ? "Review" : "OK"} bad={brief.health?.healthy === false} /><CabSignal label="Critical Path" value={brief.criticalPath?.criticalPath ? "Found" : "Clear"} bad={false} /></div>}<div className="mt-3 flex flex-wrap gap-2"><button onClick={() => onBrief(rfc.id)} disabled={busy === `brief:${rfc.id}`} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">CAB brief</button><button onClick={onChat} className="rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10">Chat plan</button><button onClick={() => onApprove(rfc.id)} disabled={busy === `approve:${rfc.id}`} className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">Approve</button><button onClick={() => onReject(rfc.id)} disabled={busy === `reject:${rfc.id}`} className="rounded-md border border-rose-700 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reject</button></div></div>;
+  const conflicts = getConflicts(brief);
+  const conflictCount = brief?.conflicts?.conflictCount ?? conflicts.length;
+  return (
+    <div className={`rounded-lg border p-4 ${conflictCount > 0 ? "border-amber-500/40 bg-amber-500/[0.04]" : "border-gray-800 bg-gray-900"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <button onClick={() => onSelect(rfc.id)} className="min-w-0 text-left">
+          <div className="truncate text-sm font-semibold">{rfc.title}</div>
+          <div className="mt-1 text-xs text-gray-500">{rfc.ci_id} · risk {rfc.risk_score ?? 0}/100 · blast radius {rfc.blast_radius ?? 0}</div>
+        </button>
+        <div className="flex gap-1">
+          <Badge value={rfc.priority || riskBand(rfc.risk_score)} colors={PRIORITY_COLORS} />
+          <Badge value={rfc.status} colors={STATUS_COLORS} />
+        </div>
+      </div>
+      {brief && (
+        <>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+            <CabSignal label="Conflicts" value={conflictCount} bad={conflictCount > 0} />
+            <CabSignal label="CI Health" value={brief.health?.healthy === false ? "Review" : "OK"} bad={brief.health?.healthy === false} />
+            <CabSignal label="Impact Path" value={brief.criticalPath?.criticalPath ? "Found" : "Clear"} bad={false} />
+          </div>
+          {brief.createdAt && <div className="mt-2 text-xs text-gray-500">Snapshot: {timeLabel(brief.createdAt)}</div>}
+          <ConflictList conflicts={conflicts} compact />
+        </>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button onClick={() => onBrief(rfc.id)} disabled={busy === `brief:${rfc.id}`} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">CAB brief</button>
+        <button onClick={onChat} className="rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10">Chat plan</button>
+        <button onClick={() => onApprove(rfc.id)} disabled={busy === `approve:${rfc.id}`} className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">Approve</button>
+        <button onClick={() => onReject(rfc.id)} disabled={busy === `reject:${rfc.id}`} className="rounded-md border border-rose-700 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reject</button>
+      </div>
+    </div>
+  );
 }
 
 function CabSignal({ label, value, bad }: { label: string; value: string | number; bad: boolean }) {
   return <div className={`rounded-md p-2 ${bad ? "bg-amber-500/10 text-amber-200" : "bg-gray-950 text-gray-300"}`}><div className="text-gray-500">{label}</div><div className="font-medium">{value}</div></div>;
 }
 
+function ConflictList({ conflicts, compact = false }: { conflicts: ChangeConflict[]; compact?: boolean }) {
+  if (!conflicts.length) {
+    return compact ? null : <div className="rounded-md border border-gray-800 bg-gray-950 p-3 text-sm text-gray-500">No conflicts found in the CAB window.</div>;
+  }
+  const visible = compact ? conflicts.slice(0, 2) : conflicts;
+  return (
+    <div className={compact ? "mt-3 space-y-2" : "space-y-2"}>
+      {visible.map((conflict) => (
+        <div key={`${conflict.id}-${conflict.conflicting_ci || conflict.primary_ci || "ci"}`} className="rounded-md border border-amber-500/20 bg-gray-950 p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium text-amber-100">{conflictTitle(conflict)}</div>
+              <div className="mt-1 text-xs text-gray-500">
+                {pretty(conflict.conflictType)} · {conflictCi(conflict)} · {timeLabel(conflict.planned_start_at)}{conflict.planned_end_at ? ` - ${timeLabel(conflict.planned_end_at)}` : ""}
+              </div>
+            </div>
+            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs capitalize ${conflictSeverity(conflict) === "high" ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : "border-amber-500/30 bg-amber-500/10 text-amber-200"}`}>{conflictSeverity(conflict)}</span>
+          </div>
+          {!compact && (
+            <div className="mt-2 space-y-1 text-xs text-gray-400">
+              <p>{conflict.reason || "This change collides with another active scheduled change."}</p>
+              <p className="text-gray-500">Suggested action: {conflict.suggestedAction || "Review schedule, ownership, and rollback coordination before approval."}</p>
+            </div>
+          )}
+        </div>
+      ))}
+      {compact && conflicts.length > visible.length && <div className="text-xs text-amber-200">+{conflicts.length - visible.length} more conflict{conflicts.length - visible.length === 1 ? "" : "s"} on the change record</div>}
+    </div>
+  );
+}
+
 function DetailPanel({ rfc, impactData, brief, busy, onBack, onBrief, onApprove, onReject, onChat }: { rfc: RFC; impactData: any; brief?: CabBrief; busy: string | null; onBack: () => void; onBrief: (id: string) => void; onApprove: (id: string) => void; onReject: (id: string) => void; onChat: () => void }) {
-  return <div className="space-y-4"><button onClick={onBack} className="flex items-center gap-1 text-sm text-gray-400 hover:text-white"><ChevronLeft className="h-4 w-4" /> Clear selection</button><div><h2 className="text-lg font-semibold">{rfc.title}</h2><p className="mt-1 text-xs text-gray-500">{rfc.id}</p></div><div className="flex flex-wrap gap-2"><Badge value={rfc.status} colors={STATUS_COLORS} /><Badge value={rfc.priority || riskBand(rfc.risk_score)} colors={PRIORITY_COLORS} /></div><Panel title="Requester" icon={<MessageSquare className="h-4 w-4" />}><div className="space-y-2 text-sm text-gray-300"><p>{userLabel(rfc.requester)}</p><p className="text-xs text-gray-500">{rfc.requester?.email || "No requester email recorded"}</p>{rfc.requester?.email && <a href={`mailto:${rfc.requester.email}?subject=${encodeURIComponent(rfc.title)}`} className="inline-flex rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800">Email requester</a>}</div></Panel><Panel title="Readiness" icon={<ShieldCheck className="h-4 w-4" />}><div className="grid grid-cols-3 gap-2 text-xs"><CabSignal label="Risk" value={rfc.risk_score ?? 0} bad={(rfc.risk_score ?? 0) >= 60} /><CabSignal label="Blast" value={rfc.blast_radius ?? 0} bad={(rfc.blast_radius ?? 0) > 10} /><CabSignal label="Approvers" value={rfc.approvers?.filter((a) => a.approved_at).length || 0} bad={(rfc.approvers?.some((a) => !a.approved_at) ?? false)} /></div><div className="mt-3 flex flex-wrap gap-2"><button onClick={() => onBrief(rfc.id)} disabled={busy === `brief:${rfc.id}`} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">Refresh CAB brief</button><button onClick={onChat} className="rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10">Plan in chat</button>{rfc.status === "pending_approval" && <><button onClick={() => onApprove(rfc.id)} className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">Approve</button><button onClick={() => onReject(rfc.id)} className="rounded-md border border-rose-700 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reject</button></>}</div></Panel>{brief && <Panel title="CAB Brief" icon={<Bot className="h-4 w-4" />}><div className="space-y-2 text-sm text-gray-400"><p>Risk: {brief.grade?.riskScore ?? "n/a"} · Priority: {brief.grade?.priority || "n/a"}</p><p>Conflicts: {brief.conflicts?.conflictCount ?? 0}</p><p>CI health: {brief.health?.healthy === false ? "Needs review" : "OK"}</p><p>Critical path: {brief.criticalPath?.criticalPath?.targetName || "No downstream business service found"}</p></div></Panel>}{rfc.description && <Panel title="Description" icon={<MessageSquare className="h-4 w-4" />}><p className="text-sm text-gray-400">{rfc.description}</p></Panel>}{impactData && <Panel title="Impact Graph" icon={<GitBranch className="h-4 w-4" />}><ImpactGraph nodes={impactData.nodes} edges={impactData.edges} height={260} /></Panel>}<Panel title="Change Window" icon={<CalendarDays className="h-4 w-4" />}><div className="space-y-2 text-sm text-gray-400"><p>Start: {timeLabel(rfc.planned_start_at || rfc.scheduled_at)}</p><p>End: {timeLabel(rfc.planned_end_at)}</p></div></Panel>{rfc.comments?.length ? <Panel title="Activity" icon={<MessageSquare className="h-4 w-4" />}><div className="space-y-3">{rfc.comments.map((comment) => <div key={comment.id} className="border-l border-gray-700 pl-3"><div className="text-xs text-gray-500">{comment.author || "Unknown"} · {timeLabel(comment.created_at)}</div><div className="text-sm text-gray-300">{comment.content}</div></div>)}</div></Panel> : null}</div>;
+  const conflicts = getConflicts(brief);
+  const conflictCount = brief?.conflicts?.conflictCount ?? conflicts.length;
+  return (
+    <div className="space-y-4">
+      <button onClick={onBack} className="flex items-center gap-1 text-sm text-gray-400 hover:text-white"><ChevronLeft className="h-4 w-4" /> Clear selection</button>
+      <div>
+        <h2 className="text-lg font-semibold">{rfc.title}</h2>
+        <p className="mt-1 text-xs text-gray-500">{rfc.id}</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Badge value={rfc.status} colors={STATUS_COLORS} />
+        <Badge value={rfc.priority || riskBand(rfc.risk_score)} colors={PRIORITY_COLORS} />
+      </div>
+      <Panel title="Requester" icon={<MessageSquare className="h-4 w-4" />}>
+        <div className="space-y-2 text-sm text-gray-300">
+          <p>{userLabel(rfc.requester)}</p>
+          <p className="text-xs text-gray-500">{rfc.requester?.email || "No requester email recorded"}</p>
+          {rfc.requester?.email && <a href={`mailto:${rfc.requester.email}?subject=${encodeURIComponent(rfc.title)}`} className="inline-flex rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800">Email requester</a>}
+        </div>
+      </Panel>
+      <Panel title="Readiness" icon={<ShieldCheck className="h-4 w-4" />}>
+        <div className="grid grid-cols-3 gap-2 text-xs">
+          <CabSignal label="Risk" value={rfc.risk_score ?? 0} bad={(rfc.risk_score ?? 0) >= 60} />
+          <CabSignal label="Conflicts" value={brief ? conflictCount : "Run brief"} bad={conflictCount > 0} />
+          <CabSignal label="Approvers" value={rfc.approvers?.filter((a) => a.approved_at).length || 0} bad={(rfc.approvers?.some((a) => !a.approved_at) ?? false)} />
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button onClick={() => onBrief(rfc.id)} disabled={busy === `brief:${rfc.id}`} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">Refresh CAB brief</button>
+          <button onClick={onChat} className="rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10">Plan in chat</button>
+          {rfc.status === "pending_approval" && <>
+            <button onClick={() => onApprove(rfc.id)} className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">Approve</button>
+            <button onClick={() => onReject(rfc.id)} className="rounded-md border border-rose-700 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10">Reject</button>
+          </>}
+        </div>
+      </Panel>
+      <Panel title="Change Conflicts" icon={<AlertTriangle className="h-4 w-4" />}>
+        {brief ? (
+          <ConflictList conflicts={conflicts} />
+        ) : (
+          <div className="rounded-md border border-dashed border-gray-800 bg-gray-950 p-3 text-sm text-gray-500">Run CAB brief to check direct CI, dependency, and schedule conflicts.</div>
+        )}
+      </Panel>
+      {brief && <Panel title="CAB Brief" icon={<Bot className="h-4 w-4" />}>
+        <div className="space-y-2 text-sm text-gray-400">
+          {brief.createdAt && <p className="text-xs text-gray-500">Snapshot: {timeLabel(brief.createdAt)}{brief.snapshotId ? ` · ${brief.snapshotId.slice(0, 8)}` : ""}</p>}
+          <p>Risk: {brief.grade?.riskScore ?? "n/a"} · Priority: {brief.grade?.priority || "n/a"}</p>
+          <p>Conflicts: {conflictCount}</p>
+          <p>CI health: {brief.health?.healthy === false ? "Needs review" : "OK"}</p>
+          <p>Impact path: {brief.criticalPath?.criticalPath?.targetName || "No downstream business service found"}</p>
+        </div>
+      </Panel>}
+      {rfc.description && <Panel title="Description" icon={<MessageSquare className="h-4 w-4" />}><p className="text-sm text-gray-400">{rfc.description}</p></Panel>}
+      {impactData && <Panel title="Impact Graph" icon={<GitBranch className="h-4 w-4" />}><ImpactGraph nodes={impactData.nodes} edges={impactData.edges} height={260} /></Panel>}
+      <Panel title="Change Window" icon={<CalendarDays className="h-4 w-4" />}>
+        <div className="space-y-2 text-sm text-gray-400">
+          <p>Start: {timeLabel(rfc.planned_start_at || rfc.scheduled_at)}</p>
+          <p>End: {timeLabel(rfc.planned_end_at)}</p>
+        </div>
+      </Panel>
+      {rfc.comments?.length ? <Panel title="Activity" icon={<MessageSquare className="h-4 w-4" />}><div className="space-y-3">{rfc.comments.map((comment) => <div key={comment.id} className="border-l border-gray-700 pl-3"><div className="text-xs text-gray-500">{comment.author || "Unknown"} · {timeLabel(comment.created_at)}</div><div className="text-sm text-gray-300">{comment.content}</div></div>)}</div></Panel> : null}
+    </div>
+  );
 }
 
 function AutomationCard({ title, method, path, body }: { title: string; method: string; path: string; body: Record<string, unknown> }) {

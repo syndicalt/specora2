@@ -3,6 +3,7 @@ export const CONSTRAINTS = [
   `CREATE INDEX ci_name_index IF NOT EXISTS FOR (n:ConfigurationItem) ON (n.name)`,
   `CREATE INDEX ci_class_index IF NOT EXISTS FOR (n:ConfigurationItem) ON (n.class)`,
   `CREATE INDEX ci_env_index IF NOT EXISTS FOR (n:ConfigurationItem) ON (n.environment)`,
+  `CREATE FULLTEXT INDEX ci_text_index IF NOT EXISTS FOR (n:ConfigurationItem) ON EACH [n.name, n.class, n.environment]`,
 ];
 
 export const CSDM_NODE_LABELS = [
