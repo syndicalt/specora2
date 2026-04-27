@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import jwt from "@fastify/jwt";
 import { authPlugin } from "../plugins/jwt";
 import { clearPermissionCache } from "../services/rbac";
+import { clearFieldRestrictionCache } from "../services/fieldRbac";
 
 vi.mock("../services/appTools", async () => {
   const actual = await vi.importActual<typeof import("../services/appTools")>("../services/appTools");
@@ -20,6 +21,7 @@ vi.mock("../services/appTools", async () => {
 describe("adminRoutes", () => {
   beforeEach(() => {
     clearPermissionCache();
+    clearFieldRestrictionCache();
   });
 
   async function buildApp(queryImpl?: (sql: string, params?: any[]) => Promise<{ rows: any[]; rowCount: number }>) {
@@ -227,6 +229,66 @@ describe("adminRoutes", () => {
     expect(body.result.allowed).toBe(false);
     expect(body.result.tool).toMatchObject({ fullName: "incident-manager_create_incident", resource: "incident-manager", action: "write" });
     expect(body.result.remediation[0]).toMatchObject({ role: "operator", resource: "incident-manager", action: "write" });
+  });
+
+  it("explains table and field access using table and field policy", async () => {
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1 AND resource = $2 AND action = $3")) {
+        if (params?.[1] === "rbac") {
+          return Promise.resolve({ rows: [{ id: "admin-rbac", role: "security_admin", resource: "rbac", action: "read" }], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      if (sql.includes("SELECT id, name, email, role FROM users WHERE id = $1")) {
+        return Promise.resolve({ rows: [{ id: params?.[0], name: "Olivia Ops", email: "olivia@example.com", role: "operator" }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY")) {
+        return Promise.resolve({ rows: [{ id: "tables-read", role: "operator", resource: "tables", action: "read" }], rowCount: 1 });
+      }
+      if (sql.includes("FROM ci_classes")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      if (sql.includes("information_schema.columns")) {
+        return Promise.resolve({
+          rows: [
+            { table_name: "incidents", column_name: "id", data_type: "uuid", udt_name: "uuid", is_nullable: "NO", column_default: null },
+            { table_name: "incidents", column_name: "number", data_type: "text", udt_name: "text", is_nullable: "YES", column_default: null },
+            { table_name: "incidents", column_name: "title", data_type: "text", udt_name: "text", is_nullable: "YES", column_default: null },
+            { table_name: "incidents", column_name: "description", data_type: "text", udt_name: "text", is_nullable: "YES", column_default: null },
+            { table_name: "incidents", column_name: "status", data_type: "text", udt_name: "text", is_nullable: "YES", column_default: null },
+          ],
+          rowCount: 5,
+        });
+      }
+      if (sql.includes("security.field_restrictions")) {
+        return Promise.resolve({ rows: [{ value: JSON.stringify([{ tableId: "pg.incidents", field: "description" }]) }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/rbac/explain-table-access",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { userId: "u-ops", tableId: "pg.incidents", fieldName: "description", accessMode: "write" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.result.allowed).toBe(false);
+    expect(body.result.table).toMatchObject({ id: "pg.incidents", provider: "postgres-table" });
+    expect(body.result.fields[0]).toMatchObject({
+      field: "description",
+      resource: "field:pg.incidents.description",
+      restricted: true,
+      read: false,
+      write: false,
+    });
+    expect(body.result.missing).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: "tables", action: "write" }),
+      expect.objectContaining({ resource: "field:pg.incidents.description", action: "read" }),
+      expect.objectContaining({ resource: "field:pg.incidents.description", action: "write" }),
+    ]));
   });
 
   it("manages number sequences", async () => {

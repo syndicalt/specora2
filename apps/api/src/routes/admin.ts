@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { requirePermission, clearPermissionCache } from "../services/rbac";
 import { getAllRegisteredApps, permissionToResourceAction } from "../services/appRegistry";
-import { clearFieldRestrictionCache, fieldTargetsForTable } from "../services/fieldRbac";
+import { clearFieldRestrictionCache, fieldTargetsForTable, resolveFieldAccess } from "../services/fieldRbac";
 import { getTables } from "./tables";
 import { recordAuditEvent } from "../services/auditLog";
 import { getAllAppToolDefinitions } from "../services/appTools";
@@ -119,6 +119,33 @@ function permissionTarget(resource: string, action: string, overrides: Record<st
     source: overrides.source || "Permission Registry",
     risk: overrides.risk || permissionRisk(resource, action),
   };
+}
+
+type AdminTableField = { name: string; label: string; writable: boolean };
+
+function tableFieldsForExplanation(table: any): AdminTableField[] {
+  const seen = new Set<string>();
+  const fields: AdminTableField[] = [];
+  const add = (field: AdminTableField) => {
+    if (!field.name || seen.has(field.name)) return;
+    seen.add(field.name);
+    fields.push(field);
+  };
+  add({ name: "id", label: "ID", writable: false });
+  add({ name: table.nameField || "name", label: table.nameField ? permissionLabel(table.nameField) : "Name", writable: true });
+  if (table.hasNumber) add({ name: "number", label: "Number", writable: false });
+  if (table.provider === "cmdb-class") add({ name: "environment", label: "Environment", writable: true });
+  for (const attr of table.attributes || []) {
+    add({ name: attr.name, label: attr.displayName || permissionLabel(attr.name), writable: true });
+  }
+  return fields;
+}
+
+function permissionLabel(value: string) {
+  return value
+    .replace(/^field:/, "")
+    .replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function n(value: any) {
@@ -694,6 +721,131 @@ async function explainToolAccess(
   };
 }
 
+async function explainTableAccess(
+  fastify: FastifyInstance,
+  body: { userId?: string; email?: string; role?: string; tableId?: string; fieldName?: string; accessMode?: string }
+) {
+  const tableId = body.tableId?.trim();
+  const fieldName = body.fieldName?.trim();
+  const accessMode = body.accessMode === "write" ? "write" : "read";
+  if (!tableId) return { error: "tableId required" };
+
+  const { user, role } = await resolveAccessSubject(fastify, body);
+  if (!role) return { error: "user or role required" };
+
+  const tables = await getTables(fastify);
+  const table = tables.find((candidate) => candidate.id === tableId || candidate.name === tableId);
+  if (!table) return { error: "table not found" };
+
+  const fieldOptions = tableFieldsForExplanation(table);
+  const selectedFields = fieldName ? fieldOptions.filter((field) => field.name === fieldName) : fieldOptions;
+  if (fieldName && selectedFields.length === 0) return { error: "field not found" };
+
+  const grantsResult = await fastify.pg.query(
+    "SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY resource, action",
+    [role]
+  );
+  const grants = grantsResult.rows;
+  const tableRead = evaluateGrant(role, grants, "tables", "read");
+  const tableWrite = evaluateGrant(role, grants, "tables", "write");
+  const fieldAccessMap = await resolveFieldAccess({
+    pg: fastify.pg,
+    role,
+    tableId: table.id,
+    fieldNames: fieldOptions.map((field) => field.name),
+    writableFieldNames: fieldOptions.filter((field) => field.writable).map((field) => field.name),
+  });
+
+  const fields = selectedFields.map((field) => {
+    const access = fieldAccessMap.get(field.name);
+    const read = Boolean(access?.read);
+    const write = field.writable && Boolean(access?.write);
+    const restricted = Boolean(access?.restricted);
+    const resource = access?.resource || `field:${table.id}.${field.name}`;
+    return {
+      field: field.name,
+      label: field.label,
+      resource,
+      writable: field.writable,
+      restricted,
+      read,
+      write,
+      readReason: restricted ? (read ? "field_grant_or_override" : "missing_field_read") : "unrestricted_field",
+      writeReason: !field.writable ? "not_writable" : restricted ? (write ? "field_grant_or_override" : "missing_field_write") : "unrestricted_field",
+      readRisk: permissionRisk(resource, "read"),
+      writeRisk: permissionRisk(resource, "write"),
+    };
+  });
+
+  const missing: Array<{ resource: string; action: string; risk: string; field?: string }> = [];
+  if (!tableRead.allowed) missing.push({ resource: "tables", action: "read", risk: permissionRisk("tables", "read") });
+  if (accessMode === "write" && !tableWrite.allowed) missing.push({ resource: "tables", action: "write", risk: permissionRisk("tables", "write") });
+  for (const field of fields) {
+    if (field.restricted && !field.read) missing.push({ resource: field.resource, action: "read", risk: field.readRisk, field: field.field });
+    if (accessMode === "write" && field.writable && field.restricted && !field.write) {
+      missing.push({ resource: field.resource, action: "write", risk: field.writeRisk, field: field.field });
+    }
+  }
+
+  const allowed = accessMode === "write"
+    ? tableRead.allowed && tableWrite.allowed && fields.every((field) => field.read && (!field.writable || field.write))
+    : tableRead.allowed && fields.every((field) => field.read);
+  const trace: Array<{ status: "allow" | "deny" | "info"; label: string; detail: string }> = [
+    { status: "info", label: "Registered table", detail: `${table.label} resolves to ${table.id} with ${fieldOptions.length} explainable field${fieldOptions.length === 1 ? "" : "s"}.` },
+    { status: tableRead.allowed ? "allow" : "deny", label: "Table read", detail: `${role} ${tableRead.allowed ? "has" : "is missing"} tables:read (${tableRead.reason.replaceAll("_", " ")}).` },
+  ];
+  if (accessMode === "write") {
+    trace.push({ status: tableWrite.allowed ? "allow" : "deny", label: "Table write", detail: `${role} ${tableWrite.allowed ? "has" : "is missing"} tables:write (${tableWrite.reason.replaceAll("_", " ")}).` });
+  }
+  const restrictedCount = fields.filter((field) => field.restricted).length;
+  trace.push({
+    status: restrictedCount ? "info" : "allow",
+    label: "Field policy",
+    detail: restrictedCount
+      ? `${restrictedCount} selected field${restrictedCount === 1 ? "" : "s"} require explicit field grants.`
+      : "No selected fields are restricted by field policy or sensitive-name detection.",
+  });
+  trace.push({
+    status: allowed ? "allow" : "deny",
+    label: allowed ? "Access allowed" : "Access blocked",
+    detail: allowed
+      ? `${role} can ${accessMode} the selected ${table.label} surface.`
+      : `${role} needs ${missing.map((item) => `${item.resource}:${item.action}`).join(", ")}.`,
+  });
+
+  return {
+    result: {
+      allowed,
+      user,
+      role,
+      accessMode,
+      table: {
+        id: table.id,
+        name: table.name,
+        label: table.label,
+        provider: table.provider,
+        category: table.category,
+        fieldCount: fieldOptions.length,
+      },
+      tableAccess: {
+        read: { allowed: tableRead.allowed, reason: tableRead.reason, risk: permissionRisk("tables", "read") },
+        write: { allowed: tableWrite.allowed, reason: tableWrite.reason, risk: permissionRisk("tables", "write") },
+      },
+      fields,
+      missing,
+      grants,
+      trace,
+      remediation: missing.map((item) => ({
+        role,
+        resource: item.resource,
+        action: item.action,
+        risk: item.risk,
+        reason: `Grant ${item.resource}:${item.action} to ${role} to allow ${accessMode} access${item.field ? ` for ${item.field}` : ""}.`,
+      })),
+    },
+  };
+}
+
 export async function getStateMachineConfig(pg: any): Promise<any> {
   const result = await pg.query("SELECT value FROM system_properties WHERE key = 'change_manager.state_machine'");
   if (!result.rows.length) return null;
@@ -811,6 +963,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
         targets: permissionTargets,
         apps: apps.map((app) => ({ id: app.id, name: app.name, permissions: app.permissions })),
         tools: registeredAppTools(),
+        tables: tables.map((table) => ({
+          id: table.id,
+          name: table.name,
+          label: table.label,
+          provider: table.provider,
+          category: table.category,
+          hasNumber: Boolean(table.hasNumber),
+          fields: tableFieldsForExplanation(table),
+        })),
       };
     } catch (err: any) {
       fastify.log.error(err);
@@ -848,6 +1009,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to explain app tool access" });
+    }
+  });
+
+  fastify.post("/api/admin/rbac/explain-table-access", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (request, reply) => {
+    try {
+      const result = await explainTableAccess(fastify, request.body as any);
+      if ("error" in result) return reply.status(400).send(result);
+      return result;
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to explain table access" });
     }
   });
 

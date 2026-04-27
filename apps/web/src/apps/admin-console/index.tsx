@@ -5,6 +5,7 @@ import { getToken } from "@/lib/auth";
 import {
   Activity,
   AlertTriangle,
+  ChevronDown,
   ChevronRight,
   CheckCircle2,
   ClipboardCheck,
@@ -98,6 +99,15 @@ interface RbacTool {
   action: string;
 }
 
+interface RbacTable {
+  id: string;
+  name: string;
+  label: string;
+  provider: string;
+  category?: string;
+  fields: Array<{ name: string; label: string; writable: boolean }>;
+}
+
 interface AccessAnalysis {
   allowed: boolean;
   reason: string;
@@ -161,6 +171,41 @@ interface ToolAccessExplanation {
     description: string;
   };
   missing: Array<{ resource: string; action: string; risk: string }>;
+  remediation: Array<{ role: string; resource: string; action: string; risk: string; reason: string }>;
+  trace: { status: "allow" | "deny" | "info"; label: string; detail: string }[];
+}
+
+interface TableAccessExplanation {
+  allowed: boolean;
+  user: RbacUser | null;
+  role: string;
+  accessMode: "read" | "write";
+  table: {
+    id: string;
+    name: string;
+    label: string;
+    provider: string;
+    category?: string;
+    fieldCount: number;
+  };
+  tableAccess: {
+    read: { allowed: boolean; reason: string; risk: string };
+    write: { allowed: boolean; reason: string; risk: string };
+  };
+  fields: Array<{
+    field: string;
+    label: string;
+    resource: string;
+    writable: boolean;
+    restricted: boolean;
+    read: boolean;
+    write: boolean;
+    readReason: string;
+    writeReason: string;
+    readRisk: string;
+    writeRisk: string;
+  }>;
+  missing: Array<{ resource: string; action: string; risk: string; field?: string }>;
   remediation: Array<{ role: string; resource: string; action: string; risk: string; reason: string }>;
   trace: { status: "allow" | "deny" | "info"; label: string; detail: string }[];
 }
@@ -267,12 +312,21 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [rbacTargets, setRbacTargets] = useState<RbacTarget[]>([]);
   const [rbacApps, setRbacApps] = useState<RbacApp[]>([]);
   const [rbacTools, setRbacTools] = useState<RbacTool[]>([]);
+  const [rbacTables, setRbacTables] = useState<RbacTable[]>([]);
   const [accessProbe, setAccessProbe] = useState({ userId: "", role: "", target: "" });
   const [accessAnalysis, setAccessAnalysis] = useState<AccessAnalysis | null>(null);
   const [appAccessProbe, setAppAccessProbe] = useState({ userId: "", role: "", appId: "" });
   const [appAccessExplanation, setAppAccessExplanation] = useState<AppAccessExplanation | null>(null);
   const [toolAccessProbe, setToolAccessProbe] = useState({ userId: "", role: "", tool: "" });
   const [toolAccessExplanation, setToolAccessExplanation] = useState<ToolAccessExplanation | null>(null);
+  const [tableAccessProbe, setTableAccessProbe] = useState({ userId: "", role: "", tableId: "", fieldName: "", accessMode: "read" });
+  const [tableAccessExplanation, setTableAccessExplanation] = useState<TableAccessExplanation | null>(null);
+  const [openRbacUtilities, setOpenRbacUtilities] = useState<Record<string, boolean>>({
+    app: true,
+    tool: false,
+    table: true,
+    analyzer: false,
+  });
   const [provisioningJobs, setProvisioningJobs] = useState<ProvisioningJob[]>([]);
   const [operationalIntelligence, setOperationalIntelligence] = useState<OperationalIntelligence | null>(null);
   const [loading, setLoading] = useState(true);
@@ -337,6 +391,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setRbacTargets(rbacOptionsData.targets || []);
       setRbacApps(rbacOptionsData.apps || []);
       setRbacTools(rbacOptionsData.tools || []);
+      setRbacTables(rbacOptionsData.tables || []);
       setProvisioningJobs(jobsData.jobs || []);
       setOperationalIntelligence(opsData);
       setAccessProbe((current) => {
@@ -367,6 +422,18 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
           userId: firstUser?.id || "",
           role: firstUser?.role || "",
           tool: firstTool ? `${firstTool.appId}${PERMISSION_VALUE_SEPARATOR}${firstTool.toolName}` : "",
+        };
+      });
+      setTableAccessProbe((current) => {
+        if (current.userId || current.role || current.tableId) return current;
+        const firstUser = rbacOptionsData.users?.[0];
+        const firstTable = rbacOptionsData.tables?.[0];
+        return {
+          userId: firstUser?.id || "",
+          role: firstUser?.role || "",
+          tableId: firstTable?.id || "",
+          fieldName: "",
+          accessMode: "read",
         };
       });
     } catch (err: any) {
@@ -497,12 +564,44 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     }
   }
 
+  async function explainTableAccess(e?: React.FormEvent) {
+    e?.preventDefault();
+    if ((!tableAccessProbe.userId && !tableAccessProbe.role) || !tableAccessProbe.tableId) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/rbac/explain-table-access`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({
+          userId: tableAccessProbe.userId || undefined,
+          role: tableAccessProbe.userId ? undefined : tableAccessProbe.role,
+          tableId: tableAccessProbe.tableId,
+          fieldName: tableAccessProbe.fieldName || undefined,
+          accessMode: tableAccessProbe.accessMode,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to explain table access");
+      setTableAccessExplanation(data.result);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function prepareGrant(role: string, resource: string, action: string) {
     setNewRole(role);
     setNewResource(resource);
     setNewAction(action);
     setGrantScope("All");
     setGrantSearch(resource);
+  }
+
+  function toggleRbacUtility(id: string) {
+    setOpenRbacUtilities((current) => ({ ...current, [id]: !current[id] }));
   }
 
   async function addSystemProperty(e: React.FormEvent) {
@@ -647,6 +746,10 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const existingGrant = selectedGrantTarget && newRole
     ? permissions.find((permission) => permission.role === newRole && permission.resource === selectedGrantTarget.resource && permission.action === selectedGrantTarget.action)
     : null;
+  const selectedRbacTable = rbacTables.find((table) => table.id === tableAccessProbe.tableId) || null;
+  const tableFieldOptions = selectedRbacTable
+    ? [{ value: "", label: "All fields" }, ...selectedRbacTable.fields.map((field) => ({ value: field.name, label: `${field.label}${field.writable ? "" : " (read only)"}` }))]
+    : [{ value: "", label: "All fields" }];
   const registeredSequenceKeys = new Set(numberSequences.map((sequence) => `${sequence.app_id || ""}:${sequence.table_name}:${sequence.record_type}`));
   const availableSequenceOptions = numberSequenceOptions.filter((option) => !registeredSequenceKeys.has(`${option.appId}:${option.tableName}:${option.recordType}`));
   const appOptions = Array.from(new Map(numberSequenceOptions.map((option) => [option.appId, option.appName])).entries());
@@ -917,15 +1020,22 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                   Troubleshoot whether a user or role can open and operate a registered application.
                 </p>
               </div>
-              {appAccessExplanation && (
-                <div className={`rounded-full px-3 py-1 text-xs font-medium ${
-                  appAccessExplanation.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
-                }`}>
-                  {appAccessExplanation.allowed ? "Complete" : `${appAccessExplanation.missing.length} missing`}
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                {appAccessExplanation && (
+                  <div className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    appAccessExplanation.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
+                  }`}>
+                    {appAccessExplanation.allowed ? "Complete" : `${appAccessExplanation.missing.length} missing`}
+                  </div>
+                )}
+                <button type="button" onClick={() => toggleRbacUtility("app")} className="rounded-lg border border-gray-700 p-2 text-gray-400 hover:text-gray-100">
+                  {openRbacUtilities.app ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
+            {openRbacUtilities.app && (
+              <>
             <form onSubmit={explainAppAccess} className="mt-4 grid items-end gap-3 lg:grid-cols-[1.2fr_1fr_1.2fr_auto]">
               <FieldSelect
                 label="User"
@@ -1034,6 +1144,171 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                 </div>
               </div>
             )}
+              </>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                  <Database className="h-4 w-4 text-emerald-300" />
+                  Explain Table & Field Access
+                </h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Verify table access and field-level restrictions using the same policy path enforced by table-backed APIs.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {tableAccessExplanation && (
+                  <div className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    tableAccessExplanation.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
+                  }`}>
+                    {tableAccessExplanation.allowed ? "Allowed" : `${tableAccessExplanation.missing.length} missing`}
+                  </div>
+                )}
+                <button type="button" onClick={() => toggleRbacUtility("table")} className="rounded-lg border border-gray-700 p-2 text-gray-400 hover:text-gray-100">
+                  {openRbacUtilities.table ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            {openRbacUtilities.table && (
+              <>
+                <form onSubmit={explainTableAccess} className="mt-4 grid items-end gap-3 xl:grid-cols-[1.2fr_1fr_1.35fr_1fr_0.8fr_auto]">
+                  <FieldSelect
+                    label="User"
+                    value={tableAccessProbe.userId}
+                    onChange={(value) => {
+                      const user = rbacUsers.find((candidate) => candidate.id === value);
+                      setTableAccessProbe((current) => ({ ...current, userId: value, role: user?.role || current.role }));
+                    }}
+                    options={[
+                      { value: "", label: "Explain role only" },
+                      ...rbacUsers.map((user) => ({ value: user.id, label: `${user.name || user.email} (${user.role})` })),
+                    ]}
+                  />
+                  <FieldSelect
+                    label="Role"
+                    value={tableAccessProbe.role}
+                    onChange={(value) => setTableAccessProbe((current) => ({ ...current, role: value, userId: "" }))}
+                    options={allRoles.map((role) => ({ value: role, label: role }))}
+                  />
+                  <FieldSelect
+                    label="Table"
+                    value={tableAccessProbe.tableId}
+                    onChange={(value) => setTableAccessProbe((current) => ({ ...current, tableId: value, fieldName: "" }))}
+                    options={rbacTables.map((table) => ({ value: table.id, label: `${table.label} (${table.provider})` }))}
+                  />
+                  <FieldSelect
+                    label="Field"
+                    value={tableAccessProbe.fieldName}
+                    onChange={(value) => setTableAccessProbe((current) => ({ ...current, fieldName: value }))}
+                    options={tableFieldOptions}
+                  />
+                  <FieldSelect
+                    label="Mode"
+                    value={tableAccessProbe.accessMode}
+                    onChange={(value) => setTableAccessProbe((current) => ({ ...current, accessMode: value }))}
+                    options={[
+                      { value: "read", label: "Read" },
+                      { value: "write", label: "Write" },
+                    ]}
+                  />
+                  <button
+                    type="submit"
+                    disabled={saving || (!tableAccessProbe.userId && !tableAccessProbe.role) || !tableAccessProbe.tableId}
+                    className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Explain
+                  </button>
+                </form>
+
+                {tableAccessExplanation && (
+                  <div className="mt-5 grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+                    <div className={`rounded-lg border p-4 ${
+                      tableAccessExplanation.allowed ? "border-emerald-500/30 bg-emerald-500/10" : "border-red-500/30 bg-red-500/10"
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        {tableAccessExplanation.allowed ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <XCircle className="h-5 w-5 text-red-300" />}
+                        <div className="font-medium text-gray-100">
+                          {tableAccessExplanation.role} {tableAccessExplanation.allowed ? "can" : "cannot"} {tableAccessExplanation.accessMode} {tableAccessExplanation.table.label}
+                        </div>
+                      </div>
+                      <div className="mt-4 grid grid-cols-2 gap-2">
+                        <MiniMetric label="Table read" value={tableAccessExplanation.tableAccess.read.allowed ? "allowed" : "missing"} />
+                        <MiniMetric label="Table write" value={tableAccessExplanation.tableAccess.write.allowed ? "allowed" : "missing"} />
+                        <MiniMetric label="Fields checked" value={tableAccessExplanation.fields.length} />
+                        <MiniMetric label="Restricted" value={tableAccessExplanation.fields.filter((field) => field.restricted).length} />
+                      </div>
+                      {tableAccessExplanation.missing.length > 0 && (
+                        <div className="mt-4 space-y-2">
+                          {tableAccessExplanation.missing.map((item) => (
+                            <button
+                              key={`${item.resource}:${item.action}`}
+                              type="button"
+                              onClick={() => prepareGrant(tableAccessExplanation.role, item.resource, item.action)}
+                              className="block w-full rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs text-amber-100 hover:bg-amber-500/15"
+                            >
+                              Prepare {item.resource}:{item.action}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="text-sm font-medium text-gray-200">Field Decisions</div>
+                        <span className="font-mono text-xs text-gray-600">{tableAccessExplanation.table.id}</span>
+                      </div>
+                      <div className="scrollbar-thin max-h-72 space-y-2 overflow-y-auto pr-1">
+                        {tableAccessExplanation.fields.map((field) => (
+                          <div key={field.field} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-medium text-gray-100">{field.label}</span>
+                                  <span className="font-mono text-xs text-gray-500">{field.field}</span>
+                                  {field.restricted && <span className="rounded border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-100">restricted</span>}
+                                  {!field.writable && <span className="rounded border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-400">read only</span>}
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                                  <span className={field.read ? "text-emerald-300" : "text-red-300"}>read: {field.readReason.replaceAll("_", " ")}</span>
+                                  <span className={field.write || !field.writable ? "text-emerald-300" : "text-red-300"}>write: {field.writeReason.replaceAll("_", " ")}</span>
+                                </div>
+                              </div>
+                              {field.restricted && !field.read && (
+                                <button
+                                  type="button"
+                                  onClick={() => prepareGrant(tableAccessExplanation.role, field.resource, "read")}
+                                  className="shrink-0 rounded-md border border-indigo-500/40 px-2 py-1 text-xs text-indigo-200 hover:bg-indigo-500/10"
+                                >
+                                  Grant read
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {tableAccessExplanation.trace.map((step, index) => (
+                          <div key={`${step.label}-${index}`} className="rounded-md border border-gray-800 bg-gray-900 px-3 py-2">
+                            <div className="flex items-center gap-2 text-xs font-medium text-gray-300">
+                              <span className={`h-2 w-2 rounded-full ${
+                                step.status === "allow" ? "bg-emerald-400" : step.status === "deny" ? "bg-red-400" : "bg-cyan-400"
+                              }`} />
+                              {step.label}
+                            </div>
+                            <div className="mt-1 text-xs leading-5 text-gray-500">{step.detail}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
 
           <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
@@ -1047,15 +1322,22 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                   Troubleshoot chat, automation, and app-tool execution failures against the same policy used at runtime.
                 </p>
               </div>
-              {toolAccessExplanation && (
-                <div className={`rounded-full px-3 py-1 text-xs font-medium ${
-                  toolAccessExplanation.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
-                }`}>
-                  {toolAccessExplanation.allowed ? "Executable" : "Blocked"}
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                {toolAccessExplanation && (
+                  <div className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    toolAccessExplanation.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
+                  }`}>
+                    {toolAccessExplanation.allowed ? "Executable" : "Blocked"}
+                  </div>
+                )}
+                <button type="button" onClick={() => toggleRbacUtility("tool")} className="rounded-lg border border-gray-700 p-2 text-gray-400 hover:text-gray-100">
+                  {openRbacUtilities.tool ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
+            {openRbacUtilities.tool && (
+              <>
             <form onSubmit={explainToolAccess} className="mt-4 grid items-end gap-3 lg:grid-cols-[1.2fr_1fr_1.5fr_auto]">
               <FieldSelect
                 label="User"
@@ -1148,6 +1430,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                 </div>
               </div>
             )}
+              </>
+            )}
           </div>
 
           <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
@@ -1161,15 +1445,22 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                   Explain why a user or role can perform an action before changing grants.
                 </p>
               </div>
-              {accessAnalysis && (
-                <div className={`rounded-full px-3 py-1 text-xs font-medium ${
-                  accessAnalysis.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
-                }`}>
-                  {accessAnalysis.allowed ? "Allowed" : "Denied"}
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                {accessAnalysis && (
+                  <div className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    accessAnalysis.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
+                  }`}>
+                    {accessAnalysis.allowed ? "Allowed" : "Denied"}
+                  </div>
+                )}
+                <button type="button" onClick={() => toggleRbacUtility("analyzer")} className="rounded-lg border border-gray-700 p-2 text-gray-400 hover:text-gray-100">
+                  {openRbacUtilities.analyzer ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
+            {openRbacUtilities.analyzer && (
+              <>
             <form onSubmit={analyzeAccess} className="mt-4 grid items-end gap-3 lg:grid-cols-[1.2fr_1fr_1.2fr_auto]">
               <FieldSelect
                 label="User"
@@ -1260,6 +1551,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                   )}
                 </div>
               </div>
+            )}
+              </>
             )}
           </div>
 
