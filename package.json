@@ -5,6 +5,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "dev:stable": "bash scripts/dev-stable.sh",
     "dev:https": "pnpm certs:localhost && turbo run dev:https --filter @specora/api --filter @specora/web",
     "lint": "turbo run lint",
     "test": "turbo run test",

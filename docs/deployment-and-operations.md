@@ -128,11 +128,13 @@ pnpm --filter @specora/web dev
 python -m src.main
 ```
 
-The web dev server caveat still applies: if Next crashes under Turbo, run the direct Next command from the web app context:
+The web dev server caveat still applies: if Next crashes under Turbo, run the stable dev launcher that starts API and Next directly:
 
 ```bash
-node ./node_modules/next/dist/bin/next dev
+pnpm dev:stable
 ```
+
+The stable launcher honors `PORT`, `WEB_PORT`, and `NEXT_PUBLIC_API_URL` for alternate local ports.
 
 ## Health Checks
 

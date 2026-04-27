@@ -63,12 +63,12 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 
 - **Reporting API depth** — Completed: CAB evidence datasets and brief coverage metrics, knowledge feedback/gap datasets, knowledge trust/reuse metrics, operational readiness scoring, and CMDB data-quality readiness checks.
 - **Discovery RC push** — Completed: rollback records/UI, saved mapping profiles, richer AI mapping rationale, Admin-managed credential references with encrypted managed secrets, and edge/collector source registration with source binding.
-- **Operability and scale hardening** — Sprint 1 completed: API worker health checks with gRPC reachability, queue posture, stale/dead-letter counts, and Discovery job health. Sprint 2 completed: local restore rehearsal command with temporary PostgreSQL restore, migration status, Neo4j counts, upload checks, and JSON artifacts. Next sprints: build reliability, full SSO validation, Redis-backed multi-instance state, and audit-head external anchoring.
+- **Operability and scale hardening** — Sprint 1 completed: API worker health checks with gRPC reachability, queue posture, stale/dead-letter counts, and Discovery job health. Sprint 2 completed: local restore rehearsal command with temporary PostgreSQL restore, migration status, Neo4j counts, upload checks, and JSON artifacts. Sprint 3 completed: stable direct API/web dev launcher for the Turbo/Next instability path. Next sprints: full SSO validation, Redis-backed multi-instance state, and audit-head external anchoring.
 - **Real-time events** — WebSocket pub/sub for event bus and SSE chat streaming.
 
 ## Technical Debt
 
-- Web dev server crashes with `ELIFECYCLE` when run via `turbo run dev`; use `node ./node_modules/next/dist/bin/next dev` as the workaround.
+- Web dev server crashes with `ELIFECYCLE` when run via `turbo run dev`; use `pnpm dev:stable` as the first-class workaround.
 - Local Next dev sessions can still get stale after heavy iteration; shell bootstrap now has bounded waits and fallback behavior, but clean alternate-port runs or clearing `.next` remain the reliable local recovery path.
 - Vitest coverage parser cannot parse some TSX under the current Rolldown path; tests pass, coverage remains non-blocking.
 - `GraphExplorer.tsx` remains in `components/` but appears unused; delete after migration confirmation.
