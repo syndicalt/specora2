@@ -56,6 +56,7 @@ export type ShellAction =
   | { type: "NOTIFY"; notification: Notification }
   | { type: "DISMISS_NOTIFICATION"; id: string }
   | { type: "TOGGLE_RIGHT_PANEL" }
+  | { type: "SET_RIGHT_PANEL_OPEN"; open: boolean }
   | { type: "SET_RIGHT_PANEL_WIDTH"; width: number };
 
 function getNextZIndex(instances: AppInstance[]): number {
@@ -228,6 +229,9 @@ export function shellReducer(state: ShellState, action: ShellAction): ShellState
 
     case "TOGGLE_RIGHT_PANEL":
       return { ...state, rightPanelOpen: !state.rightPanelOpen };
+
+    case "SET_RIGHT_PANEL_OPEN":
+      return { ...state, rightPanelOpen: action.open };
 
     case "SET_RIGHT_PANEL_WIDTH":
       return { ...state, rightPanelWidth: action.width };

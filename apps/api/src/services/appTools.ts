@@ -6,6 +6,7 @@ import { registerAssetCommandTools } from "./appTools/assetCommand";
 import { registerDiscoveryInsightsTools } from "./appTools/discoveryInsights";
 import { registerHealthMonitorTools } from "./appTools/healthMonitor";
 import { registerCustomerPortalTools } from "./appTools/customerPortal";
+import { registerEngageAgentWorkspaceTools } from "./appTools/engageAgentWorkspace";
 
 export function registerAllAppTools() {
   registerChangeManagerTools();
@@ -16,6 +17,7 @@ export function registerAllAppTools() {
   registerDiscoveryInsightsTools();
   registerHealthMonitorTools();
   registerCustomerPortalTools();
+  registerEngageAgentWorkspaceTools();
 }
 
 export function getAllAppToolDefinitions() {

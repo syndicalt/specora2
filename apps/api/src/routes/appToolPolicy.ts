@@ -16,6 +16,7 @@ const APP_RESOURCE_MAP: Record<string, string> = {
   "discovery-insights": "discovery",
   "health-monitor": "health-monitor",
   "customer-portal": "customer-portal",
+  "engage-agent-workspace": "engage-agent-workspace",
 };
 
 const WRITE_PREFIXES = [
@@ -30,6 +31,7 @@ const WRITE_PREFIXES = [
   "transition",
   "record",
   "request",
+  "route",
   "resolve",
   "submit",
   "draft",

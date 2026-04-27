@@ -22,6 +22,7 @@ import {
 type Incident = {
   id: string;
   number?: string | null;
+  requester_id?: string | null;
   title: string;
   description?: string;
   service?: string;
@@ -39,6 +40,9 @@ type Incident = {
   auto_remediation_allowed?: boolean;
   created_at: string;
   updated_at: string;
+  requester?: { id: string; name?: string | null; email?: string | null } | null;
+  owner?: { id: string; name?: string | null; email?: string | null } | null;
+  commander?: { id: string; name?: string | null; email?: string | null } | null;
   affectedCis?: Array<{ ci_id: string; role: string; name?: string; class?: string; environment?: string }>;
   relatedChanges?: Array<{ id: string; title: string; status: string; priority?: string; planned_start_at?: string }>;
   events?: Array<{ id: string; type: string; message: string; actor?: string; created_at: string }>;
@@ -83,6 +87,11 @@ function pct(value?: number) {
 
 function incidentNumber(incident: Incident) {
   return incident.number || "Number not assigned";
+}
+
+function userLabel(user?: { id: string; name?: string | null; email?: string | null } | null) {
+  if (!user) return "Not recorded";
+  return user.name || user.email || user.id;
 }
 
 export default function IncidentManagerApp({ shell }: { shell: ShellAPI }) {
@@ -349,6 +358,24 @@ export default function IncidentManagerApp({ shell }: { shell: ShellAPI }) {
                 <MiniStat label="Decision" value={label(selected.ai_decision)} />
               </div>
 
+              <Panel title="Requester Contact" icon={<MessageSquare className="h-4 w-4" />}>
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-sm font-medium text-gray-100">{userLabel(selected.requester)}</div>
+                    <div className="mt-1 text-xs text-gray-500">{selected.requester?.email || "No requester email recorded"}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <MiniStat label="Owner" value={userLabel(selected.owner)} />
+                    <MiniStat label="Commander" value={userLabel(selected.commander)} />
+                  </div>
+                  {selected.requester?.email && (
+                    <a href={`mailto:${selected.requester.email}?subject=${encodeURIComponent(incidentNumber(selected))}`} className="inline-flex rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-900">
+                      Email Requester
+                    </a>
+                  )}
+                </div>
+              </Panel>
+
               <Panel title="AI Incident Operator" icon={<Bot className="h-4 w-4" />}>
                 <p className="text-sm text-gray-300">{selected.ai_summary || "No AI triage summary yet."}</p>
                 <p className="mt-3 text-sm text-gray-500">{selected.ai_next_action || "Run triage to calculate the next best action."}</p>
@@ -464,6 +491,7 @@ function IncidentList({ incidents, selectedId, onSelect, onTriage, busy, empty =
                   <div className="truncate text-sm font-medium text-gray-100">{incident.title}</div>
                 </div>
                 <div className="mt-1 text-xs text-gray-500">{incident.service || incident.ci_id || "unmapped"} · {when(incident.created_at)}</div>
+                {incident.requester && <div className="mt-1 text-xs text-gray-500">Requester: {userLabel(incident.requester)}</div>}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <span className={`text-xs font-semibold uppercase ${SEVERITY_CLASS[incident.severity] || "text-gray-300"}`}>{incident.severity}</span>

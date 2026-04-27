@@ -1,7 +1,8 @@
 import { FastifyInstance } from "fastify";
-import { registerTool } from "@specora/sdk";
+import { executeTool, registerTool } from "@specora/sdk";
 import { emit } from "../eventBus";
 import { assignRecordNumberToRow } from "../numberSequences";
+import { scoreIntakeRoutes } from "../intelligentRouting";
 
 function parseJson(value: unknown, fallback: any) {
   if (value === null || value === undefined) return fallback;
@@ -51,6 +52,13 @@ function defaultPriority(intent: string, urgency?: string) {
   return 3;
 }
 
+function severityFromUrgency(urgency?: string) {
+  if (urgency === "critical") return "critical";
+  if (urgency === "high") return "high";
+  if (urgency === "low") return "low";
+  return "medium";
+}
+
 export function registerCustomerPortalTools() {
   registerTool<FastifyInstance>("customer-portal", {
     name: "portal_home",
@@ -82,6 +90,94 @@ export function registerCustomerPortalTools() {
       featuredItems: items.rows.map(normalizeItem),
       myRequests: requests.rows.map(normalizeRequest),
       supportChannels: channels.rows,
+    };
+  });
+
+  registerTool<FastifyInstance>("customer-portal", {
+    name: "route_intake",
+    description: "Score all self-service routing endpoints, return probability scores, and automatically route when there is a clear winner.",
+    parameters: {
+      type: "object",
+      properties: {
+        message: { type: "string" },
+        urgency: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        service: { type: "string" },
+        autoRoute: { type: "boolean" },
+      },
+      required: ["message"],
+    },
+  }, async (args, fastify) => {
+    const { message, urgency = "medium", service, autoRoute = true, _userId, _userRole } = args as any;
+    const decision = await scoreIntakeRoutes(fastify, { message: String(message || ""), urgency });
+    const route = decision.winner.route;
+    const shouldRoute = autoRoute && decision.autoRoute;
+    let routedRecord: any = null;
+    let action = "recommend";
+
+    if (shouldRoute && route === "knowledge") {
+      routedRecord = await executeTool("knowledge-core_answer", {
+        query: message,
+        audience: "self_service",
+        service,
+        _userId,
+        _userRole,
+      }, fastify);
+      action = "deflected";
+    } else if (shouldRoute && route === "catalog_request") {
+      const intent = classifyIntent(String(message || ""));
+      const item = await fastify.pg.query(
+        `SELECT * FROM catalog_items WHERE status = 'published' AND item_type = $1 ORDER BY title LIMIT 1`,
+        [intent]
+      );
+      routedRecord = await executeTool("customer-portal_submit_request", {
+        catalogItemId: item.rows[0]?.id,
+        title: item.rows[0]?.title || String(message).slice(0, 140),
+        description: message,
+        requestType: intent === "incident_intake" ? "service_request" : intent,
+        urgency,
+        source: "portal_router",
+        intentSummary: decision.winner.rationale,
+        answers: { message, routedBy: "intelligent-routing", routeScores: decision.scores },
+        _userId,
+        _userRole,
+      }, fastify);
+      action = "created_catalog_request";
+    } else if (shouldRoute && route === "incident") {
+      routedRecord = await executeTool("incident-manager_create_incident", {
+        title: String(message).slice(0, 180),
+        description: message,
+        severity: severityFromUrgency(urgency),
+        source: "customer-portal",
+        service,
+        externalRef: `portal-${Date.now()}`,
+        _userId,
+        _userRole,
+      }, fastify);
+      action = "created_incident";
+    } else if (shouldRoute && route === "support_handoff") {
+      routedRecord = await executeTool("customer-portal_request_support_handoff", {
+        reason: message,
+        context: { message, urgency, service, routeScores: decision.scores },
+        _userId,
+        _userRole,
+      }, fastify);
+      action = "created_support_handoff";
+    }
+
+    emit("portal.intake.routed", {
+      route,
+      action,
+      autoRoute: shouldRoute,
+      provider: decision.provider,
+      probability: decision.winner.probability,
+      recordId: routedRecord?.id,
+    });
+
+    return {
+      action,
+      routed: shouldRoute,
+      decision,
+      record: routedRecord,
     };
   });
 

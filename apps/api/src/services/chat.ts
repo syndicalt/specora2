@@ -339,10 +339,11 @@ const APP_TOOL_RESOURCE_MAP: Record<string, string> = {
   "discovery-insights": "discovery",
   "health-monitor": "health-monitor",
   "customer-portal": "customer-portal",
+  "engage-agent-workspace": "engage-agent-workspace",
 };
 
 function toolToAction(toolName: string): string {
-  const writePrefixes = ["create", "update", "edit", "delete", "approve", "assign", "apply", "execute", "triage", "transition", "record", "request", "resolve", "submit", "draft", "publish"];
+  const writePrefixes = ["create", "update", "edit", "delete", "approve", "assign", "apply", "execute", "triage", "transition", "record", "request", "route", "resolve", "submit", "draft", "publish"];
   return writePrefixes.some((prefix) => toolName.startsWith(prefix)) ? "write" : "read";
 }
 

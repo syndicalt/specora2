@@ -85,24 +85,28 @@ registerTool<FastifyInstance>("incident-manager", {
       ciId: { type: "string" },
       affectedCiIds: { type: "array", items: { type: "string" } },
       autoRemediationAllowed: { type: "boolean" },
+      requesterId: { type: "string" },
+      ownerId: { type: "string" },
     },
     required: ["title"],
   },
 }, async (args, fastify) => {
-  const { title, description, severity = "medium", source = "manual", externalRef, service, ciId, affectedCiIds, autoRemediationAllowed = false, _userId } = args as any;
+  const { title, description, severity = "medium", source = "manual", externalRef, service, ciId, affectedCiIds, autoRemediationAllowed = false, requesterId, ownerId, _userId } = args as any;
   const affected = Array.isArray(affectedCiIds) ? affectedCiIds : [];
   const allCiIds = Array.from(new Set([ciId, ...affected].filter(Boolean)));
+  const inferredRequesterId = requesterId || (source === "customer-portal" ? _userId : null);
   const result = await fastify.pg.query(
-    `INSERT INTO incidents (title, description, severity, priority, source, external_ref, service, ci_id, auto_remediation_allowed, owner_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO incidents (title, description, severity, priority, source, external_ref, service, ci_id, auto_remediation_allowed, requester_id, owner_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT (source, external_ref) DO UPDATE SET
        title = EXCLUDED.title,
        description = COALESCE(EXCLUDED.description, incidents.description),
        severity = EXCLUDED.severity,
        priority = EXCLUDED.priority,
+       requester_id = COALESCE(EXCLUDED.requester_id, incidents.requester_id),
        updated_at = NOW()
      RETURNING *`,
-    [title, description || null, severity, incidentPriority(severity), source, externalRef || null, service || null, ciId || null, !!autoRemediationAllowed, _userId || null]
+    [title, description || null, severity, incidentPriority(severity), source, externalRef || null, service || null, ciId || null, !!autoRemediationAllowed, inferredRequesterId, ownerId || null]
   );
   const incident = await assignRecordNumberToRow(fastify, "incidents", result.rows[0]);
   for (const id of allCiIds) {
@@ -134,7 +138,15 @@ registerTool<FastifyInstance>("incident-manager", {
 }, async (args, fastify) => {
   const { status, severity, ciId, limit = 75 } = args as any;
   const params: any[] = [];
-  let query = `SELECT DISTINCT i.* FROM incidents i LEFT JOIN incident_cis ic ON ic.incident_id = i.id WHERE 1=1`;
+  let query = `SELECT i.*,
+                 requester.name AS requester_name, requester.email AS requester_email,
+                 owner.name AS owner_name, owner.email AS owner_email,
+                 commander.name AS commander_name, commander.email AS commander_email
+               FROM incidents i
+               LEFT JOIN users requester ON requester.id = i.requester_id
+               LEFT JOIN users owner ON owner.id = i.owner_id
+               LEFT JOIN users commander ON commander.id = i.commander_id
+               WHERE 1=1`;
   if (status) {
     params.push(status);
     query += ` AND i.status = $${params.length}`;
@@ -145,12 +157,20 @@ registerTool<FastifyInstance>("incident-manager", {
   }
   if (ciId) {
     params.push(ciId);
-    query += ` AND (i.ci_id = $${params.length} OR ic.ci_id = $${params.length})`;
+    query += ` AND (i.ci_id = $${params.length} OR EXISTS (SELECT 1 FROM incident_cis ic WHERE ic.incident_id = i.id AND ic.ci_id = $${params.length}))`;
   }
   params.push(Math.min(Number(limit) || 75, 200));
   query += ` ORDER BY i.priority ASC, i.created_at DESC LIMIT $${params.length}`;
   const result = await fastify.pg.query(query, params);
-  return Promise.all(result.rows.map((row: any) => assignRecordNumberToRow(fastify, "incidents", row)));
+  return Promise.all(result.rows.map(async (row: any) => {
+    const incident = await assignRecordNumberToRow(fastify, "incidents", row);
+    return {
+      ...incident,
+      requester: incident.requester_id ? { id: incident.requester_id, name: incident.requester_name, email: incident.requester_email } : null,
+      owner: incident.owner_id ? { id: incident.owner_id, name: incident.owner_name, email: incident.owner_email } : null,
+      commander: incident.commander_id ? { id: incident.commander_id, name: incident.commander_name, email: incident.commander_email } : null,
+    };
+  }));
 });
 
 registerTool<FastifyInstance>("incident-manager", {
@@ -165,7 +185,18 @@ registerTool<FastifyInstance>("incident-manager", {
   },
 }, async (args, fastify) => {
   const { incidentId } = args as any;
-  const incidentResult = await fastify.pg.query(`SELECT * FROM incidents WHERE id = $1`, [incidentId]);
+  const incidentResult = await fastify.pg.query(
+    `SELECT i.*,
+            requester.name AS requester_name, requester.email AS requester_email,
+            owner.name AS owner_name, owner.email AS owner_email,
+            commander.name AS commander_name, commander.email AS commander_email
+     FROM incidents i
+     LEFT JOIN users requester ON requester.id = i.requester_id
+     LEFT JOIN users owner ON owner.id = i.owner_id
+     LEFT JOIN users commander ON commander.id = i.commander_id
+     WHERE i.id = $1`,
+    [incidentId]
+  );
   if (!incidentResult.rows.length) return { error: "Incident not found" };
   const incident = await assignRecordNumberToRow(fastify, "incidents", incidentResult.rows[0]);
   const ciResult = await fastify.pg.query(`SELECT ci_id, role, distance FROM incident_cis WHERE incident_id = $1`, [incidentId]);
@@ -195,6 +226,9 @@ registerTool<FastifyInstance>("incident-manager", {
   const ciContext = await lookupCiContext(fastify, ciIds);
   return {
     ...incident,
+    requester: incident.requester_id ? { id: incident.requester_id, name: incident.requester_name, email: incident.requester_email } : null,
+    owner: incident.owner_id ? { id: incident.owner_id, name: incident.owner_name, email: incident.owner_email } : null,
+    commander: incident.commander_id ? { id: incident.commander_id, name: incident.commander_name, email: incident.commander_email } : null,
     affectedCis: ciResult.rows.map((r: any) => ({ ...r, ...(ciContext.names[r.ci_id] || { id: r.ci_id, name: r.ci_id }) })),
     ciHealth: ciContext.health,
     edges: ciContext.relationships,

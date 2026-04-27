@@ -41,6 +41,7 @@ const APP_IDS = [
   "discovery-insights",
   "health-monitor",
   "customer-portal",
+  "engage-agent-workspace",
 ];
 
 function resetRegisteredTools() {
@@ -64,7 +65,8 @@ function makePg(allowed = true) {
             source: params?.[4],
             external_ref: params?.[5],
             ci_id: params?.[7],
-            owner_id: params?.[9],
+            requester_id: params?.[9],
+            owner_id: params?.[10],
             status: "new",
           }],
         };
@@ -78,8 +80,8 @@ function makePg(allowed = true) {
       if (sql.includes("UPDATE incidents SET status = $1::text")) {
         return { rows: [{ id: params?.[1], title: "Checkout latency", status: params?.[0], severity: "high" }] };
       }
-      if (sql.includes("SELECT * FROM incidents WHERE id = $1")) {
-        return { rows: [{ id: params?.[0], title: "Checkout latency", severity: "high", status: "triaging", ci_id: "ci-1" }] };
+      if (sql.includes("FROM incidents i") && sql.includes("WHERE i.id = $1")) {
+        return { rows: [{ id: params?.[0], title: "Checkout latency", severity: "high", status: "triaging", ci_id: "ci-1", requester_id: "550e8400-e29b-41d4-a716-446655440001", requester_name: "Ops User", requester_email: "ops@example.test" }] };
       }
       if (sql.includes("SELECT ci_id, role, distance FROM incident_cis")) {
         return { rows: [{ ci_id: "ci-1", role: "primary", distance: 0 }] };
@@ -150,7 +152,69 @@ function makePg(allowed = true) {
       if (sql.includes("FROM support_channels") && sql.includes("enabled = TRUE")) {
         return { rows: [{ id: "channel-1", name: "Service Desk Callback", channel_type: "callback", target: "service-desk" }] };
       }
+      if (sql.includes("SELECT r.*") && sql.includes("catalog_requests")) {
+        return {
+          rows: [{
+            id: "request-1",
+            number: "REQ000001",
+            requester_id: "550e8400-e29b-41d4-a716-446655440001",
+            requester_name: "Ops Agent",
+            requester_email: "ops@example.test",
+            catalog_title: "Request Application Access",
+            catalog_category: "Access",
+            fulfillment_group: "Identity Operations",
+            title: "Request Application Access",
+            request_type: "access_request",
+            status: "submitted",
+            priority: 3,
+            source: "portal_ai",
+            intent_summary: "Needs billing dashboard access",
+            answers: {},
+            ai_resolution: {},
+            fulfillment_plan: [],
+          }],
+        };
+      }
       if (sql.includes("FROM catalog_requests") && sql.includes("requester_id")) {
+        return { rows: [] };
+      }
+      if (sql.includes("SELECT status, COUNT(*)::int AS count")) {
+        return { rows: [{ status: "submitted", count: 1 }] };
+      }
+      if (sql.includes("SELECT * FROM catalog_requests WHERE id = $1")) {
+        return {
+          rows: [{
+            id: params?.[0],
+            number: "REQ000001",
+            title: "Request Application Access",
+            request_type: "access_request",
+            status: "submitted",
+            priority: 3,
+            answers: {},
+            ai_resolution: {},
+            fulfillment_plan: [],
+          }],
+        };
+      }
+      if (sql.includes("UPDATE catalog_requests")) {
+        return {
+          rows: [{
+            id: params?.[3],
+            number: "REQ000001",
+            title: "Request Application Access",
+            request_type: "access_request",
+            status: params?.[0] || "submitted",
+            priority: params?.[1] || 3,
+            answers: params?.[2],
+            ai_resolution: {},
+            fulfillment_plan: [],
+          }],
+        };
+      }
+      if (sql.includes("FROM catalog_request_events e")) {
+        return { rows: [{ id: "event-1", type: "submitted", message: "Request submitted", created_at: "2026-04-26T12:00:00.000Z" }] };
+      }
+      if (sql.includes("FROM support_handoffs h")) {
         return { rows: [] };
       }
       if (sql.includes("INSERT INTO catalog_requests")) {
@@ -263,6 +327,80 @@ describe("appToolRoutes with registered native app tools", () => {
     expect(JSON.parse(submitted.payload)).toMatchObject({ id: "request-1", number: "REQ000001" });
   });
 
+  it("auto-routes clear portal intake to the winning endpoint", async () => {
+    const app = await buildApp({ role: "operator" });
+
+    const routed = await app.inject({
+      method: "POST",
+      url: "/api/apps/customer-portal/tools/route_intake",
+      payload: { message: "I need access to the billing dashboard", urgency: "medium" },
+    });
+
+    expect(routed.statusCode).toBe(200);
+    const body = JSON.parse(routed.payload);
+    expect(body).toMatchObject({
+      action: "created_catalog_request",
+      routed: true,
+      decision: { winner: { route: "catalog_request" } },
+      record: { id: "request-1", number: "REQ000001" },
+    });
+    expect((app as any).pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO catalog_requests"),
+      expect.anything()
+    );
+  });
+
+  it("auto-routes broken service intake to incident creation", async () => {
+    const app = await buildApp({ role: "operator" });
+
+    const routed = await app.inject({
+      method: "POST",
+      url: "/api/apps/customer-portal/tools/route_intake",
+      payload: { message: "The billing portal is down and nobody can work", urgency: "high" },
+    });
+
+    expect(routed.statusCode).toBe(200);
+    const body = JSON.parse(routed.payload);
+    expect(body).toMatchObject({
+      action: "created_incident",
+      routed: true,
+      decision: { winner: { route: "incident" } },
+      record: { id: "incident-route-1" },
+    });
+  });
+
+  it("loads and updates catalog requests in the Engage Agent Workspace", async () => {
+    const app = await buildApp({ role: "operator" });
+
+    const queue = await app.inject({
+      method: "POST",
+      url: "/api/apps/engage-agent-workspace/tools/workspace_home",
+      payload: { status: "submitted" },
+    });
+    expect(queue.statusCode).toBe(200);
+    expect(JSON.parse(queue.payload).requests[0]).toMatchObject({ number: "REQ000001", fulfillment_group: "Identity Operations" });
+
+    const workbench = await app.inject({
+      method: "POST",
+      url: "/api/apps/engage-agent-workspace/tools/get_request_workbench",
+      payload: { requestId: "request-1" },
+    });
+    expect(workbench.statusCode).toBe(200);
+    expect(JSON.parse(workbench.payload)).toMatchObject({ nextBestAction: expect.stringContaining("Triage") });
+
+    const update = await app.inject({
+      method: "POST",
+      url: "/api/apps/engage-agent-workspace/tools/update_request",
+      payload: { requestId: "request-1", status: "triaged", assignmentGroup: "Identity Operations", workNote: "Ready for fulfillment" },
+    });
+    expect(update.statusCode).toBe(200);
+    expect(JSON.parse(update.payload)).toMatchObject({ status: "triaged" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE catalog_requests"),
+      expect.arrayContaining(["triaged", null, expect.any(String), "request-1"])
+    );
+  });
+
   it("executes an incident creation workflow through RBAC and the tool registry", async () => {
     const app = await buildApp({ role: "operator" });
 
@@ -283,7 +421,6 @@ describe("appToolRoutes with registered native app tools", () => {
     expect(JSON.parse(res.payload)).toMatchObject({
       id: "incident-route-1",
       title: "Checkout latency",
-      owner_id: "550e8400-e29b-41d4-a716-446655440001",
     });
     expect((app as any).pg.query).toHaveBeenCalledWith(
       "SELECT 1 FROM app_permissions WHERE role = $1 AND resource = $2 AND action = $3",

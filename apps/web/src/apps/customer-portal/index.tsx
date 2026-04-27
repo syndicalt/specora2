@@ -62,6 +62,20 @@ type IntentCard = {
   priority: number;
 };
 
+type RouteDecision = {
+  provider: string;
+  autoRoute: boolean;
+  winner: { route: string; probability: number; rationale: string };
+  scores: Array<{ route: string; probability: number; rationale: string; missingFields?: string[] }>;
+};
+
+type RouteResult = {
+  action: string;
+  routed: boolean;
+  decision: RouteDecision;
+  record?: any;
+};
+
 function label(value?: string) {
   return value ? value.replace(/_/g, " ") : "unknown";
 }
@@ -85,6 +99,7 @@ export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
   const [channels, setChannels] = useState<SupportChannel[]>([]);
   const [selected, setSelected] = useState<PortalRequest | null>(null);
   const [intent, setIntent] = useState<IntentCard | null>(null);
+  const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -164,10 +179,23 @@ export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
     if (!message.trim()) return;
     setBusy("intent");
     try {
-      const result = await callTool("resolve_intent", { message: message.trim() });
-      setIntent(result);
+      const result = await callTool("route_intake", { message: message.trim(), autoRoute: true });
+      setRouteResult(result);
+      setIntent(null);
+      if (result.action === "created_catalog_request" && result.record?.id) {
+        shell.notify(`Request ${result.record.number || ""} created`, "success");
+        setMessage("");
+        await refresh();
+        await loadRequest(result.record.id);
+      } else if (result.action === "created_incident") {
+        shell.notify(`Incident ${result.record?.number || ""} created`, "success");
+      } else if (result.action === "deflected") {
+        shell.notify("Knowledge answer found", "success");
+      } else if (result.action === "created_support_handoff") {
+        shell.notify("Support handoff requested", "success");
+      }
     } catch (err: any) {
-      shell.notify(err.message || "Intent resolution failed", "error");
+      shell.notify(err.message || "Intelligent routing failed", "error");
     } finally {
       setBusy(null);
     }
@@ -244,8 +272,8 @@ export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
 
   function openPortalChat() {
     const prompt = message.trim() || "Help me solve a service need through the Customer Portal. Resolve my intent, check knowledge, submit a request only if needed, and offer support handoff if appropriate.";
-    navigator.clipboard?.writeText(prompt).catch(() => undefined);
-    shell.notify("Portal chat prompt copied. Open chat with Ctrl+K and paste it.", "info");
+    shell.dispatch({ type: "SET_RIGHT_PANEL_OPEN", open: true });
+    window.dispatchEvent(new CustomEvent("specora:chat-prefill", { detail: { prompt } }));
   }
 
   return (
@@ -320,6 +348,38 @@ export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
                     Get Support
                   </button>
                 </div>
+              </div>
+            )}
+
+            {routeResult && (
+              <div className="mt-4 rounded-lg border border-gray-800 bg-gray-950 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Pill>{label(routeResult.decision.winner.route)}</Pill>
+                      <span className="text-xs text-gray-500">provider {routeResult.decision.provider}</span>
+                      <span className="text-xs text-gray-500">confidence {pct(routeResult.decision.winner.probability)}</span>
+                    </div>
+                    <div className="mt-2 text-lg font-semibold text-gray-100">{label(routeResult.action)}</div>
+                    <p className="mt-1 text-sm leading-6 text-gray-400">{routeResult.decision.winner.rationale}</p>
+                  </div>
+                  <div className={`rounded-md px-3 py-2 text-sm ${routeResult.routed ? "bg-emerald-500/10 text-emerald-300" : "bg-amber-500/10 text-amber-200"}`}>
+                    {routeResult.routed ? "Auto-routed" : "Needs clarification"}
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-2 md:grid-cols-5">
+                  {routeResult.decision.scores.map((score) => (
+                    <div key={score.route} className="rounded-md border border-gray-800 bg-gray-900/50 p-3">
+                      <div className="text-xs capitalize text-gray-500">{label(score.route)}</div>
+                      <div className="mt-1 text-lg font-semibold text-gray-100">{pct(score.probability)}</div>
+                    </div>
+                  ))}
+                </div>
+                {routeResult.action === "deflected" && routeResult.record?.answer && (
+                  <div className="mt-4 rounded-md border border-cyan-500/20 bg-cyan-500/10 p-3 text-sm leading-6 text-cyan-100">
+                    {routeResult.record.answer}
+                  </div>
+                )}
               </div>
             )}
           </div>

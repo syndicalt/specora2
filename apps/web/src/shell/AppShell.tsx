@@ -167,7 +167,8 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
   useEffect(() => {
     if (!ready || initialOpenDone.current) return;
     const initialApp = registry.find((a) => a.id === initialAppId) || registry.find((a) => a.id === "service-map");
-    if (initialApp && state.instances.length === 0 && state.dockedIds.length === 0) {
+    const routeSpecificInitialApp = initialAppId !== "service-map";
+    if (initialApp && state.instances.length === 0 && (routeSpecificInitialApp || state.dockedIds.length === 0)) {
       initialOpenDone.current = true;
       dispatch({
         type: "OPEN_APP",

@@ -149,6 +149,17 @@ export function ChatOverlay() {
     loadCapabilities();
   }, []);
 
+  useEffect(() => {
+    const onPrefill = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
+      if (!prompt) return;
+      setInput(prompt);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    };
+    window.addEventListener("specora:chat-prefill", onPrefill);
+    return () => window.removeEventListener("specora:chat-prefill", onPrefill);
+  }, []);
+
   // Subscribe to real-time events for toast notifications
   useEffect(() => {
     const unsubCreated = shell.eventBus.subscribe("ci.created", (_payload: any) => {

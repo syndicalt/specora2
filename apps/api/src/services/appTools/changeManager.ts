@@ -319,13 +319,21 @@ registerTool<FastifyInstance>("change-manager", {
 }, async (args, fastify) => {
   const { rfcId } = args as any;
   const result = await fastify.pg.query(
-    "SELECT * FROM change_requests WHERE id = $1",
+    `SELECT cr.*,
+            requester.name AS requester_name, requester.email AS requester_email,
+            approver.name AS approver_name, approver.email AS approver_email
+     FROM change_requests cr
+     LEFT JOIN users requester ON requester.id = cr.requester_id
+     LEFT JOIN users approver ON approver.id = cr.approver_id
+     WHERE cr.id = $1`,
     [rfcId]
   );
   if (!result.rows.length) return { error: "RFC not found" };
   const row = result.rows[0];
   return {
     ...row,
+    requester: row.requester_id ? { id: row.requester_id, name: row.requester_name, email: row.requester_email } : null,
+    approver: row.approver_id ? { id: row.approver_id, name: row.approver_name, email: row.approver_email } : null,
     plannedStartAt: row.planned_start_at || row.scheduled_at,
     plannedEndAt: row.planned_end_at,
   };
@@ -344,7 +352,16 @@ registerTool<FastifyInstance>("change-manager", {
 }, async (args, fastify) => {
   const { rfcId } = args as any;
   const pg = fastify.pg;
-  const rfcResult = await pg.query("SELECT * FROM change_requests WHERE id = $1", [rfcId]);
+  const rfcResult = await pg.query(
+    `SELECT cr.*,
+            requester.name AS requester_name, requester.email AS requester_email,
+            approver.name AS approver_name, approver.email AS approver_email
+     FROM change_requests cr
+     LEFT JOIN users requester ON requester.id = cr.requester_id
+     LEFT JOIN users approver ON approver.id = cr.approver_id
+     WHERE cr.id = $1`,
+    [rfcId]
+  );
   if (!rfcResult.rows.length) return { error: "RFC not found" };
   const rfc = rfcResult.rows[0];
 
@@ -402,6 +419,8 @@ registerTool<FastifyInstance>("change-manager", {
 
   return {
     ...rfc,
+    requester: rfc.requester_id ? { id: rfc.requester_id, name: rfc.requester_name, email: rfc.requester_email } : null,
+    approver: rfc.approver_id ? { id: rfc.approver_id, name: rfc.approver_name, email: rfc.approver_email } : null,
     plannedStartAt: rfc.planned_start_at || rfc.scheduled_at,
     plannedEndAt: rfc.planned_end_at,
     riskScore: rfc.risk_score,
@@ -433,20 +452,31 @@ registerTool<FastifyInstance>("change-manager", {
   },
 }, async (args, fastify) => {
   const { status, ciId } = args as any;
-  let query = "SELECT id, ci_id, title, status, COALESCE(planned_start_at, scheduled_at) as planned_start_at, created_at, risk_score, blast_radius, priority FROM change_requests WHERE 1=1";
+  let query = `SELECT cr.id, cr.ci_id, cr.title, cr.status, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at,
+                      cr.created_at, cr.risk_score, cr.blast_radius, cr.priority, cr.requester_id, cr.approver_id,
+                      requester.name AS requester_name, requester.email AS requester_email,
+                      approver.name AS approver_name, approver.email AS approver_email
+               FROM change_requests cr
+               LEFT JOIN users requester ON requester.id = cr.requester_id
+               LEFT JOIN users approver ON approver.id = cr.approver_id
+               WHERE 1=1`;
   const params: any[] = [];
   let idx = 1;
   if (status) {
-    query += ` AND status = $${idx++}`;
+    query += ` AND cr.status = $${idx++}`;
     params.push(status);
   }
   if (ciId) {
-    query += ` AND ci_id = $${idx++}`;
+    query += ` AND cr.ci_id = $${idx++}`;
     params.push(ciId);
   }
-  query += " ORDER BY created_at DESC LIMIT 50";
+  query += " ORDER BY cr.created_at DESC LIMIT 50";
   const result = await fastify.pg.query(query, params);
-  return result.rows;
+  return result.rows.map((row: any) => ({
+    ...row,
+    requester: row.requester_id ? { id: row.requester_id, name: row.requester_name, email: row.requester_email } : null,
+    approver: row.approver_id ? { id: row.approver_id, name: row.approver_name, email: row.approver_email } : null,
+  }));
 });
 
 registerTool<FastifyInstance>("change-manager", {
