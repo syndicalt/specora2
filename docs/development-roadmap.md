@@ -285,7 +285,7 @@ Implemented:
 - Added short-lived access tokens, PostgreSQL-backed refresh sessions with hashed opaque tokens, refresh rotation, logout, session listing, session revocation, invalid/reuse audit events, and browser auto-refresh on 401.
 - Added configured Google/GitHub OAuth login primitives plus enterprise SSO domain discovery/start routes.
 - Added Identity Provider administration in Admin Console with multi-provider SAML/OIDC configuration, domain discovery, JIT/default-role settings, SSO enforcement, and mutation audit events.
-- Hardened auth callbacks with one-time handoff codes, access-token session revocation checks, same-origin return handling, OIDC callback exchange/userinfo retrieval, and SAML ACS fail-closed behavior until the SAML adapter is implemented.
+- Hardened auth callbacks with one-time handoff codes, access-token session revocation checks, same-origin return handling, OIDC callback exchange/userinfo retrieval, and SP-initiated SAML login with ACS validation for RelayState, issuer, audience, recipient, assertion timing, JIT policy, and mapped identity/group claims.
 - Added identity groups, memberships, group-based RBAC inheritance, inherited access explanations, OIDC group-claim synchronization, SAML metadata XML storage/parsing, and copyable SAML SP ACS/Entity ID values in Admin Console.
 
 Exit criteria:
@@ -310,7 +310,7 @@ Important but not next-sprint critical:
 - Add knowledge freshness automation that turns stale articles into stewarded tasks.
 - Add incident prevention automation that opens prevention candidates from repeated incident patterns.
 - Add advanced DCIM facility modeling only when needed: imported floorplan images, CAD-like walls, zones, elevations, and environmental telemetry overlays.
-- Add SAML assertion validation, IdP metadata ingestion, OIDC ID-token/JWKS validation, and advanced group-to-role mapping.
+- Add production-grade SAML XML signature validation with canonicalization and IdP certificate verification, deepen IdP metadata ingestion, add OIDC ID-token/JWKS validation, and add advanced group-to-role mapping.
 
 ## Product Direction Guardrails
 

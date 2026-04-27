@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import Fastify from "fastify";
 import bcrypt from "bcryptjs";
+import { inflateRawSync } from "zlib";
 import { authRoutes } from "../routes/auth";
 import { hashRefreshToken } from "../services/authSessions";
 
@@ -351,6 +352,33 @@ describe("auth routes", () => {
     expect(location).toContain("client_id=client-1");
   });
 
+  it("starts SAML SSO with a service-provider AuthnRequest", async () => {
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "saml-1",
+      name: "Google SAML",
+      provider: "saml",
+      status: "active",
+      enforce_sso: true,
+      email_domains: ["example.com"],
+      idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+      sp_entity_id: "https://specora.test/saml/sp/saml-1",
+    });
+    const app = await buildApp(pg);
+
+    const res = await app.inject({ method: "GET", url: "/api/auth/sso/saml-1/start?returnTo=/admin" });
+
+    expect(res.statusCode).toBe(302);
+    const location = new URL(res.headers.location as string);
+    expect(location.origin + location.pathname).toBe("https://accounts.google.com/o/saml2/idp");
+    expect(location.searchParams.get("idpid")).toBe("C01s6h8ff");
+    expect(location.searchParams.get("RelayState")).toContain("token-saml-state");
+    const request = inflateRawSync(Buffer.from(location.searchParams.get("SAMLRequest") || "", "base64")).toString("utf8");
+    expect(request).toContain("<samlp:AuthnRequest");
+    expect(request).toContain("AssertionConsumerServiceURL=\"http://localhost:4000/api/auth/sso/saml-1/acs\"");
+    expect(request).toContain(">https://specora.test/saml/sp/saml-1</saml:Issuer>");
+  });
+
   it("syncs OIDC group claims into identity groups", async () => {
     process.env.TEST_OIDC_SECRET = "secret";
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
@@ -386,6 +414,100 @@ describe("auth routes", () => {
     expect(pg.identityMemberships).toHaveLength(2);
     fetchMock.mockRestore();
     delete process.env.TEST_OIDC_SECRET;
+  });
+
+  it("accepts a valid SAML assertion and creates a login handoff", async () => {
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "saml-1",
+      name: "Google SAML",
+      provider: "saml",
+      status: "active",
+      enforce_sso: true,
+      email_domains: ["example.com"],
+      idp_entity_id: "https://accounts.google.com/o/saml2?idpid=C01s6h8ff",
+      idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+      sp_entity_id: "http://localhost:4000/saml/sp/saml-1",
+      default_role: "operator",
+      attribute_mapping: { email: "email", name: "name", groups: "groups" },
+    });
+    const app = await buildApp(pg);
+    const relayState = Buffer.from(JSON.stringify({ typ: "saml-state", configId: "saml-1", returnTo: "/admin" })).toString("base64url");
+    const now = Date.now();
+    const samlResponse = `
+      <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" Destination="http://localhost:4000/api/auth/sso/saml-1/acs">
+        <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">https://accounts.google.com/o/saml2?idpid=C01s6h8ff</saml:Issuer>
+        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+          <saml:Subject>
+            <saml:NameID>alice@example.com</saml:NameID>
+            <saml:SubjectConfirmation>
+              <saml:SubjectConfirmationData Recipient="http://localhost:4000/api/auth/sso/saml-1/acs" NotOnOrAfter="${new Date(now + 300000).toISOString()}"/>
+            </saml:SubjectConfirmation>
+          </saml:Subject>
+          <saml:Conditions NotBefore="${new Date(now - 60000).toISOString()}" NotOnOrAfter="${new Date(now + 300000).toISOString()}">
+            <saml:AudienceRestriction>
+              <saml:Audience>http://localhost:4000/saml/sp/saml-1</saml:Audience>
+            </saml:AudienceRestriction>
+          </saml:Conditions>
+          <saml:AttributeStatement>
+            <saml:Attribute Name="email"><saml:AttributeValue>alice@example.com</saml:AttributeValue></saml:Attribute>
+            <saml:Attribute Name="name"><saml:AttributeValue>Alice Example</saml:AttributeValue></saml:Attribute>
+            <saml:Attribute Name="groups"><saml:AttributeValue>Service Desk</saml:AttributeValue></saml:Attribute>
+          </saml:AttributeStatement>
+        </saml:Assertion>
+      </samlp:Response>`;
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sso/saml-1/acs",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        SAMLResponse: Buffer.from(samlResponse, "utf8").toString("base64"),
+        RelayState: relayState,
+      }).toString(),
+    });
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toContain("/login#handoff=");
+    expect(pg.users[0]).toMatchObject({ email: "alice@example.com", name: "Alice Example", role: "operator" });
+    expect(pg.identityGroups.map((group) => group.name)).toEqual(["Service Desk"]);
+    expect(pg.handoffs).toHaveLength(1);
+  });
+
+  it("rejects SAML assertions for the wrong service-provider audience", async () => {
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "saml-1",
+      name: "Google SAML",
+      provider: "saml",
+      status: "active",
+      idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+      sp_entity_id: "http://localhost:4000/saml/sp/saml-1",
+    });
+    const app = await buildApp(pg);
+    const relayState = Buffer.from(JSON.stringify({ typ: "saml-state", configId: "saml-1", returnTo: "/admin" })).toString("base64url");
+    const samlResponse = `
+      <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
+        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+          <saml:Subject><saml:NameID>alice@example.com</saml:NameID></saml:Subject>
+          <saml:Conditions NotOnOrAfter="${new Date(Date.now() + 300000).toISOString()}">
+            <saml:AudienceRestriction><saml:Audience>https://wrong.example/sp</saml:Audience></saml:AudienceRestriction>
+          </saml:Conditions>
+        </saml:Assertion>
+      </samlp:Response>`;
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sso/saml-1/acs",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        SAMLResponse: Buffer.from(samlResponse, "utf8").toString("base64"),
+        RelayState: relayState,
+      }).toString(),
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(pg.users).toHaveLength(0);
   });
 });
 

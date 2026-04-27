@@ -1,6 +1,7 @@
 import { FastifyInstance } from "fastify";
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes, randomUUID } from "crypto";
+import { deflateRawSync } from "zlib";
 import { issueAuthTokens, listUserSessions, revokeRefreshToken, revokeUserSession, rotateRefreshToken } from "../services/authSessions";
 import { recordAuditEvent } from "../services/auditLog";
 import { clearPermissionCache } from "../services/rbac";
@@ -25,7 +26,10 @@ type SsoConfig = {
   client_secret_ref?: string;
   issuer_url?: string;
   scopes?: string[];
+  idp_entity_id?: string;
   idp_sso_url?: string;
+  idp_cert?: string;
+  sp_entity_id?: string;
   jit_enabled?: boolean;
   default_role?: string;
   attribute_mapping?: { email?: string; name?: string; groups?: string };
@@ -55,6 +59,36 @@ function safeReturnPath(returnTo?: string) {
 function webUrl(path: string) {
   const url = new URL(safeReturnPath(path), WEB_PUBLIC_URL);
   return url;
+}
+
+function samlSpEntityId(config: SsoConfig) {
+  return config.sp_entity_id || `${API_PUBLIC_URL}/saml/sp/${config.id}`;
+}
+
+function samlAcsUrl(config: SsoConfig) {
+  return `${API_PUBLIC_URL}/api/auth/sso/${config.id}/acs`;
+}
+
+function escapeXml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function decodeXmlEntities(value: string) {
+  return value
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, "\"")
+    .replace(/&gt;/g, ">")
+    .replace(/&lt;/g, "<")
+    .replace(/&amp;/g, "&");
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function resolveSecret(ref?: string | null) {
@@ -222,7 +256,8 @@ async function discoverSsoConfig(fastify: FastifyInstance, email?: string) {
 async function loadSsoConfig(fastify: FastifyInstance, id: string): Promise<SsoConfig | null> {
   const result = await fastify.pg.query(
     `SELECT id, name, provider, enforce_sso, authorization_url, token_url, userinfo_url, client_id,
-            client_secret_ref, issuer_url, scopes, idp_sso_url, jit_enabled, default_role, attribute_mapping
+            client_secret_ref, issuer_url, scopes, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+            jit_enabled, default_role, attribute_mapping
      FROM sso_configs
      WHERE id = $1 AND status = 'active'`,
     [id]
@@ -380,7 +415,118 @@ async function exchangeOidcCode(config: SsoConfig, code: string): Promise<OAuthP
   };
 }
 
+function buildSamlAuthnRequest(config: SsoConfig) {
+  if (!config.idp_sso_url) throw new Error("SAML provider is missing IdP SSO URL");
+  const requestId = `_${randomUUID()}`;
+  const xml = [
+    `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="${escapeXml(requestId)}" Version="2.0" IssueInstant="${new Date().toISOString()}" Destination="${escapeXml(config.idp_sso_url)}" AssertionConsumerServiceURL="${escapeXml(samlAcsUrl(config))}" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST">`,
+    `<saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">${escapeXml(samlSpEntityId(config))}</saml:Issuer>`,
+    `<samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress" AllowCreate="true"/>`,
+    `</samlp:AuthnRequest>`,
+  ].join("");
+  return deflateRawSync(Buffer.from(xml, "utf8")).toString("base64");
+}
+
+function xmlAttribute(block: string, name: string) {
+  return block.match(new RegExp(`\\b${name}=["']([^"']+)["']`, "i"))?.[1];
+}
+
+function xmlText(xml: string, tag: string) {
+  const match = xml.match(new RegExp(`<[^>]*${escapeRegExp(tag)}\\b[^>]*>([\\s\\S]*?)</[^>]*${escapeRegExp(tag)}>`, "i"));
+  if (!match) return undefined;
+  return decodeXmlEntities(match[1].replace(/<[^>]+>/g, "").trim());
+}
+
+function xmlFirstTag(xml: string, tag: string) {
+  return xml.match(new RegExp(`<[^>]*${escapeRegExp(tag)}\\b[^>]*>`, "i"))?.[0];
+}
+
+function xmlTagBlocks(xml: string, tag: string) {
+  return [...xml.matchAll(new RegExp(`<[^>]*${escapeRegExp(tag)}\\b[^>]*>[\\s\\S]*?</[^>]*${escapeRegExp(tag)}>`, "gi"))].map((match) => match[0]);
+}
+
+function samlAttributeValues(xml: string, names: string[]) {
+  for (const name of names.filter(Boolean)) {
+    const pattern = new RegExp(`<[^>]*Attribute\\b[^>]*(?:Name|FriendlyName)=["']${escapeRegExp(name)}["'][^>]*>([\\s\\S]*?)</[^>]*Attribute>`, "i");
+    const match = xml.match(pattern);
+    if (!match) continue;
+    const values = [...match[1].matchAll(/<[^>]*AttributeValue\b[^>]*>([\s\S]*?)<\/[^>]*AttributeValue>/gi)]
+      .map((value) => decodeXmlEntities(value[1].replace(/<[^>]+>/g, "").trim()))
+      .filter(Boolean);
+    if (values.length) return values;
+  }
+  return [];
+}
+
+function validateSamlTime(value?: string, mode: "notBefore" | "notOnOrAfter" = "notOnOrAfter") {
+  if (!value) return;
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) throw new Error("SAML assertion has an invalid timestamp");
+  const skewMs = 5 * 60 * 1000;
+  if (mode === "notBefore" && timestamp > Date.now() + skewMs) throw new Error("SAML assertion is not yet valid");
+  if (mode === "notOnOrAfter" && timestamp <= Date.now() - skewMs) throw new Error("SAML assertion has expired");
+}
+
+function parseSamlProfile(config: SsoConfig, encodedResponse: string): OAuthProfile {
+  const xml = Buffer.from(encodedResponse, "base64").toString("utf8");
+  if (!xml.includes("Assertion")) throw new Error("SAML response did not include an assertion");
+
+  const responseTag = xmlFirstTag(xml, "Response") || "";
+  const responseDestination = xmlAttribute(responseTag, "Destination");
+  if (responseDestination && responseDestination !== samlAcsUrl(config)) throw new Error("SAML response destination does not match this service provider");
+
+  const issuer = xmlText(xml, "Issuer");
+  if (config.idp_entity_id && issuer && issuer !== config.idp_entity_id) throw new Error("SAML issuer does not match the configured IdP");
+
+  const audienceValues = xmlTagBlocks(xml, "Audience").map((block) => decodeXmlEntities(block.replace(/<[^>]+>/g, "").trim())).filter(Boolean);
+  if (audienceValues.length && !audienceValues.includes(samlSpEntityId(config))) throw new Error("SAML audience does not match this service provider");
+
+  const conditionsTag = xmlFirstTag(xml, "Conditions") || "";
+  validateSamlTime(xmlAttribute(conditionsTag, "NotBefore"), "notBefore");
+  validateSamlTime(xmlAttribute(conditionsTag, "NotOnOrAfter"), "notOnOrAfter");
+
+  const confirmationTag = xmlFirstTag(xml, "SubjectConfirmationData") || "";
+  const recipient = xmlAttribute(confirmationTag, "Recipient");
+  if (recipient && recipient !== samlAcsUrl(config)) throw new Error("SAML recipient does not match this service provider");
+  validateSamlTime(xmlAttribute(confirmationTag, "NotOnOrAfter"), "notOnOrAfter");
+
+  const mapping = config.attribute_mapping || {};
+  const email = samlAttributeValues(xml, [
+    mapping.email || "",
+    "email",
+    "Email",
+    "mail",
+    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+  ])[0] || xmlText(xml, "NameID") || "";
+  const name = samlAttributeValues(xml, [
+    mapping.name || "",
+    "name",
+    "displayName",
+    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name",
+  ])[0] || email || "SAML User";
+  const groups = samlAttributeValues(xml, [
+    mapping.groups || "",
+    "groups",
+    "Groups",
+    "memberOf",
+    "http://schemas.xmlsoap.org/claims/Group",
+  ]);
+  if (!email || !email.includes("@")) throw new Error("SAML assertion must include an email address");
+
+  return {
+    id: xmlText(xml, "NameID") || email,
+    email,
+    name,
+    emailVerified: true,
+    raw: { issuer, email, name, groups, samlResponsePresent: true },
+  };
+}
+
 export async function authRoutes(fastify: FastifyInstance) {
+  fastify.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_request, body, done) => {
+    done(null, Object.fromEntries(new URLSearchParams(String(body))));
+  });
+
   fastify.post("/api/login", {
     config: {
       rateLimit: {
@@ -568,8 +714,10 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.redirect(url.toString());
     }
     if (!config.idp_sso_url) return reply.status(400).send({ error: "SAML provider is missing IdP SSO URL" });
+    const state = await fastify.jwt.sign({ typ: "saml-state", configId: params.id, returnTo: safeReturnPath(query.returnTo) }, { expiresIn: "10m" });
     const url = new URL(config.idp_sso_url);
-    url.searchParams.set("RelayState", query.returnTo || WEB_PUBLIC_URL);
+    url.searchParams.set("SAMLRequest", buildSamlAuthnRequest(config));
+    url.searchParams.set("RelayState", state);
     return reply.redirect(url.toString());
   });
 
@@ -613,8 +761,36 @@ export async function authRoutes(fastify: FastifyInstance) {
 
   fastify.post("/api/auth/sso/:id/acs", async (request, reply) => {
     const params = request.params as { id: string };
-    await auditAuth(fastify, { action: "auth.sso.failed", entityId: params.id, metadata: { reason: "saml_acs_not_configured" } });
-    return reply.status(501).send({ error: "SAML assertion validation is not enabled in this build" });
+    const body = request.body as { SAMLResponse?: string; RelayState?: string };
+    if (!body?.SAMLResponse || !body?.RelayState) return reply.status(400).send({ error: "SAMLResponse and RelayState required" });
+    let state: any;
+    try {
+      state = await fastify.jwt.verify(body.RelayState);
+    } catch {
+      await auditAuth(fastify, { action: "auth.sso.failed", entityId: params.id, metadata: { reason: "invalid_saml_state" } });
+      return reply.status(400).send({ error: "Invalid SAML state" });
+    }
+    if (state.typ !== "saml-state" || state.configId !== params.id) return reply.status(400).send({ error: "Invalid SAML state" });
+    const config = await loadSsoConfig(fastify, params.id);
+    if (!config || config.provider !== "saml") return reply.status(404).send({ error: "SAML provider is not configured" });
+    try {
+      const profile = parseSamlProfile(config, body.SAMLResponse);
+      if (config.jit_enabled === false) {
+        const existing = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE lower(email) = lower($1)", [profile.email]);
+        if (!existing.rows[0]) return reply.status(403).send({ error: "JIT user creation is disabled for this provider" });
+      }
+      const user = await upsertFederatedUser(fastify, `sso:${params.id}`, profile, config.default_role || "user");
+      await syncFederatedGroups(fastify, user.id, config, profile);
+      const issued = await issueAuthTokens(fastify, user, request);
+      await auditAuth(fastify, { actorId: user.id, action: "auth.login.success", entityId: user.id, metadata: { method: "sso:saml", ssoConfigId: params.id } });
+      const code = await createAuthHandoff(fastify, issued, { returnTo: state.returnTo, provider: `sso:${params.id}` });
+      const redirect = webUrl("/login");
+      redirect.hash = new URLSearchParams({ handoff: code }).toString();
+      return reply.redirect(redirect.toString());
+    } catch (err: any) {
+      await auditAuth(fastify, { action: "auth.sso.failed", entityId: params.id, metadata: { reason: err.message || "saml_acs_failed" } });
+      return reply.status(401).send({ error: "SAML login failed" });
+    }
   });
 
   fastify.post("/api/ws-ticket", { onRequest: [fastify.authenticate] }, async (request) => {
