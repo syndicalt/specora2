@@ -46,5 +46,6 @@ apps/web/e2e/.auth/
 apps/api/uploads/
 uploads/
 .gstack/
+tmp/
 session-*.md
 .pytest_cache/

@@ -180,6 +180,36 @@ pnpm validate:seed
 
 For production data, `pnpm validate:seed` may be too demo-specific. Use it for demo stacks; use production-specific checks for real deployments.
 
+## Restore Rehearsal Command
+
+Specora includes a local restore rehearsal command that defaults to non-destructive planning mode:
+
+```bash
+pnpm restore:rehearsal
+```
+
+Execute mode performs a bounded local rehearsal:
+
+```bash
+pnpm restore:rehearsal -- --execute
+```
+
+The execute path creates a PostgreSQL custom dump, restores it into a temporary database named `specora_restore_rehearsal`, runs migration status, verifies Neo4j graph counts, checks upload directory presence, writes artifacts under `tmp/restore-rehearsal/`, and drops the temporary restore database. It does not overwrite the active `specora` PostgreSQL database or load over the active Neo4j database.
+
+Useful environment overrides:
+
+| Variable | Default |
+| --- | --- |
+| `RESTORE_REHEARSAL_DIR` | `tmp/restore-rehearsal` |
+| `RESTORE_REHEARSAL_DB` | `specora_restore_rehearsal` |
+| `POSTGRES_SERVICE` | `postgres` |
+| `POSTGRES_USER` | `specora` |
+| `POSTGRES_DB` | `specora` |
+| `NEO4J_SERVICE` | `neo4j` |
+| `NEO4J_USER` | `neo4j` |
+| `NEO4J_PASSWORD` | `specora123` |
+| `UPLOAD_DIR` | `uploads` |
+
 ## Post-Restore Validation
 
 Validate PostgreSQL:
@@ -221,10 +251,8 @@ The correct RPO/RTO depends on tenant expectations and operational maturity.
 
 Backup/restore should become more automated:
 
-- Automate restore drills that validate migration status, application smoke checks, and paired PostgreSQL/Neo4j recovery points.
 - Add a platform maintenance mode.
 - Add worker pause/resume controls.
 - Add backup metadata recording in PostgreSQL.
 - Add a restore validation command separate from demo seed validation.
-- Add a gRPC worker health check.
 - Add production runbooks for managed Postgres and managed Neo4j.

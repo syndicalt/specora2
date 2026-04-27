@@ -381,11 +381,11 @@ Audit is intentionally stored separately from app-specific event tables. Event t
 
 Known gaps before production claims:
 
-- PostgreSQL has a migration runner, runtime readiness, and queue indexes, but restore drills and release automation still need rehearsal in a production-like environment.
+- PostgreSQL has a migration runner, runtime readiness, queue indexes, and a local restore rehearsal command; release automation still needs rehearsal in a production-like environment.
 - Worker health is exposed through the API, but the worker process still does not expose its own standard HTTP or gRPC health service for infrastructure-level probes.
 - Redis is documented and supported by API code but not included in local compose.
 - Package provisioning jobs complete immediately; entitlement checks, rollback, and install progress are roadmap work.
 - Field-level RBAC and identity-group permission inheritance are implemented and explainable through Admin RBAC utilities. Condition-based record ACLs remain a roadmap item.
-- Backup/restore procedures are documented separately but should be rehearsed and automated.
+- Backup/restore procedures are documented separately and have a local rehearsal command; managed production restore runbooks still need environment-specific validation.
 - Secrets should be supplied by a secret manager, not committed `.env` files or compose defaults.
 - Audit hash-chain external anchoring is not yet implemented. High-compliance deployments should plan immutable external retention or head-hash anchoring.
