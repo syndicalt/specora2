@@ -187,20 +187,26 @@ Goal: make Tables the universal operational stewardship surface, not a raw datab
 
 Priority work:
 
-- Add saved table views with named filters, sort, selected columns, density, and sharing scope.
-- Add comprehensive buildable filters: text, enum, date, numeric, null/not-null, relationship-aware filters, and saved filter chips.
-- Add configurable column sets with per-table defaults and user-specific overrides.
-- Add inline edit for safe scalar fields with server-side validation, RBAC enforcement, and audit diffs.
-- Add bulk actions for low-risk record maintenance: assign owner, update status, tag, export, and queue cleanup review.
-- Add audit diff panels on record detail and row history.
-- Add validation state badges sourced from table metadata and Data Foundations rules.
-- Add export/import primitives with clear limits and audit events.
+- Add sharing scope for saved table views once team-level stewardship workflows are needed.
+- Add relationship-aware filters and saved filter chips.
+- Add stronger server-side validation beyond current type coercion and field-level RBAC.
+- Add richer bulk actions for assign owner, tag, and queue cleanup review.
+- Add import primitives with clear limits and audit events.
 - Add AI-assisted cleanup suggestions that explain evidence, confidence, and required approval.
+
+Implemented:
+
+- Added saved table view sort persistence with `sort_field` and `sort_direction`.
+- Added RBAC-aware server-side sorting for CMDB-backed and Postgres-backed table records.
+- Added sortable table headers, saved sort state, and paginated record navigation.
+- Added loaded-record stewardship posture metrics and per-row validation badges for missing required/health-required data.
+- Added low-risk bulk update from selected rows, still routed through existing field-aware, audited record update endpoints.
+- Preserved existing saved filters, column sets, density, inline edit, export, delete, and audit diff behavior.
 
 Exit criteria:
 
 - Tables feels like a serious admin/operator cockpit for stewardship at scale.
-- A user can create a saved view, filter records, adjust columns, edit a field, inspect the audit diff, and export the result.
+- A user can create a saved view, filter records, sort records, paginate results, adjust columns, edit a field, inspect the audit diff, bulk-update a safe field, and export the result.
 - Every write remains RBAC-aware, field-aware, audited, and test-covered.
 
 ## Sprint 7: Reporting API Surface

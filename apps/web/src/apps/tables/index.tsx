@@ -26,6 +26,7 @@ type AttributeDef = {
   displayName: string;
   attrType: string;
   isMandatory: boolean;
+  isHealthRequired?: boolean;
   isKeyAttribute: boolean;
   enumValues?: string[];
   canRead?: boolean;
@@ -82,6 +83,8 @@ type SavedTableView = {
   filters: Array<{ field: string; operator: FilterOperator; value?: unknown }>;
   columns: string[];
   density: "compact" | "comfortable" | "spacious";
+  sortField?: string;
+  sortDirection?: "asc" | "desc";
 };
 
 type AuditEntry = {
@@ -103,6 +106,12 @@ type DiffRow = {
   field: string;
   before: unknown;
   after: unknown;
+};
+
+type ValidationIssue = {
+  field: string;
+  label: string;
+  severity: "error" | "warn";
 };
 
 const PAGE_SIZE = 100;
@@ -175,6 +184,26 @@ function auditDiffRows(before?: Record<string, unknown> | null, after?: Record<s
     .map((key) => ({ field: key.replace(/^attributes\./, ""), before: oldValues[key], after: newValues[key] }));
 }
 
+function isMissing(value: unknown) {
+  return value === undefined || value === null || value === "";
+}
+
+function validationIssues(table: TableDef | null, record: TableRecord): ValidationIssue[] {
+  if (!table) return [];
+  const issues: ValidationIssue[] = [];
+  if (isMissing(record.name)) issues.push({ field: "name", label: "Name", severity: "error" });
+  for (const attr of table.attributes) {
+    if (!canReadAttr(attr)) continue;
+    const value = (record.attributes || {})[attr.name] ?? record[attr.name];
+    if (attr.isMandatory && isMissing(value)) {
+      issues.push({ field: attr.name, label: attr.displayName || attr.name, severity: "error" });
+    } else if ((attr as any).isHealthRequired && isMissing(value)) {
+      issues.push({ field: attr.name, label: attr.displayName || attr.name, severity: "warn" });
+    }
+  }
+  return issues;
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -213,6 +242,9 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [selectedColumns, setSelectedColumns] = useState<Record<string, string[]>>({});
   const [savedViews, setSavedViews] = useState<SavedTableView[]>([]);
   const [density, setDensity] = useState<"compact" | "comfortable" | "spacious">("comfortable");
+  const [sortField, setSortField] = useState("name");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [page, setPage] = useState(0);
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [pendingTableAction, setPendingTableAction] = useState<PendingTableAction | null>(null);
   const [editor, setEditor] = useState<{ mode: EditorMode; record?: TableRecord; form: Record<string, string> } | null>(null);
@@ -221,6 +253,9 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [inlineSaving, setInlineSaving] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Record<string, boolean>>({});
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkEditorOpen, setBulkEditorOpen] = useState(false);
+  const [bulkField, setBulkField] = useState("environment");
+  const [bulkValue, setBulkValue] = useState("");
   const handledLaunchRef = useRef<string | null>(null);
 
   const availableColumns = useMemo<ColumnDef[]>(() => {
@@ -252,6 +287,14 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
 
   const selectedRecordIds = useMemo(() => records.filter((record) => selectedRows[record.id]).map((record) => record.id), [records, selectedRows]);
   const allLoadedSelected = records.length > 0 && selectedRecordIds.length === records.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const stewardshipStats = useMemo(() => {
+    const issueCounts = records.map((record) => validationIssues(selected, record).length);
+    const needsReview = issueCounts.filter((count) => count > 0).length;
+    const requiredAttrs = selected?.attributes.filter((attr) => attr.isMandatory || attr.isHealthRequired).length || 0;
+    return { needsReview, clean: records.length - needsReview, requiredAttrs };
+  }, [records, selected]);
+  const writableBulkColumns = useMemo(() => availableColumns.filter((column) => column.key !== "name" && (!column.core || column.key === "environment")).filter((column) => canWriteColumn(column.key)), [availableColumns, selected]);
 
   function tableAttr(key: string) {
     return selected?.attributes.find((attr) => attr.name === key);
@@ -272,11 +315,15 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setSelected(table);
     setQuery("");
     setFilters([]);
+    setSortField("name");
+    setSortDirection("asc");
+    setPage(0);
     setAuditEntries([]);
     setPickerOpen(false);
     setEditor(null);
     setInlineEdit(null);
     setSelectedRows({});
+    setBulkEditorOpen(false);
   }
 
   function toggleColumn(key: string) {
@@ -306,11 +353,11 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
-  async function loadRecords(table = selected) {
+  async function loadRecords(table = selected, pageOverride = page) {
     if (!table) return;
     setRecordLoading(true);
     try {
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(pageOverride * PAGE_SIZE), sortField, sortDirection });
       if (query.trim()) params.set("q", query.trim());
       if (filterPayload.length > 0) params.set("filters", JSON.stringify(filterPayload));
       const res = await shell.fetch(`/api/tables/${encodeURIComponent(table.id)}/records?${params.toString()}`);
@@ -357,6 +404,8 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
           filters: filterPayload,
           columns,
           density,
+          sortField,
+          sortDirection,
         }),
       });
       if (!res.ok) {
@@ -381,6 +430,9 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     })));
     setSelectedColumns((current) => ({ ...current, [selected.id]: view.columns || [] }));
     setDensity(view.density || "comfortable");
+    setSortField(view.sortField || "name");
+    setSortDirection(view.sortDirection || "asc");
+    setPage(0);
   }
 
   async function deleteSavedView(view: SavedTableView) {
@@ -441,6 +493,24 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
 
   function removeFilter(id: string) {
     setFilters((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  function applySearchAndFilters() {
+    setPage(0);
+    setSelectedRows({});
+    loadRecords(selected, 0);
+  }
+
+  function toggleSort(key: string) {
+    if (!canReadColumn(key)) return;
+    setPage(0);
+    setSelectedRows({});
+    if (sortField === key) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setSortField(key);
+    setSortDirection("asc");
   }
 
   function openCreate() {
@@ -638,6 +708,40 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function applyBulkUpdate() {
+    if (!selected || !selectedRecordIds.length || !bulkField) return;
+    if (bulkField === "name") {
+      shell.notify("Name cannot be bulk-updated from this cockpit.", "error");
+      return;
+    }
+    const attr = tableAttr(bulkField);
+    const payload = bulkField === "environment"
+      ? { environment: bulkValue.trim() || undefined }
+      : { attributes: { [bulkField]: coerceValue(bulkValue, attr) } };
+    setBulkBusy(true);
+    try {
+      for (const id of selectedRecordIds) {
+        const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/records/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `Failed to update ${id}`);
+        }
+      }
+      shell.notify(`Updated ${selectedRecordIds.length} records`, "success");
+      setBulkEditorOpen(false);
+      setBulkValue("");
+      await loadRecords();
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to bulk update records", "error");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function deleteRecord(record: TableRecord) {
     if (!selected) return;
     if (!confirm(`Delete ${record.name}? This will detach relationships and cannot be undone.`)) return;
@@ -664,6 +768,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       loadSavedViews(selected);
     }
   }, [selected?.id]);
+
+  useEffect(() => {
+    if (selected) loadRecords(selected);
+  }, [page, sortField, sortDirection]);
 
   useEffect(() => {
     return shell.onMessage((message) => {
@@ -713,6 +821,12 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
     setPendingTableAction(null);
   }, [pendingTableAction, tables]);
+
+  useEffect(() => {
+    if (!writableBulkColumns.some((column) => column.key === bulkField)) {
+      setBulkField(writableBulkColumns[0]?.key || "environment");
+    }
+  }, [bulkField, writableBulkColumns]);
 
   return (
     <div className="flex h-full w-full bg-gray-950 text-gray-100">
@@ -776,6 +890,13 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             <h2 className="truncate text-lg font-semibold">{selected?.label || "Select a table"}</h2>
             <p className="font-mono text-xs text-gray-500">{selected ? `${selected.id} / ${total} records` : "No table selected"}</p>
           </div>
+          {selected && (
+            <div className="ml-4 hidden items-center gap-2 xl:flex">
+              <MetricPill label="Loaded" value={records.length} />
+              <MetricPill label="Needs Review" value={stewardshipStats.needsReview} tone={stewardshipStats.needsReview ? "warn" : "good"} />
+              <MetricPill label="Required Fields" value={stewardshipStats.requiredAttrs} />
+            </div>
+          )}
           <div className="ml-auto flex items-center gap-2">
             <button onClick={() => exportRows(records.map((record) => record.id))} disabled={!selected || records.length === 0 || bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-40">
               <Download className="h-4 w-4" />
@@ -833,17 +954,17 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") loadRecords();
+                  if (event.key === "Enter") applySearchAndFilters();
                 }}
                 placeholder="Search name, ID, or environment"
                 className="w-full rounded-lg border border-gray-700 bg-gray-900 py-2 pl-9 pr-3 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
               />
             </div>
-            <button onClick={() => loadRecords()} className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white">
+            <button onClick={applySearchAndFilters} className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white">
               Apply
             </button>
             {filters.length > 0 && (
-              <button onClick={() => setFilters([])} className="rounded-lg px-3 py-2 text-sm text-gray-500 hover:text-gray-200">
+              <button onClick={() => { setFilters([]); setPage(0); }} className="rounded-lg px-3 py-2 text-sm text-gray-500 hover:text-gray-200">
                 Clear filters
               </button>
             )}
@@ -878,20 +999,37 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
         </section>
 
         {selectedRecordIds.length > 0 && (
-          <section className="flex shrink-0 items-center gap-3 border-b border-cyan-500/20 bg-cyan-950/20 px-5 py-2 text-sm">
-            <div className="font-medium text-cyan-100">{selectedRecordIds.length} selected</div>
-            <button onClick={() => exportRows()} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-1.5 text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
-              <Download className="h-4 w-4" />
-              Export selected
-            </button>
-            <button onClick={deleteSelectedRows} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 px-3 py-1.5 text-red-200 hover:bg-red-500/10 disabled:opacity-50">
-              <Trash2 className="h-4 w-4" />
-              Delete selected
-            </button>
-            <button onClick={() => setSelectedRows({})} className="ml-auto inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-gray-400 hover:text-white">
-              <Undo2 className="h-4 w-4" />
-              Clear
-            </button>
+          <section className="shrink-0 border-b border-cyan-500/20 bg-cyan-950/20 px-5 py-2 text-sm">
+            <div className="flex items-center gap-3">
+              <div className="font-medium text-cyan-100">{selectedRecordIds.length} selected</div>
+              <button onClick={() => exportRows()} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-1.5 text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
+                <Download className="h-4 w-4" />
+                Export selected
+              </button>
+              <button onClick={() => setBulkEditorOpen((open) => !open)} disabled={bulkBusy || !writableBulkColumns.length} className="inline-flex items-center gap-2 rounded-lg border border-indigo-500/30 px-3 py-1.5 text-indigo-100 hover:bg-indigo-500/10 disabled:opacity-50">
+                <Edit3 className="h-4 w-4" />
+                Bulk update
+              </button>
+              <button onClick={deleteSelectedRows} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 px-3 py-1.5 text-red-200 hover:bg-red-500/10 disabled:opacity-50">
+                <Trash2 className="h-4 w-4" />
+                Delete selected
+              </button>
+              <button onClick={() => setSelectedRows({})} className="ml-auto inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-gray-400 hover:text-white">
+                <Undo2 className="h-4 w-4" />
+                Clear
+              </button>
+            </div>
+            {bulkEditorOpen && (
+              <div className="mt-2 grid grid-cols-[220px_1fr_auto] gap-2">
+                <select value={bulkField} onChange={(event) => setBulkField(event.target.value)} className={SELECT_CLASS}>
+                  {writableBulkColumns.filter((column) => column.key !== "name").map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
+                </select>
+                <BulkValueInput attr={tableAttr(bulkField)} value={bulkValue} onChange={setBulkValue} />
+                <button onClick={applyBulkUpdate} disabled={bulkBusy || !bulkField} className="rounded-lg bg-cyan-500 px-3 py-2 font-medium text-gray-950 hover:bg-cyan-400 disabled:opacity-50">
+                  Apply to selected
+                </button>
+              </div>
+            )}
           </section>
         )}
 
@@ -908,7 +1046,14 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                     className="rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
                   />
                 </th>
-                {visibleColumns.map((column) => <th key={column.key} className="whitespace-nowrap px-4 py-3">{column.label}</th>)}
+                {visibleColumns.map((column) => (
+                  <th key={column.key} className="whitespace-nowrap px-4 py-3">
+                    <button onClick={() => toggleSort(column.key)} className="inline-flex items-center gap-1 text-left hover:text-gray-200">
+                      {column.label}
+                      {sortField === column.key && <span className="text-[10px] text-indigo-300">{sortDirection === "asc" ? "ASC" : "DESC"}</span>}
+                    </button>
+                  </th>
+                ))}
                 <th className="w-24 px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -941,7 +1086,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                           onCancel={() => setInlineEdit(null)}
                         />
                       ) : (
-                        <span className="block truncate">{String(cellValue(record, column.key))}</span>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="block truncate">{String(cellValue(record, column.key))}</span>
+                          {column.key === "name" && <ValidationBadge issues={validationIssues(selected, record)} />}
+                        </span>
                       )}
                     </td>
                   ))}
@@ -973,6 +1121,22 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               )}
             </tbody>
           </table>
+          {selected && records.length > 0 && (
+            <div className="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-5 py-3 text-sm text-gray-400 backdrop-blur">
+              <div>
+                Showing {page * PAGE_SIZE + 1}-{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setPage((current) => Math.max(0, current - 1))} disabled={page === 0 || recordLoading} className="rounded-lg border border-gray-700 px-3 py-1.5 hover:text-white disabled:opacity-40">
+                  Previous
+                </button>
+                <span className="font-mono text-xs text-gray-500">Page {page + 1} / {totalPages}</span>
+                <button onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))} disabled={page >= totalPages - 1 || recordLoading} className="rounded-lg border border-gray-700 px-3 py-1.5 hover:text-white disabled:opacity-40">
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -1016,6 +1180,59 @@ function FilterValueInput({ filter, attr, onChange }: { filter: TableFilter; att
       placeholder="Value"
       className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
     />
+  );
+}
+
+function BulkValueInput({ attr, value, onChange }: { attr?: AttributeDef; value: string; onChange: (value: string) => void }) {
+  if (attr?.attrType === "boolean") {
+    return (
+      <select value={value || "false"} onChange={(event) => onChange(event.target.value)} className={SELECT_CLASS}>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    );
+  }
+  if (attr?.attrType === "enum" && attr.enumValues?.length) {
+    return (
+      <select value={value} onChange={(event) => onChange(event.target.value)} className={SELECT_CLASS}>
+        <option value="">Select value</option>
+        {attr.enumValues.map((item) => <option key={item} value={item}>{item}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      type={attr?.attrType === "number" ? "number" : attr?.attrType === "date" ? "date" : "text"}
+      placeholder="New value"
+      className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
+    />
+  );
+}
+
+function MetricPill({ label, value, tone = "neutral" }: { label: string; value: number; tone?: "neutral" | "good" | "warn" }) {
+  const toneClass = tone === "good"
+    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-100"
+    : tone === "warn"
+      ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
+      : "border-gray-800 bg-gray-900 text-gray-200";
+  return (
+    <div className={`rounded-lg border px-3 py-1.5 ${toneClass}`}>
+      <div className="text-[10px] uppercase tracking-wider opacity-70">{label}</div>
+      <div className="text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function ValidationBadge({ issues }: { issues: ValidationIssue[] }) {
+  if (!issues.length) return <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-200">Clean</span>;
+  const hard = issues.filter((issue) => issue.severity === "error").length;
+  const title = issues.map((issue) => issue.label).join(", ");
+  return (
+    <span title={`Missing: ${title}`} className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${hard ? "bg-red-500/10 text-red-200" : "bg-amber-500/10 text-amber-200"}`}>
+      {issues.length} issue{issues.length === 1 ? "" : "s"}
+    </span>
   );
 }
 

@@ -141,6 +141,8 @@ describe("tableRoutes", () => {
             filters: JSON.parse(String(params?.[4] || "[]")),
             columns: JSON.parse(String(params?.[5] || "[]")),
             density: params?.[6],
+            sort_field: params?.[7],
+            sort_direction: params?.[8],
             created_at: "2026-04-27T00:00:00.000Z",
             updated_at: "2026-04-27T00:00:00.000Z",
           }],
@@ -156,6 +158,8 @@ describe("tableRoutes", () => {
             filters: [],
             columns: ["name", "city"],
             density: "compact",
+            sort_field: "city",
+            sort_direction: "desc",
             created_at: "2026-04-27T00:00:00.000Z",
             updated_at: "2026-04-27T00:00:00.000Z",
           }],
@@ -178,16 +182,32 @@ describe("tableRoutes", () => {
         filters: [{ field: "city", operator: "equals", value: "Austin" }],
         columns: ["name", "city", "not_a_field"],
         density: "compact",
+        sortField: "city",
+        sortDirection: "desc",
       },
     });
     expect(saved.statusCode).toBe(200);
     const body = JSON.parse(saved.body);
-    expect(body.view).toMatchObject({ tableId: "cmdb.Location", name: "Locations", columns: ["name", "city"] });
+    expect(body.view).toMatchObject({ tableId: "cmdb.Location", name: "Locations", columns: ["name", "city"], sortField: "city", sortDirection: "desc" });
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.view.saved", "TableSavedView", "view-1"]));
 
     const deleted = await app.inject({ method: "DELETE", url: "/api/tables/views/view-1" });
     expect(deleted.statusCode).toBe(200);
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.view.deleted", "TableSavedView", "view-1"]));
+  });
+
+  it("sorts table records through whitelisted readable fields", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", city: "Austin", attributes: "{\"city\":\"Austin\"}" }) })],
+      [makeRecord({ total: { toNumber: () => 1 } })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({ method: "GET", url: "/api/tables/cmdb.Location/records?sortField=city&sortDirection=desc" });
+
+    expect(res.statusCode).toBe(200);
+    const [cypher] = neo4j.run.mock.calls[0];
+    expect(cypher).toContain("ORDER BY n.`city` DESC");
   });
 
   it("returns table record audit history", async () => {

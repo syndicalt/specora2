@@ -33,6 +33,8 @@ type TableSavedViewInput = {
   filters?: TableFilter[];
   columns?: string[];
   density?: string;
+  sortField?: string;
+  sortDirection?: "asc" | "desc";
 };
 
 type TableDefinition = {
@@ -393,6 +395,19 @@ function normalizeDensity(value: unknown) {
   return value === "compact" || value === "spacious" ? value : "comfortable";
 }
 
+function normalizeSortDirection(value: unknown): "asc" | "desc" {
+  return value === "desc" ? "desc" : "asc";
+}
+
+function sanitizeSortField(table: TableDefinition, field: unknown, access?: Map<string, FieldAccess>): string {
+  const fallback = table.provider === "postgres-table" ? "name" : "name";
+  if (typeof field !== "string") return fallback;
+  const allowed = new Set(tableFieldNames(table));
+  if (!allowed.has(field)) return fallback;
+  if (access?.get(field)?.read === false) return fallback;
+  return field;
+}
+
 function tableViewRow(row: any) {
   return {
     id: row.id,
@@ -402,6 +417,8 @@ function tableViewRow(row: any) {
     filters: Array.isArray(row.filters) ? row.filters : JSON.parse(row.filters || "[]"),
     columns: Array.isArray(row.columns) ? row.columns : JSON.parse(row.columns || "[]"),
     density: row.density || "comfortable",
+    sortField: row.sort_field || "name",
+    sortDirection: normalizeSortDirection(row.sort_direction),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -489,6 +506,14 @@ function buildFilterWhere(table: TableDefinition, filters: TableFilter[], params
     }
   });
   return clauses;
+}
+
+function postgresColumnForField(table: TableDefinition, field: string): string | null {
+  if (field === "id") return "id";
+  if (field === "name") return table.nameField || "id";
+  if (field === "number" && table.hasNumber) return "number";
+  if (table.attributes.some((attr) => attr.name === field)) return field;
+  return null;
 }
 
 function buildPostgresFilterWhere(table: TableDefinition, filters: TableFilter[], params: unknown[]): string[] {
@@ -654,7 +679,7 @@ function assertWritablePayload(
 async function listPostgresRecords(
   fastify: FastifyInstance,
   table: TableDefinition,
-  query: { limit?: string; offset?: string; q?: string; filters?: string },
+  query: { limit?: string; offset?: string; q?: string; filters?: string; sortField?: string; sortDirection?: string },
   access: Map<string, FieldAccess>
 ) {
   if (!table.tableName) throw new Error("Missing table name");
@@ -672,13 +697,15 @@ async function listPostgresRecords(
   }
   whereParts.push(...buildPostgresFilterWhere(table, parseFilters(query.filters), params));
   const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
-  const orderColumn = quoteIdentifier(table.nameField || "id");
+  const sortField = sanitizeSortField(table, query.sortField, access);
+  const orderColumn = quoteIdentifier(postgresColumnForField(table, sortField) || table.nameField || "id");
+  const direction = normalizeSortDirection(query.sortDirection).toUpperCase();
   params.push(limit);
   const limitParam = `$${params.length}`;
   params.push(offset);
   const offsetParam = `$${params.length}`;
   const [rows, count] = await Promise.all([
-    fastify.pg.query(`SELECT * FROM ${tableName} ${where} ORDER BY ${orderColumn} NULLS LAST LIMIT ${limitParam} OFFSET ${offsetParam}`, params),
+    fastify.pg.query(`SELECT * FROM ${tableName} ${where} ORDER BY ${orderColumn} ${direction} NULLS LAST LIMIT ${limitParam} OFFSET ${offsetParam}`, params),
     fastify.pg.query(`SELECT COUNT(*)::int AS total FROM ${tableName} ${where}`, params.slice(0, params.length - 2)),
   ]);
   return {
@@ -780,7 +807,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       where += ` AND table_id = $${params.length}`;
     }
     const result = await fastify.pg.query(
-      `SELECT id, user_id, table_id, name, search_query, filters, columns, density, created_at, updated_at
+      `SELECT id, user_id, table_id, name, search_query, filters, columns, density, sort_field, sort_direction, created_at, updated_at
        FROM table_saved_views
        WHERE ${where}
        ORDER BY updated_at DESC, name`,
@@ -805,17 +832,21 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const unreadableFilter = assertReadableFilters(filters, access);
     if (unreadableFilter) return reply.status(403).send({ error: `Forbidden: cannot save filter on ${unreadableFilter}` });
     const columns = sanitizeColumns(table, body.columns);
+    const sortField = sanitizeSortField(table, body.sortField, access);
+    const sortDirection = normalizeSortDirection(body.sortDirection);
     try {
       const result = await fastify.pg.query(
-        `INSERT INTO table_saved_views (user_id, table_id, name, search_query, filters, columns, density)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO table_saved_views (user_id, table_id, name, search_query, filters, columns, density, sort_field, sort_direction)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (user_id, table_id, name)
          DO UPDATE SET search_query = EXCLUDED.search_query,
                        filters = EXCLUDED.filters,
                        columns = EXCLUDED.columns,
                        density = EXCLUDED.density,
+                       sort_field = EXCLUDED.sort_field,
+                       sort_direction = EXCLUDED.sort_direction,
                        updated_at = NOW()
-         RETURNING id, user_id, table_id, name, search_query, filters, columns, density, created_at, updated_at`,
+         RETURNING id, user_id, table_id, name, search_query, filters, columns, density, sort_field, sort_direction, created_at, updated_at`,
         [
           actorKey(request.user),
           table.id,
@@ -824,6 +855,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
           JSON.stringify(filters),
           JSON.stringify(columns),
           normalizeDensity(body.density),
+          sortField,
+          sortDirection,
         ]
       );
       await recordAuditEvent(fastify, {
@@ -849,7 +882,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const { id } = request.params as { id: string };
     const result = await fastify.pg.query(
       `DELETE FROM table_saved_views WHERE id = $1 AND user_id = $2
-       RETURNING id, table_id, name, search_query, filters, columns, density, created_at, updated_at`,
+       RETURNING id, table_id, name, search_query, filters, columns, density, sort_field, sort_direction, created_at, updated_at`,
       [id, actorKey(request.user)]
     );
     if (!result.rows.length) return reply.status(404).send({ error: "View not found" });
@@ -893,7 +926,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     }
     const { table: rawTableId } = request.params as { table: string };
     const tableId = decodeURIComponent(rawTableId);
-    const query = request.query as { limit?: string; offset?: string; q?: string; filters?: string };
+    const query = request.query as { limit?: string; offset?: string; q?: string; filters?: string; sortField?: string; sortDirection?: string };
     const table = await resolveTable(fastify, tableId);
     if (!table) return reply.status(404).send({ error: "Table not found" });
     const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
@@ -922,6 +955,9 @@ export async function tableRoutes(fastify: FastifyInstance) {
     }
     whereParts.push(...buildFilterWhere(tableForUser, filters, params));
     const where = whereParts.join(" AND ");
+    const sortField = sanitizeSortField(tableForUser, query.sortField, access);
+    const sortExpression = propertyExpression(sortField);
+    const sortDirection = normalizeSortDirection(query.sortDirection) === "desc" ? "DESC" : "ASC";
 
     const session = fastify.neo4j.session();
     try {
@@ -929,7 +965,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         `MATCH (n:ConfigurationItem)
          WHERE ${where}
          RETURN n
-         ORDER BY n.name
+         ORDER BY ${sortExpression} ${sortDirection}
          SKIP $offset
          LIMIT $limit`,
         params
