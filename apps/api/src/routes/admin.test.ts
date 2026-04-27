@@ -138,6 +138,107 @@ describe("adminRoutes", () => {
     expect(body.properties).toHaveLength(1);
   });
 
+  it("manages multi-provider SSO configs", async () => {
+    const ssoRows: any[] = [];
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO sso_configs")) {
+        const row = {
+          id: "sso-1",
+          name: params?.[0],
+          provider: params?.[1],
+          status: params?.[2],
+          email_domains: JSON.parse(params?.[3]),
+          idp_entity_id: params?.[4],
+          idp_sso_url: params?.[5],
+          idp_cert: params?.[6],
+          sp_entity_id: params?.[7],
+          metadata_url: params?.[8],
+          jit_enabled: params?.[9],
+          client_id: params?.[10],
+          client_secret_ref: params?.[11],
+          issuer_url: params?.[12],
+          authorization_url: params?.[13],
+          token_url: params?.[14],
+          userinfo_url: params?.[15],
+          scopes: JSON.parse(params?.[16]),
+          enforce_sso: params?.[17],
+          default_role: params?.[18],
+          attribute_mapping: JSON.parse(params?.[19]),
+          created_at: "2026-01-01",
+          updated_at: "2026-01-01",
+        };
+        ssoRows.push(row);
+        return Promise.resolve({ rows: [row], rowCount: 1 });
+      }
+      if (sql.includes("FROM sso_configs") && sql.includes("ORDER BY status")) {
+        return Promise.resolve({ rows: ssoRows, rowCount: ssoRows.length });
+      }
+      if (sql.includes("UPDATE sso_configs")) {
+        const row = { ...ssoRows[0], status: "active", enforce_sso: true };
+        ssoRows[0] = row;
+        return Promise.resolve({ rows: [row], rowCount: 1 });
+      }
+      if (sql.includes("FROM sso_configs WHERE id = $1")) {
+        return Promise.resolve({ rows: ssoRows[0] ? [ssoRows[0]] : [], rowCount: ssoRows[0] ? 1 : 0 });
+      }
+      if (sql.includes("SELECT entry_hash FROM audit_log")) return Promise.resolve({ rows: [], rowCount: 0 });
+      if (sql.includes("INSERT INTO audit_log")) return Promise.resolve({ rows: [], rowCount: 1 });
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/identity/sso-configs",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: {
+        name: "Okta Workforce",
+        provider: "oidc",
+        status: "inactive",
+        emailDomains: ["example.com"],
+        authorizationUrl: "https://okta.example/oauth2/v1/authorize",
+        clientId: "client-1",
+        scopes: ["openid", "email", "profile"],
+        enforceSso: false,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(JSON.parse(created.payload).config.provider).toBe("oidc");
+
+    const listed = await app.inject({ method: "GET", url: "/api/admin/identity/sso-configs", headers: authHeader(app) });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.payload).configs[0].emailDomains).toEqual(["example.com"]);
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/admin/identity/sso-configs/sso-1",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { status: "active", enforceSso: true },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(JSON.parse(updated.payload).config.enforceSso).toBe(true);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity.sso_config.created", "SsoConfig", "sso-1"]));
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity.sso_config.updated", "SsoConfig", "sso-1"]));
+  });
+
+  it("rejects invalid SSO providers", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/identity/sso-configs",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { name: "Bad", provider: "ldap", emailDomains: ["example.com"] },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it("analyzes RBAC access decisions", async () => {
     const app = await buildApp((sql: string, params?: any[]) => {
       if (sql.includes("app_permissions WHERE role = $1 AND resource = $2 AND action = $3")) {

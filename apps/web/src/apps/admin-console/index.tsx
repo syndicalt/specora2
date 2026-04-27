@@ -59,6 +59,32 @@ interface NumberSequenceOption {
   defaultPrefix: string;
 }
 
+interface SsoConfig {
+  id: string;
+  name: string;
+  provider: "saml" | "oidc";
+  status: "active" | "inactive";
+  emailDomains: string[];
+  idpEntityId: string;
+  idpSsoUrl: string;
+  idpCertPresent: boolean;
+  spEntityId: string;
+  metadataUrl: string;
+  jitEnabled: boolean;
+  clientId: string;
+  clientSecretRef: string;
+  issuerUrl: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  userinfoUrl: string;
+  scopes: string[];
+  enforceSso: boolean;
+  defaultRole: string;
+  attributeMapping: { email: string; name: string; groups: string };
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface AdminPanel {
   id: string;
   name: string;
@@ -369,6 +395,26 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [systemProps, setSystemProps] = useState<SystemProperty[]>([]);
   const [numberSequences, setNumberSequences] = useState<NumberSequence[]>([]);
   const [numberSequenceOptions, setNumberSequenceOptions] = useState<NumberSequenceOption[]>([]);
+  const [ssoConfigs, setSsoConfigs] = useState<SsoConfig[]>([]);
+  const [newSsoConfig, setNewSsoConfig] = useState({
+    name: "",
+    provider: "saml" as "saml" | "oidc",
+    status: "inactive" as "active" | "inactive",
+    emailDomains: "",
+    idpSsoUrl: "",
+    idpEntityId: "",
+    metadataUrl: "",
+    issuerUrl: "",
+    authorizationUrl: "",
+    tokenUrl: "",
+    userinfoUrl: "",
+    clientId: "",
+    clientSecretRef: "",
+    scopes: "openid,email,profile",
+    enforceSso: false,
+    jitEnabled: true,
+    defaultRole: "user",
+  });
   const [rbacUsers, setRbacUsers] = useState<RbacUser[]>([]);
   const [rbacTargets, setRbacTargets] = useState<RbacTarget[]>([]);
   const [rbacApps, setRbacApps] = useState<RbacApp[]>([]);
@@ -431,12 +477,13 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, identityRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/identity/sso-configs`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/field-restrictions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/policy-drift`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -454,6 +501,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const panelData = panelRes.ok ? await panelRes.json() : { panels: [] };
       const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
+      const identityData = identityRes.ok ? await identityRes.json() : { configs: [] };
       const rbacOptionsData = rbacOptionsRes.ok ? await rbacOptionsRes.json() : { users: [], targets: [] };
       const fieldRestrictionsData = fieldRestrictionsRes.ok ? await fieldRestrictionsRes.json() : { tables: [] };
       const driftData = driftRes.ok ? await driftRes.json() : null;
@@ -467,6 +515,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setPanels(panelData.panels || []);
       setNumberSequences(sequenceData.sequences || []);
       setNumberSequenceOptions(sequenceOptionsData.options || []);
+      setSsoConfigs(identityData.configs || []);
       setRbacUsers(rbacOptionsData.users || []);
       setRbacTargets(rbacOptionsData.targets || []);
       setRbacApps(rbacOptionsData.apps || []);
@@ -848,6 +897,95 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     }
   }
 
+  function parseList(value: string) {
+    return value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  async function addSsoConfig(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newSsoConfig.name || !newSsoConfig.emailDomains) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/identity/sso-configs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({
+          ...newSsoConfig,
+          emailDomains: parseList(newSsoConfig.emailDomains),
+          scopes: parseList(newSsoConfig.scopes),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add identity provider");
+      setNewSsoConfig({
+        name: "",
+        provider: "saml",
+        status: "inactive",
+        emailDomains: "",
+        idpSsoUrl: "",
+        idpEntityId: "",
+        metadataUrl: "",
+        issuerUrl: "",
+        authorizationUrl: "",
+        tokenUrl: "",
+        userinfoUrl: "",
+        clientId: "",
+        clientSecretRef: "",
+        scopes: "openid,email,profile",
+        enforceSso: false,
+        jitEnabled: true,
+        defaultRole: "user",
+      });
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function updateSsoConfig(id: string, patch: Partial<SsoConfig>) {
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/identity/sso-configs/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update identity provider");
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteSsoConfig(id: string) {
+    if (!confirm("Delete this identity provider?")) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/identity/sso-configs/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token || ""}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete identity provider");
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function addNumberSequence(e: React.FormEvent) {
     e.preventDefault();
     if (!newSequence.tableName || !newSequence.recordType || !newSequence.prefix) return;
@@ -976,6 +1114,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const allTabs = useMemo(() => Array.from(new Map([
     { id: "overview", name: "Overview", icon: "LayoutDashboard", category: "Command" },
     { id: "rbac", name: "Users & Access", icon: "ShieldCheck", category: "Governance" },
+    { id: "identity", name: "Identity Providers", icon: "KeyRound", category: "Governance" },
     { id: "number-sequences", name: "Number Sequences", icon: "Hash", category: "Platform Registry" },
     { id: "packages", name: "Package Provisioning", icon: "Download", category: "Platform Registry" },
     { id: "system-properties", name: "System Properties", icon: "Settings", category: "Platform Registry" },
@@ -1006,7 +1145,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     { label: "Permission grants", value: permissions.length, tone: "text-indigo-200", detail: `${roles.length} active roles` },
     { label: "Counter registries", value: numberSequences.length, tone: "text-emerald-200", detail: `${availableSequenceOptions.length} available targets` },
     { label: "Package jobs", value: provisioningJobs.length, tone: "text-cyan-200", detail: "Install and uninstall history" },
-    { label: "Admin panels", value: panels.length + 3, tone: "text-amber-200", detail: "Core and app-owned" },
+    { label: "Identity providers", value: ssoConfigs.length, tone: "text-sky-200", detail: `${ssoConfigs.filter((config) => config.status === "active").length} active` },
+    { label: "Admin panels", value: panels.length + 4, tone: "text-amber-200", detail: "Core and app-owned" },
   ];
 
   function openNativeApp(appId: string) {
@@ -2258,6 +2398,143 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      );
+    }
+
+    if (activeTab === "identity") {
+      return (
+        <div className="space-y-6">
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                  <KeyRound className="h-4 w-4 text-cyan-300" />
+                  Multi-provider SSO
+                </h2>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-gray-500">
+                  Register one provider per IdP, tenant, or domain set. Login discovery uses the user's email domain to route to the matching active provider.
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2">
+                  <div className="text-lg font-semibold text-gray-100">{ssoConfigs.length}</div>
+                  <div className="text-gray-500">providers</div>
+                </div>
+                <div className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2">
+                  <div className="text-lg font-semibold text-emerald-200">{ssoConfigs.filter((config) => config.status === "active").length}</div>
+                  <div className="text-gray-500">active</div>
+                </div>
+                <div className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2">
+                  <div className="text-lg font-semibold text-amber-200">{ssoConfigs.filter((config) => config.enforceSso).length}</div>
+                  <div className="text-gray-500">enforced</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={addSsoConfig} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-medium text-gray-300">
+              <Plus className="h-4 w-4" /> Register Identity Provider
+            </h3>
+            <div className="grid gap-3 lg:grid-cols-4">
+              <FieldInput label="Name" value={newSsoConfig.name} onChange={(value) => setNewSsoConfig((current) => ({ ...current, name: value }))} placeholder="Okta Workforce" />
+              <FieldSelect
+                label="Protocol"
+                value={newSsoConfig.provider}
+                onChange={(value) => setNewSsoConfig((current) => ({ ...current, provider: value as "saml" | "oidc" }))}
+                options={[{ value: "saml", label: "SAML 2.0" }, { value: "oidc", label: "OpenID Connect" }]}
+              />
+              <FieldSelect
+                label="Status"
+                value={newSsoConfig.status}
+                onChange={(value) => setNewSsoConfig((current) => ({ ...current, status: value as "active" | "inactive" }))}
+                options={[{ value: "inactive", label: "Inactive" }, { value: "active", label: "Active" }]}
+              />
+              <FieldInput label="Domains" value={newSsoConfig.emailDomains} onChange={(value) => setNewSsoConfig((current) => ({ ...current, emailDomains: value }))} placeholder="example.com, corp.example" />
+              {newSsoConfig.provider === "saml" ? (
+                <>
+                  <FieldInput label="IdP SSO URL" value={newSsoConfig.idpSsoUrl} onChange={(value) => setNewSsoConfig((current) => ({ ...current, idpSsoUrl: value }))} placeholder="https://idp.example/sso" />
+                  <FieldInput label="IdP Entity ID" value={newSsoConfig.idpEntityId} onChange={(value) => setNewSsoConfig((current) => ({ ...current, idpEntityId: value }))} />
+                  <FieldInput label="Metadata URL" value={newSsoConfig.metadataUrl} onChange={(value) => setNewSsoConfig((current) => ({ ...current, metadataUrl: value }))} />
+                </>
+              ) : (
+                <>
+                  <FieldInput label="Issuer URL" value={newSsoConfig.issuerUrl} onChange={(value) => setNewSsoConfig((current) => ({ ...current, issuerUrl: value }))} />
+                  <FieldInput label="Authorization URL" value={newSsoConfig.authorizationUrl} onChange={(value) => setNewSsoConfig((current) => ({ ...current, authorizationUrl: value }))} />
+                  <FieldInput label="Token URL" value={newSsoConfig.tokenUrl} onChange={(value) => setNewSsoConfig((current) => ({ ...current, tokenUrl: value }))} />
+                  <FieldInput label="Userinfo URL" value={newSsoConfig.userinfoUrl} onChange={(value) => setNewSsoConfig((current) => ({ ...current, userinfoUrl: value }))} />
+                  <FieldInput label="Client ID" value={newSsoConfig.clientId} onChange={(value) => setNewSsoConfig((current) => ({ ...current, clientId: value }))} />
+                  <FieldInput label="Secret Ref" value={newSsoConfig.clientSecretRef} onChange={(value) => setNewSsoConfig((current) => ({ ...current, clientSecretRef: value }))} placeholder="secret://identity/okta" />
+                  <FieldInput label="Scopes" value={newSsoConfig.scopes} onChange={(value) => setNewSsoConfig((current) => ({ ...current, scopes: value }))} />
+                </>
+              )}
+              <FieldInput label="Default Role" value={newSsoConfig.defaultRole} onChange={(value) => setNewSsoConfig((current) => ({ ...current, defaultRole: value }))} />
+            </div>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap gap-4 text-sm text-gray-400">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={newSsoConfig.jitEnabled} onChange={(event) => setNewSsoConfig((current) => ({ ...current, jitEnabled: event.target.checked }))} className="h-4 w-4 accent-cyan-400" />
+                  JIT users
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={newSsoConfig.enforceSso} onChange={(event) => setNewSsoConfig((current) => ({ ...current, enforceSso: event.target.checked }))} className="h-4 w-4 accent-cyan-400" />
+                  Require SSO for domains
+                </label>
+              </div>
+              <button type="submit" disabled={saving || !newSsoConfig.name || !newSsoConfig.emailDomains} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Add Provider
+              </button>
+            </div>
+          </form>
+
+          <div className="grid gap-4">
+            {ssoConfigs.map((config) => (
+              <div key={config.id} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-lg font-semibold text-gray-100">{config.name}</h3>
+                      <span className="rounded border border-gray-700 bg-gray-950 px-2 py-0.5 text-xs uppercase text-gray-300">{config.provider}</span>
+                      <span className={`rounded px-2 py-0.5 text-xs ${config.status === "active" ? "bg-emerald-500/10 text-emerald-300" : "bg-gray-800 text-gray-400"}`}>{config.status}</span>
+                      {config.enforceSso && <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-200">SSO required</span>}
+                    </div>
+                    <div className="mt-2 text-sm text-gray-500">{config.emailDomains.join(", ")}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => updateSsoConfig(config.id, { status: config.status === "active" ? "inactive" : "active" })} className="rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:border-cyan-400">
+                      {config.status === "active" ? "Disable" : "Activate"}
+                    </button>
+                    <button onClick={() => updateSsoConfig(config.id, { enforceSso: !config.enforceSso })} className="rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:border-cyan-400">
+                      {config.enforceSso ? "Allow password" : "Require SSO"}
+                    </button>
+                    <button onClick={() => deleteSsoConfig(config.id)} className="rounded border border-red-500/30 px-3 py-1.5 text-sm text-red-200 hover:border-red-400">
+                      Delete
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="text-xs text-gray-500">Start URL</div>
+                    <div className="mt-1 truncate text-gray-300">{config.provider === "oidc" ? config.authorizationUrl || "-" : config.idpSsoUrl || "-"}</div>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="text-xs text-gray-500">Issuer / Entity</div>
+                    <div className="mt-1 truncate text-gray-300">{config.provider === "oidc" ? config.issuerUrl || "-" : config.idpEntityId || "-"}</div>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="text-xs text-gray-500">JIT / Role</div>
+                    <div className="mt-1 text-gray-300">{config.jitEnabled ? "JIT enabled" : "JIT disabled"} / {config.defaultRole}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!ssoConfigs.length && (
+              <div className="rounded-xl border border-dashed border-gray-800 bg-gray-900 p-8 text-center text-sm text-gray-500">
+                No identity providers are registered yet.
+              </div>
+            )}
           </div>
         </div>
       );

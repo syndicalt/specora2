@@ -5,7 +5,7 @@ import type { RefObject } from "react";
 import type { AppInstance } from "./AppContext";
 import type { RegistryEntry, ShellAPI } from "@/sdk/types";
 import { useShell } from "./AppContext";
-import { getToken, getUserRole } from "@/lib/auth";
+import { authFetch, getUserRole } from "@/lib/auth";
 import { API_BASE, graphqlClient } from "@/lib/api";
 const BUILT_IN_COMPONENTS: Record<string, () => Promise<{ default: React.ComponentType<{ shell: ShellAPI }> }>> = {
   "service-map": () => import("@/apps/service-map"),
@@ -280,11 +280,9 @@ function buildShellAPI(
       : () => Promise.reject(new Error(`App ${instance.id} lacks permission to mutate GraphQL`)),
     fetch: allowed.has("fetch")
       ? (path, init = {}) => {
-          const token = getToken();
           const headers = new Headers(init.headers);
-          if (token) headers.set("Authorization", `Bearer ${token}`);
           const url = path.startsWith("http") ? path : `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
-          return fetch(url, { ...init, headers });
+          return authFetch(url, { ...init, headers });
         }
       : () => Promise.reject(new Error(`App ${instance.id} lacks permission to fetch API routes`)),
     dispatch: allowed.has("dispatch") ? dispatch : () => {},

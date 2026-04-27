@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import { getToken } from "@/lib/auth";
+import { authFetch, getToken } from "@/lib/auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
 const WS_URL = API_URL.replace(/^http/, "ws") + "/api/events/live";
@@ -30,9 +30,8 @@ export function useEventStream(): EventStream {
 
     let ticket: string | null = null;
     try {
-      const res = await fetch(`${API_URL}/api/ws-ticket`, {
+      const res = await authFetch(`${API_URL}/api/ws-ticket`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
@@ -121,9 +120,7 @@ export function useEventStream(): EventStream {
     if (pollIntervalRef.current) return;
     const poll = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/events?since=${encodeURIComponent(lastPollTimeRef.current)}`, {
-          headers: { Authorization: `Bearer ${getToken() || ""}` },
-        });
+        const res = await authFetch(`${API_URL}/api/events?since=${encodeURIComponent(lastPollTimeRef.current)}`);
         if (!res.ok) return;
         const events = await res.json();
         if (Array.isArray(events)) {

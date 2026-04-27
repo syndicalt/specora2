@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { getToken } from "@/lib/auth";
+import { authFetch } from "@/lib/auth";
 import { useShell } from "@/shell/AppContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -228,9 +228,7 @@ export function ChatOverlay() {
 
   async function loadSessions() {
     try {
-      const res = await fetch(`${API_URL}/api/chat/sessions`, {
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
-      });
+      const res = await authFetch(`${API_URL}/api/chat/sessions`);
       if (!res.ok) return;
       const data = await res.json();
       setSessions(data.sessions || []);
@@ -241,9 +239,7 @@ export function ChatOverlay() {
 
   async function loadCapabilities() {
     try {
-      const res = await fetch(`${API_URL}/api/chat/capabilities`, {
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
-      });
+      const res = await authFetch(`${API_URL}/api/chat/capabilities`);
       if (!res.ok) return;
       const data = await res.json();
       setCapabilityGroups(data.capabilities || []);
@@ -254,11 +250,10 @@ export function ChatOverlay() {
 
   async function createNewSession() {
     try {
-      const res = await fetch(`${API_URL}/api/chat/sessions`, {
+      const res = await authFetch(`${API_URL}/api/chat/sessions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${getToken() || ""}`,
         },
         body: JSON.stringify({ title: "New Chat" }),
       });
@@ -278,9 +273,7 @@ export function ChatOverlay() {
     setLoading(true);
     setDropdownOpen(false);
     try {
-      const res = await fetch(`${API_URL}/api/chat/sessions/${id}/messages`, {
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
-      });
+      const res = await authFetch(`${API_URL}/api/chat/sessions/${id}/messages`);
       if (!res.ok) return;
       const data = await res.json();
       const loaded = data.messages.map((m: any) => ({ role: m.role, text: m.content }));
@@ -295,9 +288,8 @@ export function ChatOverlay() {
   async function deleteSession(id: string, e: React.MouseEvent) {
     e.stopPropagation();
     try {
-      const res = await fetch(`${API_URL}/api/chat/sessions/${id}`, {
+      const res = await authFetch(`${API_URL}/api/chat/sessions/${id}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
       });
       if (!res.ok) return;
       if (sessionId === id) {
@@ -342,11 +334,10 @@ export function ChatOverlay() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-      const res = await fetch(`${API_URL}/api/chat`, {
+      const res = await authFetch(`${API_URL}/api/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${getToken() || ""}`,
         },
         body: JSON.stringify({
           messages: apiMessages,

@@ -15,11 +15,13 @@ test("authenticate seeded admin user", async ({ page, request }) => {
   expect(response.ok()).toBeTruthy();
   const body = await response.json();
   expect(body.token).toEqual(expect.any(String));
+  expect(body.refreshToken).toEqual(expect.any(String));
 
   await page.goto("/login");
-  await page.evaluate((token) => {
+  await page.evaluate(({ token, refreshToken }) => {
     localStorage.setItem("specora_token", token);
-  }, body.token);
+    localStorage.setItem("specora_refresh_token", refreshToken);
+  }, { token: body.token, refreshToken: body.refreshToken });
 
   mkdirSync(dirname(authFile), { recursive: true });
   await page.context().storageState({ path: authFile });

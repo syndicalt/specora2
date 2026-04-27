@@ -48,6 +48,9 @@ Required for API:
 | `NEO4J_PASSWORD` | Neo4j password |
 | `DATABASE_URL` | PostgreSQL connection string |
 | `JWT_SECRET` | JWT signing key |
+| `ACCESS_TOKEN_EXPIRES_IN` | Access token lifetime, default `15m` |
+| `ACCESS_TOKEN_EXPIRES_IN_SECONDS` | Browser-facing token lifetime in seconds, default `900` |
+| `REFRESH_TOKEN_DAYS` | Refresh-session lifetime, default `30` |
 | `WORKER_GRPC_HOST` | Worker gRPC target, usually `worker:50051` in Docker |
 
 Required for Web:
@@ -305,7 +308,12 @@ SKIP_E2E=1 pnpm demo:ready
 
 API:
 
-- Stateless JWT allows multiple API instances.
+- Short-lived JWT access tokens allow stateless API authorization across instances.
+- Refresh sessions are stored in PostgreSQL as hashed opaque tokens. Rotation, logout, user revocation, invalid attempts, and reuse detection are audited. Authenticated API requests with access tokens are rejected if the backing session has been revoked or expired.
+- Optional Google/GitHub OAuth providers require matching client IDs/secrets and stable `API_PUBLIC_URL` callback configuration.
+- OAuth and OIDC callbacks use short-lived, one-time `auth_handoffs` codes rather than placing bearer tokens directly into redirect URLs.
+- Just-in-time OAuth-created users default to `OAUTH_DEFAULT_ROLE` or `user`; production deployments should grant access through RBAC after identity proofing.
+- Enterprise SSO is configured in Admin Console through `sso_configs`. Multiple SAML/OIDC providers can coexist by domain set. Matching domains can enforce SSO and block password login. OIDC callback exchange is implemented; SAML assertion validation remains the next adapter layer.
 - Use Redis for multi-instance WebSocket/event propagation.
 - Ensure all API instances share the same `JWT_SECRET`.
 - API instances must share PostgreSQL and Neo4j.

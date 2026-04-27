@@ -96,7 +96,7 @@ The API is a Fastify server with:
 
 - GraphQL Yoga for CMDB CRUD and graph operations
 - REST routes for native app automation
-- JWT authentication
+- Short-lived JWT access tokens with rotating PostgreSQL-backed refresh sessions
 - RBAC checks
 - App registry
 - App tool registry
@@ -106,6 +106,18 @@ The API is a Fastify server with:
 - PostgreSQL and Neo4j plugins
 
 The API is intentionally the enforcement boundary. Browser apps can present rich workflows, but server routes must own authorization, persistence rules, and safe execution.
+
+### Authentication And Enterprise Identity
+
+Specora uses short-lived access tokens for request authorization and opaque refresh tokens for browser session continuity. Refresh tokens are never stored in plaintext server-side. PostgreSQL stores their SHA-256 hashes, user/session metadata, expiry, revocation state, user agent, IP address, and last-used timestamp.
+
+The refresh flow is rotation-based: every successful refresh revokes the prior refresh token and issues a replacement in the same token family. Reuse of a revoked refresh token is treated as a session-compromise signal and revokes the family. Access-token use is also tied back to an active server-side session, so revocation takes effect before the access token naturally expires. Login, refresh rotation, logout, explicit session revocation, invalid refresh attempts, and refresh-token reuse are written to the audit log.
+
+OAuth is implemented as a platform login primitive for configured Google and GitHub providers. Callback routes do not place access or refresh tokens directly into redirect URLs. Instead, the API creates a short-lived one-time auth handoff code, redirects the browser back to the login page with that code, and the browser exchanges it through `/api/auth/handoff`.
+
+Enterprise SSO is modeled as server-side provider configuration with email-domain discovery and IdP start URLs. OIDC providers use the same one-time handoff flow after token exchange and userinfo retrieval. SAML provider configuration and start URLs are supported, but SAML assertion validation requires the future SAML ACS adapter before it should be used as a production login path.
+
+Identity Provider administration lives inside the Admin Console because it is part of platform governance, not an end-user application. The platform supports multiple SSO providers by storing one provider configuration per IdP, tenant, or domain set. Discovery selects the active provider whose email-domain list matches the user. Providers can be SAML or OpenID Connect, can enable JIT user creation, can assign a default role for JIT users, and can require SSO for matching domains so password login is blocked.
 
 ### Neo4j
 

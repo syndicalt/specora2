@@ -14,7 +14,7 @@ What is working well:
 - Customer Portal now provides the core self-service front door with catalog requests, AI intent resolution, and contextual support handoff primitives.
 - Provara is back as the primary LLM router with tool-call support.
 - CSDMv5-aligned seed data provides a connected 5,000-CI CMDB narrative.
-- API route coverage is improving and currently passes at 377 tests.
+- API route coverage is improving and currently passes at 375 tests.
 - Optional premium app primitives exist, with IT Visibility DCIM as the first package-style example.
 - DCIM now has persisted floorplans, racks, facility objects, and React Flow connection edges.
 
@@ -29,7 +29,7 @@ Known gaps:
 - The Next build cache/worker issue recurs and should be investigated separately from product work.
 - Reporting is now API-first with governed datasets, RBAC-aware query/export endpoints, saved definitions, signed CSV exports, and audit events. KPI depth and BI integration examples remain roadmap work.
 - Operability now includes runtime readiness, configuration audit, job queue summary/dead-letter/requeue endpoints, and supporting queue indexes. Worker heartbeat semantics, HA/DR drills, and release automation remain roadmap work.
-- Release readiness now has `pnpm release:check` and `pnpm prod:ready` gates. JWT expiration and refresh flow is the next security sprint.
+- Release readiness now has `pnpm release:check` and `pnpm prod:ready` gates. Authentication now uses short-lived access tokens, rotating refresh sessions, OAuth provider hooks, and SSO discovery primitives.
 
 ## Sprint 1: Stabilize the Demo Spine
 
@@ -263,7 +263,7 @@ Priority work:
 - Rehearse full backup and restore with Postgres, Neo4j, uploads, migrations, and validation commands.
 - Add production health checks for worker and deeper API dependency health.
 - Define Redis-backed multi-instance behavior for event subscriptions, RBAC/field restriction cache invalidation, websocket state, and rate-limit state.
-- Add JWT expiration and refresh flow.
+- Expand enterprise SSO from discovery/start primitives into full SAML/OIDC assertion validation when an IdP target is selected.
 - Investigate and resolve or permanently document the recurring Next `.next` build artifact issue.
 - Add release checklist automation: migrate status, seed validation, demo readiness, E2E smoke, and artifact cleanup.
 - Document HA/DR topology options and minimum production deployment patterns.
@@ -282,6 +282,10 @@ Implemented:
 - Added `scripts/release-check.sh` with fast/full modes for artifact cleanup, migration status/dry-run, typechecks, tests, builds, seed validation, and browser E2E.
 - Added root scripts `pnpm release:check` and `pnpm prod:ready`.
 - Documented release-readiness flags for dirty worktree enforcement, builds, seed validation, E2E, managed Playwright servers, and Next cache cleanup.
+- Added short-lived access tokens, PostgreSQL-backed refresh sessions with hashed opaque tokens, refresh rotation, logout, session listing, session revocation, invalid/reuse audit events, and browser auto-refresh on 401.
+- Added configured Google/GitHub OAuth login primitives plus enterprise SSO domain discovery/start routes.
+- Added Identity Provider administration in Admin Console with multi-provider SAML/OIDC configuration, domain discovery, JIT/default-role settings, SSO enforcement, and mutation audit events.
+- Hardened auth callbacks with one-time handoff codes, access-token session revocation checks, same-origin return handling, OIDC callback exchange/userinfo retrieval, and SAML ACS fail-closed behavior until the SAML adapter is implemented.
 
 Exit criteria:
 
@@ -305,7 +309,7 @@ Important but not next-sprint critical:
 - Add knowledge freshness automation that turns stale articles into stewarded tasks.
 - Add incident prevention automation that opens prevention candidates from repeated incident patterns.
 - Add advanced DCIM facility modeling only when needed: imported floorplan images, CAD-like walls, zones, elevations, and environmental telemetry overlays.
-- Add JWT expiration, refresh token rotation, session revocation, and auth telemetry.
+- Add SAML assertion validation, IdP metadata ingestion, OIDC ID-token/JWKS validation, and advanced group-to-role mapping.
 
 ## Product Direction Guardrails
 

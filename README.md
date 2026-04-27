@@ -43,7 +43,7 @@ specora2/
 | Graph database | Neo4j Community Edition |
 | Queue / ops database | PostgreSQL 16 |
 | Inter-service protocol | gRPC + Protobuf |
-| Auth | Stateless JWT |
+| Auth | Short-lived JWT access tokens, rotating refresh sessions, OAuth/SSO primitives |
 | Local infrastructure | Docker Compose |
 
 ## CSDMv5 Graph Subset
@@ -113,6 +113,15 @@ Core variables:
 | `NEO4J_PASSWORD` | API, Worker | Neo4j password |
 | `DATABASE_URL` | Worker, API features backed by Postgres | PostgreSQL connection string |
 | `JWT_SECRET` | API | JWT signing secret |
+| `ACCESS_TOKEN_EXPIRES_IN` | API | Optional access-token lifetime, default `15m` |
+| `ACCESS_TOKEN_EXPIRES_IN_SECONDS` | API | Optional browser-facing access-token lifetime in seconds, default `900` |
+| `REFRESH_TOKEN_DAYS` | API | Optional refresh-session lifetime, default `30` |
+| `AUTH_HANDOFF_TTL_SECONDS` | API | Optional OAuth/OIDC one-time handoff lifetime, default `90` |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | API | Optional Google OAuth login provider |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | API | Optional GitHub OAuth login provider |
+| `OAUTH_DEFAULT_ROLE` | API | Optional JIT-created OAuth user role, default `user` |
+| `API_PUBLIC_URL` | API | Public API base URL used for OAuth callbacks |
+| `WEB_PUBLIC_URL` | API | Public web base URL used after OAuth callbacks |
 | `WORKER_GRPC_HOST` | API | Worker gRPC target, for example `worker:50051` |
 | `GRPC_PORT` | Worker | Worker gRPC server port |
 | `NEXT_PUBLIC_API_URL` | Web | GraphQL endpoint URL |

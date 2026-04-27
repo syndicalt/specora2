@@ -216,7 +216,7 @@ The strongest narrative is:
 - Rehearse backup/restore.
 - Add worker health checks and deeper dependency health.
 - Define Redis-backed multi-instance behavior for eventing, RBAC cache invalidation, websocket state, and rate limits.
-- Add JWT expiration and refresh.
+- Add full enterprise SAML/OIDC assertion validation and IdP metadata ingestion.
 - Resolve or permanently document production build artifact issues.
 
 ### 6. Prove AI Reliability

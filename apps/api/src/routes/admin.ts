@@ -10,8 +10,26 @@ import { resolveAppToolPolicy } from "./appToolPolicy";
 
 const CORE_ADMIN_PANELS = [
   { id: "rbac", name: "RBAC", icon: "Shield", permissions: ["rbac:read"] },
+  { id: "identity", name: "Identity Providers", icon: "KeyRound", permissions: ["identity:read"] },
   { id: "number-sequences", name: "Number Sequences", icon: "Hash", permissions: ["number-sequences:read"] },
   { id: "system-properties", name: "System Properties", icon: "Settings", permissions: ["system-properties:read"] },
+];
+
+const CORE_PERMISSION_TARGETS = [
+  permissionTarget("identity", "read", {
+    label: "Identity Provider Administration",
+    category: "Admin",
+    source: "Core admin panel",
+    description: "Allows a role to view SSO and OAuth provider configuration posture.",
+    risk: "high",
+  }),
+  permissionTarget("identity", "write", {
+    label: "Identity Provider Administration",
+    category: "Admin",
+    source: "Core admin panel",
+    description: "Allows a role to create, update, activate, or disable enterprise identity providers.",
+    risk: "critical",
+  }),
 ];
 
 const BUILT_IN_APP_PANELS = [
@@ -60,7 +78,7 @@ function normalizeSequenceConfig(body: { prefix?: string; nextValue?: number; pa
 }
 
 function permissionRisk(resource: string, action: string) {
-  if (resource === "rbac" || resource === "system-properties") return "critical";
+  if (resource === "rbac" || resource === "system-properties" || resource === "identity") return "critical";
   if (resource.startsWith("field:") && action === "write") return "high";
   if (resource.startsWith("field:")) return "medium";
   if (["admin", "govern", "approve", "remediate", "delete"].includes(action)) return "high";
@@ -71,7 +89,7 @@ function permissionRisk(resource: string, action: string) {
 function permissionCategory(resource: string, action: string) {
   if (resource.startsWith("field:")) return "Field";
   if (resource === "tables" || resource.startsWith("pg.") || resource.startsWith("cmdb.")) return "Table";
-  if (resource === "rbac" || resource === "system-properties" || resource === "number-sequences") return "Admin";
+  if (resource === "rbac" || resource === "system-properties" || resource === "number-sequences" || resource === "identity") return "Admin";
   if (resource.includes("package") || resource.includes("provision")) return "Package";
   if (["operate", "execute", "approve", "remediate"].includes(action)) return "Automation";
   return "Application";
@@ -105,6 +123,9 @@ function permissionDescription(resource: string, action: string, label?: string)
   }
   if (resource === "number-sequences") {
     return "Controls record-number sequence registration and counter maintenance.";
+  }
+  if (resource === "identity") {
+    return "Controls enterprise identity provider configuration, SSO discovery, and login governance.";
   }
   return `Allows a role to ${actionPhrase(action)} ${label || resource}.`;
 }
@@ -157,6 +178,89 @@ function exportSignature(body: string, secret?: string) {
   const digest = createHash("sha256").update(body).digest("hex");
   const signature = createHmac("sha256", secret || "specora-dev-secret").update(digest).digest("hex");
   return { digest, signature, algorithm: "sha256+hmac-sha256" };
+}
+
+function normalizeStringArray(value: unknown, fallback: string[] = []) {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[,\n]/)
+      : fallback;
+  return Array.from(new Set(raw.map((item) => String(item).trim()).filter(Boolean)));
+}
+
+function normalizeSsoConfigBody(body: any, partial = false) {
+  const provider = body.provider === undefined ? undefined : String(body.provider).toLowerCase();
+  if (provider !== undefined && !["saml", "oidc"].includes(provider)) {
+    return { error: "provider must be saml or oidc" };
+  }
+  const status = body.status === undefined ? undefined : String(body.status).toLowerCase();
+  if (status !== undefined && !["active", "inactive"].includes(status)) {
+    return { error: "status must be active or inactive" };
+  }
+  const domains = body.emailDomains === undefined ? undefined : normalizeStringArray(body.emailDomains).map((domain) => domain.toLowerCase());
+  if (!partial && (!body.name || !provider || !domains?.length)) {
+    return { error: "name, provider, and at least one email domain are required" };
+  }
+  if (domains?.some((domain) => !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain))) {
+    return { error: "email domains must be valid domain names" };
+  }
+  const scopes = body.scopes === undefined ? undefined : normalizeStringArray(body.scopes, ["openid", "email", "profile"]);
+  const attributeMapping = body.attributeMapping === undefined ? undefined : {
+    email: String(body.attributeMapping?.email || "email"),
+    name: String(body.attributeMapping?.name || "name"),
+    groups: String(body.attributeMapping?.groups || "groups"),
+  };
+  return {
+    name: body.name === undefined ? undefined : String(body.name).trim(),
+    provider,
+    status,
+    emailDomains: domains,
+    idpEntityId: body.idpEntityId === undefined ? undefined : String(body.idpEntityId).trim(),
+    idpSsoUrl: body.idpSsoUrl === undefined ? undefined : String(body.idpSsoUrl).trim(),
+    idpCert: body.idpCert === undefined ? undefined : String(body.idpCert).trim(),
+    spEntityId: body.spEntityId === undefined ? undefined : String(body.spEntityId).trim(),
+    metadataUrl: body.metadataUrl === undefined ? undefined : String(body.metadataUrl).trim(),
+    clientId: body.clientId === undefined ? undefined : String(body.clientId).trim(),
+    clientSecretRef: body.clientSecretRef === undefined ? undefined : String(body.clientSecretRef).trim(),
+    issuerUrl: body.issuerUrl === undefined ? undefined : String(body.issuerUrl).trim(),
+    authorizationUrl: body.authorizationUrl === undefined ? undefined : String(body.authorizationUrl).trim(),
+    tokenUrl: body.tokenUrl === undefined ? undefined : String(body.tokenUrl).trim(),
+    userinfoUrl: body.userinfoUrl === undefined ? undefined : String(body.userinfoUrl).trim(),
+    scopes,
+    enforceSso: body.enforceSso === undefined ? undefined : body.enforceSso === true,
+    jitEnabled: body.jitEnabled === undefined ? undefined : body.jitEnabled !== false,
+    defaultRole: body.defaultRole === undefined ? undefined : String(body.defaultRole || "user").trim(),
+    attributeMapping,
+  };
+}
+
+function ssoConfigRow(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    provider: row.provider,
+    status: row.status,
+    emailDomains: row.email_domains || [],
+    idpEntityId: row.idp_entity_id || "",
+    idpSsoUrl: row.idp_sso_url || "",
+    idpCertPresent: Boolean(row.idp_cert),
+    spEntityId: row.sp_entity_id || "",
+    metadataUrl: row.metadata_url || "",
+    jitEnabled: row.jit_enabled,
+    clientId: row.client_id || "",
+    clientSecretRef: row.client_secret_ref || "",
+    issuerUrl: row.issuer_url || "",
+    authorizationUrl: row.authorization_url || "",
+    tokenUrl: row.token_url || "",
+    userinfoUrl: row.userinfo_url || "",
+    scopes: row.scopes || ["openid", "email", "profile"],
+    enforceSso: row.enforce_sso,
+    defaultRole: row.default_role || "user",
+    attributeMapping: row.attribute_mapping || { email: "email", name: "name", groups: "groups" },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 type AdminTableField = { name: string; label: string; writable: boolean };
@@ -1111,6 +1215,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         ...permissionsResult.rows.map((permission: any) => permission.role).filter(Boolean),
       ])).sort();
       const permissionEntries: Array<[string, any]> = [
+        ...CORE_PERMISSION_TARGETS.map((target): [string, any] => [`${target.resource}:${target.action}`, target]),
         ...permissionsResult.rows.map((permission: any): [string, any] => [
           `${permission.resource}:${permission.action}`,
           permissionTarget(permission.resource, permission.action, { source: "Existing Grant" }),
@@ -1326,6 +1431,186 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to build operational intelligence" });
+    }
+  });
+
+  fastify.get("/api/admin/identity/sso-configs", { onRequest: [fastify.authenticate, requirePermission("identity", "read")] }, async (_request, reply) => {
+    try {
+      const result = await fastify.pg.query(
+        `SELECT id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+                metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at
+         FROM sso_configs
+         ORDER BY status DESC, name`
+      );
+      return {
+        configs: result.rows.map(ssoConfigRow),
+        providers: [
+          { id: "saml", name: "SAML 2.0" },
+          { id: "oidc", name: "OpenID Connect" },
+        ],
+      };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to fetch identity providers" });
+    }
+  });
+
+  fastify.post("/api/admin/identity/sso-configs", { onRequest: [fastify.authenticate, requirePermission("identity", "write")] }, async (request, reply) => {
+    const config = normalizeSsoConfigBody(request.body);
+    if ("error" in config) return reply.status(400).send({ error: config.error });
+    try {
+      const result = await fastify.pg.query(
+        `INSERT INTO sso_configs (
+           name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+           metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+           token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+         RETURNING id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+                   metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                   token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at`,
+        [
+          config.name,
+          config.provider,
+          config.status || "inactive",
+          JSON.stringify(config.emailDomains),
+          config.idpEntityId || null,
+          config.idpSsoUrl || null,
+          config.idpCert || null,
+          config.spEntityId || null,
+          config.metadataUrl || null,
+          config.jitEnabled !== false,
+          config.clientId || null,
+          config.clientSecretRef || null,
+          config.issuerUrl || null,
+          config.authorizationUrl || null,
+          config.tokenUrl || null,
+          config.userinfoUrl || null,
+          JSON.stringify(config.scopes || ["openid", "email", "profile"]),
+          config.enforceSso === true,
+          config.defaultRole || "user",
+          JSON.stringify(config.attributeMapping || { email: "email", name: "name", groups: "groups" }),
+        ]
+      );
+      const row = ssoConfigRow(result.rows[0]);
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "identity.sso_config.created",
+        entityType: "SsoConfig",
+        entityId: row.id,
+        newValues: row,
+        metadata: { source: "api.admin", surface: "admin-console", provider: row.provider },
+      });
+      return { config: row };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to create identity provider" });
+    }
+  });
+
+  fastify.patch("/api/admin/identity/sso-configs/:id", { onRequest: [fastify.authenticate, requirePermission("identity", "write")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const config = normalizeSsoConfigBody(request.body, true);
+    if ("error" in config) return reply.status(400).send({ error: config.error });
+    try {
+      const existing = await fastify.pg.query(
+        `SELECT id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+                metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at
+         FROM sso_configs WHERE id = $1`,
+        [id]
+      );
+      const result = await fastify.pg.query(
+        `UPDATE sso_configs SET
+           name = COALESCE($2, name),
+           provider = COALESCE($3, provider),
+           status = COALESCE($4, status),
+           email_domains = COALESCE($5, email_domains),
+           idp_entity_id = COALESCE($6, idp_entity_id),
+           idp_sso_url = COALESCE($7, idp_sso_url),
+           idp_cert = COALESCE($8, idp_cert),
+           sp_entity_id = COALESCE($9, sp_entity_id),
+           metadata_url = COALESCE($10, metadata_url),
+           jit_enabled = COALESCE($11, jit_enabled),
+           client_id = COALESCE($12, client_id),
+           client_secret_ref = COALESCE($13, client_secret_ref),
+           issuer_url = COALESCE($14, issuer_url),
+           authorization_url = COALESCE($15, authorization_url),
+           token_url = COALESCE($16, token_url),
+           userinfo_url = COALESCE($17, userinfo_url),
+           scopes = COALESCE($18, scopes),
+           enforce_sso = COALESCE($19, enforce_sso),
+           default_role = COALESCE($20, default_role),
+           attribute_mapping = COALESCE($21, attribute_mapping),
+           updated_at = NOW()
+         WHERE id = $1
+         RETURNING id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+                   metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                   token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at`,
+        [
+          id,
+          config.name || null,
+          config.provider || null,
+          config.status || null,
+          config.emailDomains ? JSON.stringify(config.emailDomains) : null,
+          config.idpEntityId || null,
+          config.idpSsoUrl || null,
+          config.idpCert || null,
+          config.spEntityId || null,
+          config.metadataUrl || null,
+          config.jitEnabled ?? null,
+          config.clientId || null,
+          config.clientSecretRef || null,
+          config.issuerUrl || null,
+          config.authorizationUrl || null,
+          config.tokenUrl || null,
+          config.userinfoUrl || null,
+          config.scopes ? JSON.stringify(config.scopes) : null,
+          config.enforceSso ?? null,
+          config.defaultRole || null,
+          config.attributeMapping ? JSON.stringify(config.attributeMapping) : null,
+        ]
+      );
+      if (!result.rows.length) return reply.status(404).send({ error: "Identity provider not found" });
+      const row = ssoConfigRow(result.rows[0]);
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "identity.sso_config.updated",
+        entityType: "SsoConfig",
+        entityId: row.id,
+        oldValues: existing.rows[0] ? ssoConfigRow(existing.rows[0]) : undefined,
+        newValues: row,
+        metadata: { source: "api.admin", surface: "admin-console", provider: row.provider },
+      });
+      return { config: row };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to update identity provider" });
+    }
+  });
+
+  fastify.delete("/api/admin/identity/sso-configs/:id", { onRequest: [fastify.authenticate, requirePermission("identity", "write")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      const existing = await fastify.pg.query(
+        "SELECT id, name, provider, status, email_domains FROM sso_configs WHERE id = $1",
+        [id]
+      );
+      const result = await fastify.pg.query("DELETE FROM sso_configs WHERE id = $1 RETURNING id", [id]);
+      if (!result.rows.length) return reply.status(404).send({ error: "Identity provider not found" });
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "identity.sso_config.deleted",
+        entityType: "SsoConfig",
+        entityId: id,
+        oldValues: existing.rows[0] || { id },
+        metadata: { source: "api.admin", surface: "admin-console" },
+      });
+      return { success: true };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to delete identity provider" });
     }
   });
 

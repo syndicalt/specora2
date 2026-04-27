@@ -1,5 +1,7 @@
-export * from "./types";
 import type { RegistryEntry, AppManifest } from "./types";
+import { authFetch, getToken } from "@/lib/auth";
+
+export * from "./types";
 
 const DB_NAME = "specora_platform";
 const DB_VERSION = 1;
@@ -51,11 +53,6 @@ function getApiBase() {
   return process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
 }
 
-function getToken() {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("specora_token");
-}
-
 export async function syncServerRegistry(): Promise<RegistryEntry[]> {
   const token = getToken();
   if (!token) {
@@ -63,7 +60,7 @@ export async function syncServerRegistry(): Promise<RegistryEntry[]> {
     return getRegistry();
   }
 
-  const response = await fetch(`${getApiBase()}/api/apps/registry`, {
+  const response = await authFetch(`${getApiBase()}/api/apps/registry`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
@@ -116,7 +113,7 @@ export async function getAvailableRegistry(): Promise<RegistryEntry[]> {
     await seedBuiltInApps();
     return getRawRegistry();
   }
-  const response = await fetch(`${getApiBase()}/api/apps/catalog`, {
+  const response = await authFetch(`${getApiBase()}/api/apps/catalog`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
@@ -131,7 +128,7 @@ export async function getAvailableRegistry(): Promise<RegistryEntry[]> {
 export async function reinstallOptionalApp(id: string): Promise<void> {
   const token = getToken();
   if (!token) return seedBuiltInApps();
-  const response = await fetch(`${getApiBase()}/api/apps/${id}/install`, {
+  const response = await authFetch(`${getApiBase()}/api/apps/${id}/install`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -142,7 +139,7 @@ export async function reinstallOptionalApp(id: string): Promise<void> {
 export async function uninstallApp(id: string, clearData: boolean = false): Promise<void> {
   const token = getToken();
   if (token) {
-    const response = await fetch(`${getApiBase()}/api/apps/${id}/uninstall`, {
+    const response = await authFetch(`${getApiBase()}/api/apps/${id}/uninstall`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ clearData, dataRetentionPolicy: clearData ? "purge" : "retain" }),
