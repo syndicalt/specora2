@@ -15,6 +15,7 @@ This directory contains product, architecture, operations, and quality documenta
 - [Database Performance Audit](database-performance-audit.md)
 - [Backup and Restore Guide](backup-and-restore.md)
 - [Audit Contract](audit-contract.md)
+- [Reporting API](reporting-api.md)
 
 ## Supporting Notes
 

@@ -1026,7 +1026,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     if (!table) return reply.status(404).send({ error: "Table not found" });
     const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
     const recordIds = Array.isArray(body.recordIds)
-      ? Array.from(new Set(body.recordIds.filter((id): id is string => typeof id === "string" && id.trim()).map((id) => id.trim()))).slice(0, 1000)
+      ? Array.from(new Set(body.recordIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0).map((id) => id.trim()))).slice(0, 1000)
       : [];
     if (!recordIds.length) return reply.status(400).send({ error: "recordIds required" });
     const columns = exportColumns(tableForUser, body.columns, access);

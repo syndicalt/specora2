@@ -14,7 +14,7 @@ What is working well:
 - Customer Portal now provides the core self-service front door with catalog requests, AI intent resolution, and contextual support handoff primitives.
 - Provara is back as the primary LLM router with tool-call support.
 - CSDMv5-aligned seed data provides a connected 5,000-CI CMDB narrative.
-- API route coverage is improving and currently passes at 359 tests.
+- API route coverage is improving and currently passes at 367 tests.
 - Optional premium app primitives exist, with IT Visibility DCIM as the first package-style example.
 - DCIM now has persisted floorplans, racks, facility objects, and React Flow connection edges.
 
@@ -27,7 +27,7 @@ Known gaps:
 - Admin RBAC now has server-side field read/write enforcement for Tables, field restriction management, app/tool/table access explainers, drift detection, bulk grants, and searchable/exportable audit evidence.
 - Package installation now has an authoritative server-side installation state and completed provisioning job audit trail; production entitlement/payment/rollback depth is still backlog work.
 - The Next build cache/worker issue recurs and should be investigated separately from product work.
-- Reporting is intentionally API-first today. A rich Reporting API surface is still needed before serious enterprise evaluation.
+- Reporting is now API-first with governed datasets, RBAC-aware query/export endpoints, saved definitions, signed CSV exports, and audit events. KPI depth and BI integration examples remain roadmap work.
 
 ## Sprint 1: Stabilize the Demo Spine
 
@@ -214,6 +214,17 @@ Priority work:
 - Add metadata endpoints so external BI tools can discover dimensions, measures, filters, and refresh expectations.
 - Add reporting API tests against seeded enterprise data.
 - Document Grafana/PowerBI/Tableau integration patterns and recommended dashboards.
+
+Implemented:
+
+- Added `report_saved_definitions` for per-user saved report definitions.
+- Added `reporting:read` and `reporting:write` permissions.
+- Added canonical API datasets for Incidents, Changes, Catalog Requests, Knowledge, Assets, Discovery Jobs, and Audit Events.
+- Added dataset metadata endpoints so clients can discover columns, filterability, groupability, and default grouping.
+- Added shared query conventions for time windows, filters, grouping, pagination, JSON response, and CSV export.
+- Added signed CSV export headers and audit events for report query/export activity.
+- Added saved report create/update/delete endpoints with audit events.
+- Added API tests for dataset listing, grouped queries, signed CSV export, saved report definitions, and RBAC denial.
 
 Exit criteria:
 

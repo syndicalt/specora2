@@ -713,7 +713,17 @@ function toolNameParts(fullName: string) {
   return { appId: fullName.slice(0, splitAt), toolName: fullName.slice(splitAt + 1) };
 }
 
-function registeredAppTools() {
+type RegisteredAppTool = {
+  appId: string;
+  toolName: string;
+  fullName: string;
+  description: string;
+  parameters: any;
+  resource: string;
+  action: string;
+};
+
+function registeredAppTools(): RegisteredAppTool[] {
   return getAllAppToolDefinitions()
     .map((tool: any) => {
       const parts = toolNameParts(tool.name);
@@ -729,8 +739,8 @@ function registeredAppTools() {
         action: policy.action,
       };
     })
-    .filter((tool): tool is NonNullable<typeof tool> => Boolean(tool))
-    .sort((a, b) => `${a.appId}:${a.toolName}`.localeCompare(`${b.appId}:${b.toolName}`));
+    .filter((tool: RegisteredAppTool | null): tool is RegisteredAppTool => Boolean(tool))
+    .sort((a: RegisteredAppTool, b: RegisteredAppTool) => `${a.appId}:${a.toolName}`.localeCompare(`${b.appId}:${b.toolName}`));
 }
 
 async function buildPolicyDrift(fastify: FastifyInstance) {
@@ -831,7 +841,7 @@ async function explainToolAccess(
   const { user, role } = await resolveAccessSubject(fastify, body);
   if (!role) return { error: "user or role required" };
 
-  const tool = registeredAppTools().find((candidate) => candidate.appId === appId && candidate.toolName === toolName);
+  const tool = registeredAppTools().find((candidate: RegisteredAppTool) => candidate.appId === appId && candidate.toolName === toolName);
   if (!tool) return { error: "tool not found" };
 
   const grantsResult = await fastify.pg.query(

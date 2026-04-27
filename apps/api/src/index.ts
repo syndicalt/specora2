@@ -27,6 +27,7 @@ import { knowledgeAutomationRoutes } from "./routes/knowledgeAutomation";
 import { preventionAutomationRoutes } from "./routes/preventionAutomation";
 import { assetAutomationRoutes } from "./routes/assetAutomation";
 import { itVisibilityRoutes } from "./routes/itVisibility";
+import { reportingRoutes } from "./routes/reporting";
 import { initializeAuditLog } from "./services/auditLog";
 import { websocketRoutes } from "./services/websocket";
 import { initializeEventBus } from "./services/eventBus";
@@ -98,6 +99,7 @@ async function main() {
   await fastify.register(preventionAutomationRoutes);
   await fastify.register(assetAutomationRoutes);
   await fastify.register(itVisibilityRoutes);
+  await fastify.register(reportingRoutes);
 
   initializeAuditLog(fastify);
   startDiscoveryScheduler(fastify);
