@@ -204,6 +204,7 @@ Implemented:
 - Added readable filter chips for current filters and saved view summaries, with one-click removal from the active filter strip.
 - Added low-risk bulk update from selected rows, still routed through existing field-aware, audited record update endpoints.
 - Added an audited bulk cleanup review queue for selected records, registered as a platform table for follow-up stewardship work.
+- Added a Tables-native Stewardship Queue workbench for cleanup review triage, record opening, start, resolve, and dismiss actions.
 - Preserved existing saved filters, column sets, density, inline edit, export, delete, and audit diff behavior.
 
 Exit criteria:

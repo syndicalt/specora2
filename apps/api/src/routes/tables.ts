@@ -416,6 +416,11 @@ function normalizeSeverity(value: unknown): "low" | "medium" | "high" | "critica
   return value === "low" || value === "high" || value === "critical" ? value : "medium";
 }
 
+function normalizeCleanupStatus(value: unknown): "open" | "in_progress" | "resolved" | "dismissed" {
+  if (value === "in_progress" || value === "resolved" || value === "dismissed") return value;
+  return "open";
+}
+
 function sanitizeSortField(table: TableDefinition, field: unknown, access?: Map<string, FieldAccess>): string {
   const fallback = table.provider === "postgres-table" ? "name" : "name";
   if (typeof field !== "string") return fallback;
@@ -438,6 +443,24 @@ function tableViewRow(row: any) {
     sortDirection: normalizeSortDirection(row.sort_direction),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function cleanupReviewRow(row: any) {
+  return {
+    id: row.id,
+    tableId: row.table_id,
+    tableLabel: row.table_label || row.table_id,
+    recordId: row.record_id,
+    recordLabel: row.record_label || row.record_id,
+    reason: row.reason,
+    severity: row.severity,
+    status: row.status,
+    requestedBy: row.requested_by,
+    requesterName: row.requester_name || null,
+    requesterEmail: row.requester_email || null,
+    createdAt: timestampString(row.created_at),
+    updatedAt: timestampString(row.updated_at),
   };
 }
 
@@ -1056,6 +1079,88 @@ export async function tableRoutes(fastify: FastifyInstance) {
     if (!table) return reply.status(404).send({ error: "Table not found" });
     const withAccess = await tableWithFieldAccess(fastify, role!, table);
     return { table: withAccess.table };
+  });
+
+  fastify.get("/api/tables/cleanup-reviews", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const query = request.query as { status?: string; tableId?: string; limit?: string; offset?: string };
+    const limit = Math.min(Math.max(Number(query.limit || 100), 1), 250);
+    const offset = Math.max(Number(query.offset || 0), 0);
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (query.status && query.status !== "all") {
+      params.push(normalizeCleanupStatus(query.status));
+      where.push(`r.status = $${params.length}`);
+    }
+    if (query.tableId?.trim()) {
+      params.push(query.tableId.trim());
+      where.push(`r.table_id = $${params.length}`);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    params.push(limit);
+    const limitParam = `$${params.length}`;
+    params.push(offset);
+    const offsetParam = `$${params.length}`;
+    const result = await fastify.pg.query(
+      `SELECT r.id, r.table_id, r.record_id, r.record_label, r.reason, r.severity, r.status, r.requested_by,
+              r.created_at, r.updated_at, u.name AS requester_name, u.email AS requester_email
+       FROM table_cleanup_reviews r
+       LEFT JOIN users u ON u.id = r.requested_by
+       ${whereSql}
+       ORDER BY
+         CASE r.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+         r.updated_at DESC
+       LIMIT ${limitParam} OFFSET ${offsetParam}`,
+      params
+    );
+    const count = await fastify.pg.query(`SELECT COUNT(*)::int AS total FROM table_cleanup_reviews r ${whereSql}`, params.slice(0, -2));
+    const tables = await getTables(fastify);
+    const labels = new Map(tables.map((table) => [table.id, table.label]));
+    return {
+      reviews: result.rows.map((row: any) => cleanupReviewRow({ ...row, table_label: labels.get(row.table_id) })),
+      total: count.rows[0]?.total || 0,
+      limit,
+      offset,
+    };
+  });
+
+  fastify.patch("/api/tables/cleanup-reviews/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot write tables" });
+    }
+    const { id } = request.params as { id: string };
+    const body = request.body as { status?: string };
+    const status = normalizeCleanupStatus(body.status);
+    const before = await fastify.pg.query(
+      `SELECT id, table_id, record_id, record_label, reason, severity, status, requested_by, created_at, updated_at
+       FROM table_cleanup_reviews
+       WHERE id = $1`,
+      [id]
+    );
+    const oldRow = before.rows[0];
+    if (!oldRow) return reply.status(404).send({ error: "Cleanup review not found" });
+    const result = await fastify.pg.query(
+      `UPDATE table_cleanup_reviews
+       SET status = $2, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, table_id, record_id, record_label, reason, severity, status, requested_by, created_at, updated_at`,
+      [id, status]
+    );
+    const row = result.rows[0];
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "table.cleanup_review.status_updated",
+      entityType: "TableCleanupReview",
+      entityId: id,
+      oldValues: cleanupReviewRow(oldRow),
+      newValues: cleanupReviewRow(row),
+      metadata: { source: "api.tables", tableId: row.table_id, recordId: row.record_id },
+    });
+    return { review: cleanupReviewRow(row) };
   });
 
   fastify.get("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {

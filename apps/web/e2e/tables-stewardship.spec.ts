@@ -62,6 +62,14 @@ test.describe("Tables stewardship cockpit", () => {
       await page.getByRole("button", { name: "Queue review" }).click();
       await expect(page.getByText("Queued 1 cleanup review")).toBeVisible();
 
+      await page.getByRole("button", { name: "Stewardship", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Stewardship Queue" })).toBeVisible();
+      await expect(page.getByText(name)).toBeVisible();
+      await page.getByRole("button", { name: "Resolve" }).click();
+      await expect(page.getByText("Cleanup review resolved")).toBeVisible();
+      await expect(page.getByText(name)).toHaveCount(0);
+      await page.getByRole("button", { name: "Records" }).click();
+
       await row.getByRole("button", { name: /issues?/ }).click();
       await expect(page.getByText("Validation issues")).toBeVisible();
       await expect(page.getByText("City is missing")).toBeVisible();

@@ -346,6 +346,75 @@ describe("tableRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.cleanup_review.queued", "TableCleanupReview", "cmdb.Location"]));
   });
 
+  it("lists and transitions cleanup reviews", async () => {
+    const pgHandler = (sql: string, params?: any[]) => {
+      if (sql.includes("FROM table_cleanup_reviews r") && sql.includes("COUNT")) {
+        return { rows: [{ total: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("FROM table_cleanup_reviews r")) {
+        return {
+          rows: [{
+            id: "review-1",
+            table_id: "cmdb.Location",
+            record_id: "loc-1",
+            record_label: "HQ",
+            reason: "Missing evidence",
+            severity: "high",
+            status: "open",
+            requested_by: null,
+            requester_name: null,
+            requester_email: null,
+            created_at: "2026-04-27T00:00:00.000Z",
+            updated_at: "2026-04-27T00:00:00.000Z",
+          }],
+        };
+      }
+      if (sql.includes("FROM table_cleanup_reviews") && sql.includes("WHERE id = $1")) {
+        return {
+          rows: [{
+            id: params?.[0],
+            table_id: "cmdb.Location",
+            record_id: "loc-1",
+            record_label: "HQ",
+            reason: "Missing evidence",
+            severity: "high",
+            status: "open",
+            requested_by: null,
+            created_at: "2026-04-27T00:00:00.000Z",
+            updated_at: "2026-04-27T00:00:00.000Z",
+          }],
+        };
+      }
+      if (sql.includes("UPDATE table_cleanup_reviews")) {
+        return {
+          rows: [{
+            id: params?.[0],
+            table_id: "cmdb.Location",
+            record_id: "loc-1",
+            record_label: "HQ",
+            reason: "Missing evidence",
+            severity: "high",
+            status: params?.[1],
+            requested_by: null,
+            created_at: "2026-04-27T00:00:00.000Z",
+            updated_at: "2026-04-27T01:00:00.000Z",
+          }],
+        };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "admin" }, makeNeo4j(), pgHandler);
+
+    const listed = await app.inject({ method: "GET", url: "/api/tables/cleanup-reviews?status=open" });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.body).reviews[0]).toMatchObject({ id: "review-1", tableId: "cmdb.Location", tableLabel: "Location", status: "open" });
+
+    const updated = await app.inject({ method: "PATCH", url: "/api/tables/cleanup-reviews/review-1", payload: { status: "resolved" } });
+    expect(updated.statusCode).toBe(200);
+    expect(JSON.parse(updated.body).review).toMatchObject({ id: "review-1", status: "resolved" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.cleanup_review.status_updated", "TableCleanupReview", "review-1"]));
+  });
+
   it("creates, updates, reads, and deletes a table record", async () => {
     const neo4j = makeNeo4j([
       [makeRecord({ n: makeNode({ id: "loc-2", name: "Remote", class: "Location", attributes: "{\"city\":\"Denver\"}" }) })],
