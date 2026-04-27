@@ -147,6 +147,10 @@ function isValueOperator(operator: FilterOperator) {
   return OPERATORS.find((item) => item.value === operator)?.needsValue ?? true;
 }
 
+function operatorLabel(operator: FilterOperator) {
+  return OPERATORS.find((item) => item.value === operator)?.label || operator;
+}
+
 function formatValue(value: unknown) {
   if (value === undefined || value === null || value === "") return "-";
   if (typeof value === "object") return JSON.stringify(value);
@@ -231,6 +235,12 @@ function validationIssuesForForm(table: TableDef, form: Record<string, string>):
 
 function isRelationshipFilter(key: string) {
   return RELATIONSHIP_FILTER_KEYS.has(key);
+}
+
+function displayRelationshipValue(filter: Pick<TableFilter, "field" | "value">) {
+  if (filter.field === "__relationshipState") return filter.value === "connected" ? "Connected" : "Orphaned";
+  if (filter.field === "__relationshipType") return String(filter.value || "").replaceAll("_", " ");
+  return String(filter.value || "");
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -548,6 +558,13 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       }
       return next;
     }));
+  }
+
+  function filterChipLabel(filter: Pick<TableFilter, "field" | "operator" | "value">) {
+    const fieldLabel = filterColumns.find((column) => column.key === filter.field)?.label || tableAttr(filter.field)?.displayName || filter.field;
+    if (!isValueOperator(filter.operator)) return `${fieldLabel} ${operatorLabel(filter.operator)}`;
+    const value = isRelationshipFilter(filter.field) ? displayRelationshipValue(filter) : String(filter.value || "");
+    return `${fieldLabel} ${operatorLabel(filter.operator)} ${value || "..."}`;
   }
 
   function removeFilter(id: string) {
@@ -935,6 +952,16 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                   <button onClick={() => applySavedView(view)} className="min-w-0 flex-1 text-left">
                     <div className="truncate text-xs font-medium text-gray-300">{view.name}</div>
                     <div className="truncate text-[10px] text-gray-600">{view.columns.length || "default"} columns / {view.filters.length} filters</div>
+                    {view.filters.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {view.filters.slice(0, 2).map((filter, index) => (
+                          <span key={`${filter.field}:${filter.operator}:${index}`} className="max-w-full truncate rounded border border-gray-800 bg-gray-950 px-1.5 py-0.5 text-[10px] text-gray-500">
+                            {filterChipLabel({ field: filter.field, operator: filter.operator, value: filter.value === undefined || filter.value === null ? "" : String(filter.value) })}
+                          </span>
+                        ))}
+                        {view.filters.length > 2 && <span className="rounded border border-gray-800 bg-gray-950 px-1.5 py-0.5 text-[10px] text-gray-600">+{view.filters.length - 2}</span>}
+                      </div>
+                    )}
                   </button>
                   <button onClick={() => deleteSavedView(view)} className="rounded p-1 text-gray-600 opacity-0 hover:text-red-300 group-hover:opacity-100" title="Delete view">
                     <Trash2 className="h-3.5 w-3.5" />
@@ -1035,6 +1062,27 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               </button>
             )}
           </div>
+
+          {filters.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-gray-600">Filters</span>
+              {filters.map((filter) => (
+                <button
+                  key={filter.id}
+                  type="button"
+                  onClick={() => removeFilter(filter.id)}
+                  title="Remove filter"
+                  className="inline-flex max-w-[360px] items-center gap-1.5 rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-xs text-indigo-100 hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-100"
+                >
+                  <span className="truncate">{filterChipLabel(filter)}</span>
+                  <X className="h-3 w-3 shrink-0" />
+                </button>
+              ))}
+              <button onClick={() => setFiltersOpen(true)} className="rounded-full border border-gray-800 px-2.5 py-1 text-xs text-gray-500 hover:border-gray-700 hover:text-gray-200">
+                Edit filters
+              </button>
+            </div>
+          )}
 
           {filtersOpen && (
             <div className="mt-3 space-y-2">

@@ -42,6 +42,14 @@ test.describe("Tables stewardship cockpit", () => {
 
       await openApp(page, "tables", "tables");
       await page.getByTestId("tables-table-cmdb.Location").click();
+
+      await page.getByRole("button", { name: "Add filter" }).click();
+      await page.getByPlaceholder("Value").fill(name);
+      const filterChip = page.getByRole("button", { name: new RegExp(`Name contains ${name}`) });
+      await expect(filterChip).toBeVisible();
+      await filterChip.click();
+      await expect(filterChip).toHaveCount(0);
+
       await page.getByPlaceholder("Search name, ID, or environment").fill(name);
       await page.getByRole("button", { name: "Apply" }).click();
 
