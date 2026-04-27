@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:https": "PORT=4443 API_PUBLIC_URL=https://localhost:4443 WEB_PUBLIC_URL=https://localhost:3443 HTTPS_KEY_FILE=../../certs/localhost-key.pem HTTPS_CERT_FILE=../../certs/localhost-cert.pem tsx watch src/index.ts",
     "build": "tsc",
     "lint": "eslint src/",
     "start": "node dist/index.js",

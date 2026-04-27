@@ -5,6 +5,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "dev:https": "pnpm certs:localhost && turbo run dev:https --filter @specora/api --filter @specora/web",
     "lint": "turbo run lint",
     "test": "turbo run test",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
@@ -16,7 +17,8 @@
     "validate:seed": "bash scripts/validate-seed.sh",
     "demo:ready": "bash scripts/demo-readiness.sh",
     "release:check": "bash scripts/release-check.sh",
-    "prod:ready": "RELEASE_CHECK_MODE=full bash scripts/release-check.sh"
+    "prod:ready": "RELEASE_CHECK_MODE=full bash scripts/release-check.sh",
+    "certs:localhost": "bash scripts/generate-localhost-certs.sh"
   },
   "devDependencies": {
     "prettier": "^3.8.3",

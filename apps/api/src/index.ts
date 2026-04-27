@@ -1,5 +1,6 @@
 import "dotenv/config";
 import Fastify from "fastify";
+import { readFileSync } from "fs";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import rateLimit from "@fastify/rate-limit";
@@ -36,7 +37,22 @@ import { registerAllAppTools } from "./services/appTools";
 import { startDiscoveryScheduler } from "./services/discoveryScheduler";
 import { buildReadiness } from "./services/operability";
 
-const fastify = Fastify({ logger: { transport: { target: "pino-pretty" } } });
+function localHttpsOptions() {
+  const keyPath = process.env.HTTPS_KEY_FILE || process.env.SSL_KEY_FILE;
+  const certPath = process.env.HTTPS_CERT_FILE || process.env.SSL_CERT_FILE;
+  if (!keyPath || !certPath) return undefined;
+  return {
+    key: readFileSync(keyPath),
+    cert: readFileSync(certPath),
+  };
+}
+
+const httpsOptions = localHttpsOptions();
+
+const fastify: any = Fastify({
+  logger: { transport: { target: "pino-pretty" } },
+  https: httpsOptions,
+} as any);
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -106,7 +122,7 @@ async function main() {
   startDiscoveryScheduler(fastify);
 
   fastify.get("/health", async () => ({ status: "ok" }));
-  fastify.get("/ready", async (_request, reply) => {
+  fastify.get("/ready", async (_request: any, reply: any) => {
     const readiness = await buildReadiness(fastify);
     if (readiness.status === "fail") return reply.status(503).send(readiness);
     return readiness;
@@ -129,7 +145,7 @@ async function main() {
     url: "/graphql",
     method: ["POST", "GET", "OPTIONS"],
     onRequest: fastify.authenticate,
-    handler: async (req, reply) => {
+    handler: async (req: any, reply: any) => {
       const response = await yoga.handleNodeRequest(req, { req, reply } as any);
       response.headers.forEach((value, key) => reply.header(key, value));
       reply.status(response.status);
@@ -140,7 +156,8 @@ async function main() {
 
   const port = Number(process.env.PORT || 4000);
   await fastify.listen({ port, host: "0.0.0.0" });
-  fastify.log.info(`API running on http://0.0.0.0:${port}/graphql`);
+  const protocol = httpsOptions ? "https" : "http";
+  fastify.log.info(`API running on ${protocol}://0.0.0.0:${port}/graphql`);
 }
 
 main().catch((err) => {

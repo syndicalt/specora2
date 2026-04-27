@@ -17,6 +17,10 @@ out/
 # Logs
 *.log
 
+# Local HTTPS certificates
+certs/*.pem
+certs/*.cnf
+
 # IDEs
 .idea/
 .vscode/

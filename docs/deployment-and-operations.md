@@ -112,6 +112,14 @@ Run all services:
 pnpm dev
 ```
 
+Run API and web over localhost HTTPS for OAuth/OIDC/SAML redirect testing:
+
+```bash
+pnpm dev:https
+```
+
+This generates a self-signed certificate in `certs/` if one does not already exist, starts the API at `https://localhost:4443`, and starts the web app at `https://localhost:3443`. The browser will warn because the certificate is self-signed; accept the local certificate warning for development only. Keep the normal `pnpm dev` HTTP flow for day-to-day work unless an identity provider requires HTTPS redirect URLs.
+
 Or run individual services:
 
 ```bash
@@ -132,6 +140,12 @@ API health:
 
 ```bash
 curl -I http://localhost:4000/health
+```
+
+HTTPS dev health:
+
+```bash
+curl -k -I https://localhost:4443/health
 ```
 
 Expected response is HTTP 200. The route returns `{ "status": "ok" }`.
@@ -314,6 +328,7 @@ API:
 - OAuth and OIDC callbacks use short-lived, one-time `auth_handoffs` codes rather than placing bearer tokens directly into redirect URLs.
 - Just-in-time OAuth-created users default to `OAUTH_DEFAULT_ROLE` or `user`; production deployments should grant access through RBAC after identity proofing.
 - Enterprise SSO is configured in Admin Console through `sso_configs`. Multiple SAML/OIDC providers can coexist by domain set. Matching domains can enforce SSO and block password login. SAML admins can provide metadata by URL or pasted/downloaded XML, and the Admin Console exposes the platform ACS URL and Entity ID needed by the IdP. OIDC callback exchange is implemented; SAML assertion validation remains the next adapter layer.
+- For local HTTPS SSO testing, register callback/ACS URLs with the IdP using `https://localhost:4443/api/auth/sso/<provider-id>/callback` for OIDC and `https://localhost:4443/api/auth/sso/<provider-id>/acs` for SAML. Set `WEB_PUBLIC_URL=https://localhost:3443` and `API_PUBLIC_URL=https://localhost:4443`; the `dev:https` scripts do this automatically.
 - Identity groups are stored in PostgreSQL for RBAC inheritance. Local admins can create groups, memberships, and group grants; OIDC group claims can also sync provider-managed groups and memberships.
 - Use Redis for multi-instance WebSocket/event propagation.
 - Ensure all API instances share the same `JWT_SECRET`.
