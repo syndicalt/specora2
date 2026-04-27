@@ -42,6 +42,16 @@ type SavedReport = {
   updatedAt?: string;
 };
 
+type ReadinessCheck = {
+  id: string;
+  label: string;
+  domain: string;
+  status: Kpi["status"];
+  score: number | null;
+  description: string;
+  details: Record<string, unknown>;
+};
+
 const INPUT = "rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500";
 const BUTTON = "inline-flex items-center justify-center gap-2 rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm font-medium text-gray-200 hover:border-gray-700 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50";
 const PRIMARY = "inline-flex items-center justify-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-sm font-semibold text-gray-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50";
@@ -86,6 +96,7 @@ export default function ReportingApp({ shell }: { shell: ShellAPI }) {
   const [kpis, setKpis] = useState<Kpi[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
+  const [readiness, setReadiness] = useState<{ score: number | null; status: Kpi["status"]; checks: ReadinessCheck[] } | null>(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [groupBy, setGroupBy] = useState("");
   const [from, setFrom] = useState(defaultFrom);
@@ -115,19 +126,22 @@ export default function ReportingApp({ shell }: { shell: ShellAPI }) {
     setLoading(true);
     try {
       const params = new URLSearchParams({ from: toIsoStart(from) || "", to: toIsoEnd(to) || "" });
-      const [kpiRes, datasetRes, savedRes] = await Promise.all([
+      const [kpiRes, datasetRes, savedRes, readinessRes] = await Promise.all([
         shell.fetch(`/api/reports/kpis?${params.toString()}`),
         shell.fetch("/api/reports/datasets"),
         shell.fetch("/api/reports/saved"),
+        shell.fetch(`/api/reports/readiness?${params.toString()}`),
       ]);
-      const [kpiData, datasetData, savedData] = await Promise.all([kpiRes.json(), datasetRes.json(), savedRes.json()]);
+      const [kpiData, datasetData, savedData, readinessData] = await Promise.all([kpiRes.json(), datasetRes.json(), savedRes.json(), readinessRes.json()]);
       if (!kpiRes.ok) throw new Error(kpiData.error || "Failed to load KPIs");
       if (!datasetRes.ok) throw new Error(datasetData.error || "Failed to load datasets");
       if (!savedRes.ok) throw new Error(savedData.error || "Failed to load saved reports");
+      if (!readinessRes.ok) throw new Error(readinessData.error || "Failed to load readiness");
       const nextDatasets = datasetData.datasets || [];
       setKpis(kpiData.kpis || []);
       setDatasets(nextDatasets);
       setSavedReports(savedData.reports || []);
+      setReadiness({ score: readinessData.score ?? null, status: readinessData.status || "unknown", checks: readinessData.checks || [] });
       if (!selectedDatasetId && nextDatasets[0]) setGroupBy(nextDatasets[0].defaultGroupBy?.[0] || "");
       setSelectedDatasetId((current) => current || nextDatasets[0]?.id || "");
     } catch (err: any) {
@@ -255,6 +269,33 @@ export default function ReportingApp({ shell }: { shell: ShellAPI }) {
                   </div>
                 ))}
               </section>
+
+              {readiness && (
+                <section className={`rounded-lg border p-4 ${statusClass(readiness.status)}`}>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-medium uppercase text-gray-500">Operational Readiness</div>
+                      <h2 className="mt-1 text-sm font-semibold text-gray-100">Cross-domain readiness score</h2>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-3xl font-semibold tracking-normal text-gray-50">{readiness.score === null ? "n/a" : readiness.score}</div>
+                      <div className="text-xs uppercase text-gray-500">{readiness.status}</div>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+                    {readiness.checks.map((check) => (
+                      <div key={check.id} className="rounded-md border border-gray-800 bg-gray-950/70 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-medium text-gray-200">{check.label}</span>
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${statusClass(check.status)}`}>{check.status}</span>
+                        </div>
+                        <div className="mt-2 text-lg font-semibold text-gray-50">{check.score === null ? "n/a" : check.score}</div>
+                        <div className="mt-1 truncate text-xs text-gray-500">{Object.entries(check.details || {}).slice(0, 2).map(([key, value]) => `${key}: ${String(value)}`).join(" · ")}</div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
 
               <section className="rounded-lg border border-gray-800 bg-gray-900/60">
                 <div className="border-b border-gray-800 px-4 py-3">

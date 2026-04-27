@@ -52,6 +52,9 @@ describe("reportingRoutes", () => {
     const body = JSON.parse(res.body);
     expect(body.datasets).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "incidents", label: "Incidents" }),
+      expect.objectContaining({ id: "cab_briefs", label: "CAB Briefs" }),
+      expect.objectContaining({ id: "knowledge_feedback", label: "Knowledge Feedback" }),
+      expect.objectContaining({ id: "knowledge_gaps", label: "Knowledge Gaps" }),
       expect.objectContaining({ id: "audit", label: "Audit Events" }),
     ]));
     expect(body.datasets[0].columns[0]).not.toHaveProperty("expr");
@@ -136,14 +139,20 @@ describe("reportingRoutes", () => {
       if (sql.includes("FROM incidents") && sql.includes("total_open")) {
         return { rows: [{ total_open: 9, at_risk: 2 }] };
       }
-      if (sql.includes("SUM(deflection_count)")) {
-        return { rows: [{ deflections: 30, incidents: 70 }] };
-      }
       if (sql.includes("FROM change_requests") && sql.includes("collisions")) {
         return { rows: [{ collisions: 1, affected_cis: 1, max_ci_change_count: 2 }] };
       }
+      if (sql.includes("FROM change_requests") && sql.includes("briefed")) {
+        return { rows: [{ scheduled: 10, briefed: 9, approved: 7 }] };
+      }
       if (sql.includes("FROM knowledge_items") && sql.includes("average_trust")) {
         return { rows: [{ published: 10, fresh: 9, average_trust: 0.82 }] };
+      }
+      if (sql.includes("FROM knowledge_items") && sql.includes("total_reuse")) {
+        return { rows: [{ published: 10, trusted: 8, reused: 6, total_reuse: 44, total_deflections: 12 }] };
+      }
+      if (sql.includes("SUM(deflection_count)")) {
+        return { rows: [{ deflections: 30, incidents: 70 }] };
       }
       if (sql.includes("FROM catalog_requests") && sql.includes("average_age_days")) {
         return { rows: [{ backlog: 12, average_age_days: 3.4, high_priority: 2 }] };
@@ -167,9 +176,47 @@ describe("reportingRoutes", () => {
       expect.objectContaining({ id: "sla_risk", value: 2, unit: "count", status: "watch" }),
       expect.objectContaining({ id: "incident_deflection", value: 30, unit: "percent" }),
       expect.objectContaining({ id: "cmdb_completeness", value: 80, unit: "percent" }),
+      expect.objectContaining({ id: "cab_brief_coverage", value: 90, unit: "percent" }),
+      expect.objectContaining({ id: "knowledge_trust_reuse", value: 60, unit: "percent" }),
       expect.objectContaining({ id: "audit_security_posture", value: 100, status: "good" }),
     ]));
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["report.kpis.read", "ReportKpi", "summary"]));
+  });
+
+  it("returns operational readiness checks", async () => {
+    const pgHandler = (sql: string) => {
+      if (sql.includes("open_incidents") && sql.includes("high_priority")) {
+        return { rows: [{ open_incidents: 6, high_priority: 2 }] };
+      }
+      if (sql.includes("high_risk") && sql.includes("change_cab_brief_snapshots")) {
+        return { rows: [{ scheduled: 10, briefed: 8, high_risk: 1 }] };
+      }
+      if (sql.includes("open_gap_demand")) {
+        return { rows: [{ average_trust: 0.8, published: 12, reused: 9, open_gap_demand: 3 }] };
+      }
+      if (sql.includes("FROM audit_log") && sql.includes("hashed_events")) {
+        return { rows: [{ total_events: 50, hashed_events: 49 }] };
+      }
+      return null;
+    };
+    const app = await buildApp({ id: "u1", role: "admin" }, pgHandler);
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/reports/readiness?from=2026-04-01T00:00:00.000Z&to=2026-04-30T00:00:00.000Z",
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.status).toMatch(/good|watch|risk/);
+    expect(body.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "incident_load", score: 80 }),
+      expect.objectContaining({ id: "change_governance", details: expect.objectContaining({ coverage: 80 }) }),
+      expect.objectContaining({ id: "knowledge_readiness" }),
+      expect.objectContaining({ id: "cmdb_data_quality", score: 80 }),
+      expect.objectContaining({ id: "audit_integrity", score: 98 }),
+    ]));
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["report.readiness.read", "ReportReadiness", "operational"]));
   });
 
   it("returns a single KPI by id", async () => {

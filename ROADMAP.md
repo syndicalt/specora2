@@ -61,7 +61,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 
 ## Next Up
 
-- **Reporting API depth** — CAB effectiveness metrics, knowledge trust/reuse metrics, operational readiness reporting, and future CMDB health/data-quality datasets.
+- **Reporting API depth** — Completed: CAB evidence datasets and brief coverage metrics, knowledge feedback/gap datasets, knowledge trust/reuse metrics, operational readiness scoring, and CMDB data-quality readiness checks.
 - **Discovery RC push** — Completed: rollback records/UI, saved mapping profiles, richer AI mapping rationale, Admin-managed credential references with encrypted managed secrets, and edge/collector source registration with source binding.
 - **Operability and scale hardening** — Restore rehearsal, worker health checks, full SSO validation, build reliability, Redis-backed multi-instance state, and audit-head external anchoring design.
 - **Real-time events** — WebSocket pub/sub for event bus and SSE chat streaming.

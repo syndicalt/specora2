@@ -12,6 +12,7 @@ Implemented endpoints:
 - `GET /api/reports/datasets/:id/query?format=csv` returns signed CSV.
 - `GET /api/reports/kpis` returns RBAC-aware KPI summaries for visible reporting domains.
 - `GET /api/reports/kpis/:id` returns one KPI summary.
+- `GET /api/reports/readiness` returns a cross-domain operational readiness score and evidence checks.
 - `GET /api/reports/contracts/:target` returns BI/warehouse integration contracts for `grafana`, `powerbi`, `tableau`, or `warehouse`.
 - `GET /api/reports/saved` lists the caller's saved report definitions.
 - `POST /api/reports/saved` creates or updates a saved report definition.
@@ -61,6 +62,9 @@ Implemented canonical datasets:
 - `changes`
 - `requests`
 - `knowledge`
+- `knowledge_feedback`
+- `knowledge_gaps`
+- `cab_briefs`
 - `assets`
 - `discovery`
 - `audit`
@@ -72,12 +76,26 @@ Implemented KPI IDs:
 - `sla_risk`
 - `incident_deflection`
 - `change_collision_risk`
+- `cab_brief_coverage`
 - `knowledge_freshness`
+- `knowledge_trust_reuse`
 - `request_backlog`
 - `cmdb_completeness`
 - `audit_security_posture`
 
 Each KPI response includes `value`, `unit`, `status`, `direction`, `window`, and supporting `details`. KPI visibility is governed by `reporting:read` plus the underlying resource permissions required by that KPI.
+
+## Operational Readiness
+
+`GET /api/reports/readiness` returns a normalized readiness score with per-domain checks for:
+
+- incident load
+- change governance and CAB brief coverage
+- knowledge readiness
+- CMDB data quality
+- audit integrity
+
+The response only includes checks the caller can read through underlying app permissions. The aggregate `score` is the average of visible checks, and `status` is derived from the score.
 
 ## BI Integration Patterns
 
@@ -85,10 +103,11 @@ Recommended external dashboard shape:
 
 - Executive overview: `GET /api/reports/kpis` for SLA risk, deflection, change risk, request backlog, CMDB completeness, and audit posture.
 - Incident operations: `incidents` grouped by `status`, `severity`, `priority`, `service`, and `assignment_group`.
-- Change governance: `changes` grouped by `status`, `ci_id`, and scheduled windows, paired with `change_collision_risk`.
-- Knowledge health: `knowledge` grouped by `status`, `type`, and `service`, paired with `knowledge_freshness`.
+- Change governance: `changes` grouped by `status`, `ci_id`, and scheduled windows, paired with `change_collision_risk`, `cab_brief_coverage`, and `cab_briefs`.
+- Knowledge health: `knowledge` grouped by `status`, `type`, and `service`, paired with `knowledge_freshness`, `knowledge_trust_reuse`, `knowledge_feedback`, and `knowledge_gaps`.
 - Audit/security: `audit` grouped by `action`, `entity_type`, and `actor_id`, paired with `audit_security_posture`.
-- Data quality: `cmdb_completeness` plus `assets`, `discovery`, and future CMDB health datasets.
+- Operational readiness: `GET /api/reports/readiness` for cross-domain readiness scoring.
+- Data quality: `cmdb_completeness` plus `assets`, `discovery`, and CMDB data quality readiness checks.
 
 Grafana should use the `grafana` contract and JSON query endpoints with dashboard time range mapped to `from`/`to`. PowerBI and Tableau should use the `powerbi` or `tableau` contract and prefer signed CSV extracts for scheduled refreshes. Warehouse loaders should use the `warehouse` contract with `limit`/`offset` pagination and `from`/`to` watermarks.
 
@@ -101,14 +120,7 @@ Specora includes a lightweight Reporting native app that consumes these APIs dir
 - Saved report list and basic table/chart preview.
 - CSV export action.
 - BI contract copy/download links for Grafana, PowerBI, Tableau, and warehouse loaders.
-
-Near-term additions:
-
-- CMDB health and CSDM data quality.
-- RBAC/security posture.
-- Operational readiness.
-- CAB effectiveness metrics.
-- Knowledge trust and reuse metrics.
+- Operational readiness panel with incident, change, knowledge, CMDB, and audit evidence checks.
 
 ## Philosophy
 
