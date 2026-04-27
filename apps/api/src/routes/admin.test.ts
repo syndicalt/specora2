@@ -324,8 +324,12 @@ describe("adminRoutes", () => {
         provider: "oidc",
         status: "inactive",
         emailDomains: ["example.com"],
+        issuerUrl: "https://okta.example/oauth2/default",
         authorizationUrl: "https://okta.example/oauth2/v1/authorize",
+        tokenUrl: "https://okta.example/oauth2/v1/token",
+        userinfoUrl: "https://okta.example/oauth2/v1/userinfo",
         clientId: "client-1",
+        clientSecretRef: "env:OKTA_CLIENT_SECRET",
         scopes: ["openid", "email", "profile"],
         enforceSso: false,
       },
@@ -348,6 +352,37 @@ describe("adminRoutes", () => {
     expect(JSON.parse(updated.payload).config.enforceSso).toBe(true);
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity.sso_config.created", "SsoConfig", "sso-1"]));
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity.sso_config.updated", "SsoConfig", "sso-1"]));
+  });
+
+  it("blocks activation of incomplete SSO providers", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/identity/sso-configs",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: {
+        name: "Incomplete Okta",
+        provider: "oidc",
+        status: "active",
+        emailDomains: ["example.com"],
+        authorizationUrl: "https://okta.example/oauth2/v1/authorize",
+        clientId: "client-1",
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.payload);
+    expect(body.validation.errors).toEqual(expect.arrayContaining([
+      "OIDC issuer URL is required before activation",
+      "OIDC token URL is required before activation",
+      "OIDC client secret reference is required before activation",
+    ]));
   });
 
   it("rejects invalid SSO providers", async () => {

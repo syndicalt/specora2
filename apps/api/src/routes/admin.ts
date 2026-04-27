@@ -316,8 +316,41 @@ function normalizeSsoConfigBody(body: any, partial = false) {
   };
 }
 
-function ssoConfigRow(row: any) {
+function validateSsoConfigReadiness(config: any) {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const provider = config.provider;
+  const status = config.status;
+  if (status === "active") {
+    if (!config.emailDomains?.length) errors.push("At least one email domain is required before activation");
+    if (provider === "saml") {
+      if (!config.idpEntityId) errors.push("SAML IdP entity ID is required before activation");
+      if (!config.idpSsoUrl) errors.push("SAML IdP SSO URL is required before activation");
+      if (!config.idpCert && !config.idpCertPresent) errors.push("SAML IdP signing certificate is required before activation");
+      if (!config.metadataXml && !config.metadataXmlPresent) warnings.push("Store IdP metadata XML so future certificate rotation can be audited");
+    }
+    if (provider === "oidc") {
+      if (!config.issuerUrl) errors.push("OIDC issuer URL is required before activation");
+      if (!config.authorizationUrl) errors.push("OIDC authorization URL is required before activation");
+      if (!config.tokenUrl) errors.push("OIDC token URL is required before activation");
+      if (!config.userinfoUrl) errors.push("OIDC userinfo URL is required before activation");
+      if (!config.clientId) errors.push("OIDC client ID is required before activation");
+      if (!config.clientSecretRef) errors.push("OIDC client secret reference is required before activation");
+      const scopes = Array.isArray(config.scopes) ? config.scopes : [];
+      if (!scopes.includes("openid")) errors.push("OIDC scope must include openid");
+      if (!scopes.includes("email")) warnings.push("OIDC scope should include email for deterministic account linking");
+      if (!config.issuerUrl?.startsWith("https://")) warnings.push("OIDC issuer should use HTTPS outside local development");
+    }
+  }
   return {
+    status: errors.length ? "blocked" : warnings.length ? "warn" : "ready",
+    errors,
+    warnings,
+  };
+}
+
+function ssoConfigRow(row: any) {
+  const config = {
     id: row.id,
     name: row.name,
     provider: row.provider,
@@ -343,6 +376,10 @@ function ssoConfigRow(row: any) {
     attributeMapping: row.attribute_mapping || { email: "email", name: "name", groups: "groups" },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+  return {
+    ...config,
+    validation: validateSsoConfigReadiness(config),
   };
 }
 
@@ -1806,6 +1843,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.post("/api/admin/identity/sso-configs", { onRequest: [fastify.authenticate, requirePermission("identity", "write")] }, async (request, reply) => {
     const config = normalizeSsoConfigBody(request.body);
     if ("error" in config) return reply.status(400).send({ error: config.error });
+    const validation = validateSsoConfigReadiness(config);
+    if (validation.errors.length) return reply.status(400).send({ error: "Identity provider is not ready to activate", validation });
     try {
       const result = await fastify.pg.query(
         `INSERT INTO sso_configs (
@@ -1869,6 +1908,29 @@ export async function adminRoutes(fastify: FastifyInstance) {
          FROM sso_configs WHERE id = $1`,
         [id]
       );
+      const existingRow = existing.rows[0];
+      if (!existingRow) return reply.status(404).send({ error: "Identity provider not found" });
+      const candidate = {
+        name: config.name ?? existingRow.name,
+        provider: config.provider ?? existingRow.provider,
+        status: config.status ?? existingRow.status,
+        emailDomains: config.emailDomains ?? existingRow.email_domains,
+        idpEntityId: config.idpEntityId ?? existingRow.idp_entity_id,
+        idpSsoUrl: config.idpSsoUrl ?? existingRow.idp_sso_url,
+        idpCert: config.idpCert ?? existingRow.idp_cert,
+        idpCertPresent: Boolean(config.idpCert ?? existingRow.idp_cert),
+        metadataXml: config.metadataXml ?? existingRow.metadata_xml,
+        metadataXmlPresent: Boolean(config.metadataXml ?? existingRow.metadata_xml),
+        clientId: config.clientId ?? existingRow.client_id,
+        clientSecretRef: config.clientSecretRef ?? existingRow.client_secret_ref,
+        issuerUrl: config.issuerUrl ?? existingRow.issuer_url,
+        authorizationUrl: config.authorizationUrl ?? existingRow.authorization_url,
+        tokenUrl: config.tokenUrl ?? existingRow.token_url,
+        userinfoUrl: config.userinfoUrl ?? existingRow.userinfo_url,
+        scopes: config.scopes ?? existingRow.scopes,
+      };
+      const validation = validateSsoConfigReadiness(candidate);
+      if (validation.errors.length) return reply.status(400).send({ error: "Identity provider is not ready to activate", validation });
       const result = await fastify.pg.query(
         `UPDATE sso_configs SET
            name = COALESCE($2, name),
