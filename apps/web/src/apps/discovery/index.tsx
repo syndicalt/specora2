@@ -166,6 +166,16 @@ type DiscoveryRollback = {
   applied_at?: string | null;
 };
 
+type MappingProfile = {
+  id: string;
+  name: string;
+  description?: string;
+  sourceType: string;
+  targetClasses: string[];
+  mapping: TransformProposal;
+  updatedAt?: string;
+};
+
 type FlowSnapshot = {
   nodes: Node<DiscoveryFlowNodeData>[];
   edges: Edge[];
@@ -477,6 +487,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [sources, setSources] = useState<DiscoverySource[]>([]);
   const [classes, setClasses] = useState<TargetClass[]>([]);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
+  const [mappingProfiles, setMappingProfiles] = useState<MappingProfile[]>([]);
   const [schedule, setSchedule] = useState<PipelineSchedule>({ enabled: false, interval: "manual", next_run_at: null });
   const [sourceName, setSourceName] = useState("server-app-inventory.csv");
   const [sample, setSample] = useState(SAMPLE);
@@ -488,6 +499,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [sourceForm, setSourceForm] = useState<SourceForm>({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "" });
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
+  const [mappingProfileName, setMappingProfileName] = useState("Reusable mapping");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [stepMenuOpen, setStepMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -658,6 +670,15 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
         errorKey += "pipelines";
       }
 
+      try {
+        const profileRes = await api.fetch("/discovery/mapping-profiles");
+        if (!profileRes.ok) throw new Error(`Mapping profile request failed: ${profileRes.status}`);
+        const profileData = await profileRes.json();
+        setMappingProfiles(profileData.profiles || []);
+      } catch {
+        errorKey += "profiles";
+      }
+
       if (errorKey && loadErrorRef.current !== errorKey) {
         loadErrorRef.current = errorKey;
         shellRef.current.notify(
@@ -735,6 +756,64 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       refresh();
     } catch {
       shell.notify("Pipeline could not be saved", "error");
+    }
+  }
+
+  async function saveMappingProfile() {
+    if (!proposal) {
+      shell.notify("Generate or load a transform before saving a mapping profile", "error");
+      return;
+    }
+    try {
+      const targetClasses = Array.from(new Set([
+        ...proposal.classRoutes.map((route) => route.targetClass),
+        ...proposal.fieldMappings.map((mapping) => mapping.targetClass),
+      ])).filter(Boolean);
+      const res = await shell.fetch("/discovery/mapping-profiles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: mappingProfileName.trim() || proposal.title || `${sourceName} mapping`,
+          description: proposal.summary || "",
+          sourceType: selectedSource?.type || "csv",
+          targetClasses,
+          mapping: proposal,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Mapping profile could not be saved");
+      setMappingProfiles((current) => [data.profile, ...current.filter((profile) => profile.id !== data.profile.id)]);
+      setMappingProfileName(data.profile.name);
+      shell.notify("Mapping profile saved", "success");
+    } catch (err: any) {
+      shell.notify(err.message || "Mapping profile could not be saved", "error");
+    }
+  }
+
+  async function applyMappingProfile(profileId: string) {
+    try {
+      const res = await shell.fetch(`/discovery/mapping-profiles/${profileId}/apply`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Mapping profile could not be applied");
+      setProposal(data.definitionPatch?.proposal || data.profile.mapping);
+      setMappingProfileName(data.profile.name);
+      setPreview(null);
+      setStaged(null);
+      shell.notify("Mapping profile applied", "success");
+    } catch (err: any) {
+      shell.notify(err.message || "Mapping profile could not be applied", "error");
+    }
+  }
+
+  async function deleteMappingProfile(profileId: string) {
+    try {
+      const res = await shell.fetch(`/discovery/mapping-profiles/${profileId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Mapping profile could not be deleted");
+      setMappingProfiles((current) => current.filter((profile) => profile.id !== profileId));
+      shell.notify("Mapping profile deleted", "success");
+    } catch (err: any) {
+      shell.notify(err.message || "Mapping profile could not be deleted", "error");
     }
   }
 
@@ -1565,6 +1644,40 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
               onSaveSchedule={() => saveSchedule()}
               saving={loading}
             />
+
+            <section className="mb-4 rounded-lg border border-gray-800 bg-gray-900 p-3">
+              <div className="mb-3 flex items-center gap-2 text-sm font-medium text-gray-200">
+                <Route className="h-4 w-4 text-cyan-300" />
+                Mapping Profiles
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={mappingProfileName}
+                  onChange={(event) => setMappingProfileName(event.target.value)}
+                  className="min-w-0 flex-1 rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                />
+                <button onClick={saveMappingProfile} disabled={!proposal} className="rounded-md bg-cyan-500 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50">
+                  Save
+                </button>
+              </div>
+              <div className="mt-3 max-h-48 space-y-2 overflow-auto">
+                {mappingProfiles.length ? mappingProfiles.map((profile) => (
+                  <div key={profile.id} className="rounded-md border border-gray-800 bg-gray-950 p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <button onClick={() => applyMappingProfile(profile.id)} className="min-w-0 flex-1 text-left">
+                        <div className="truncate text-sm text-gray-200">{profile.name}</div>
+                        <div className="mt-1 truncate text-xs text-gray-500">{profile.sourceType} · {profile.targetClasses.join(", ") || "generic"}</div>
+                      </button>
+                      <button onClick={() => deleteMappingProfile(profile.id)} className="rounded border border-gray-800 p-1.5 text-gray-500 hover:border-rose-500/50 hover:text-rose-300" aria-label={`Delete ${profile.name}`}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-md border border-dashed border-gray-800 p-4 text-center text-sm text-gray-500">No saved mapping profiles.</div>
+                )}
+              </div>
+            </section>
 
             <div className="mb-4 flex items-center gap-2">
               <Bot className="h-5 w-5 text-cyan-300" />

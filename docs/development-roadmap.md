@@ -255,7 +255,6 @@ Goal: graduate Discovery from impressive beta/demo to a credible RC candidate.
 
 Priority work:
 
-- Add saved mapping profiles independent from individual pipelines.
 - Add credential vault integration or a documented credential-provider abstraction.
 - Add richer AI mapping explanations with per-field rationale, confidence, and deterministic fallback.
 - Move heavier connector execution to worker-backed jobs as real connectors arrive.
@@ -273,6 +272,7 @@ Implemented:
 - Added rollback snapshots for committed discovery jobs, capturing created/updated CIs and committed relationships.
 - Added rollback apply endpoints with audit events and job status updates.
 - Added Discovery run UI for viewing and applying rollback snapshots.
+- Added saved mapping profiles independent from pipelines, with CRUD/apply APIs and Discovery builder save/apply/delete controls.
 
 ## Sprint 9: Operability And Scale Hardening
 

@@ -14,6 +14,21 @@ import { recordRouteAudit } from "./auditHelpers";
 const UPLOAD_DIR = resolve(process.env.UPLOAD_DIR || "./uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
+function mappingProfileRow(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description || "",
+    sourceType: row.source_type,
+    targetClasses: typeof row.target_classes === "string" ? JSON.parse(row.target_classes || "[]") : row.target_classes || [],
+    mapping: typeof row.mapping === "string" ? JSON.parse(row.mapping || "{}") : row.mapping || {},
+    createdBy: row.created_by,
+    updatedBy: row.updated_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 async function requireDiscoveryPermission(fastify: FastifyInstance, request: any, reply: any, action: "read" | "write") {
   const role = await resolveUserRole(fastify.pg, request.user as any);
   if (!role || !(await hasPermission(fastify.pg, { role, resource: "discovery", action }))) {
@@ -24,6 +39,135 @@ async function requireDiscoveryPermission(fastify: FastifyInstance, request: any
 }
 
 export async function discoveryRoutes(fastify: FastifyInstance) {
+  fastify.get("/discovery/mapping-profiles", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const result = await fastify.pg.query(
+      `SELECT id, name, description, source_type, target_classes, mapping, created_by, updated_by, created_at, updated_at
+       FROM discovery_mapping_profiles
+       ORDER BY updated_at DESC, name
+       LIMIT 100`
+    );
+    return { profiles: result.rows.map(mappingProfileRow) };
+  });
+
+  fastify.post("/discovery/mapping-profiles", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const body = request.body as { name?: string; description?: string; sourceType?: string; targetClasses?: unknown[]; mapping?: unknown };
+    if (!body.name?.trim() || !body.mapping || typeof body.mapping !== "object") {
+      return reply.status(400).send({ error: "name and mapping are required" });
+    }
+    const result = await fastify.pg.query(
+      `INSERT INTO discovery_mapping_profiles (name, description, source_type, target_classes, mapping, created_by, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $6)
+       ON CONFLICT (name) DO UPDATE SET
+         description = EXCLUDED.description,
+         source_type = EXCLUDED.source_type,
+         target_classes = EXCLUDED.target_classes,
+         mapping = EXCLUDED.mapping,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = NOW()
+       RETURNING id, name, description, source_type, target_classes, mapping, created_by, updated_by, created_at, updated_at`,
+      [
+        body.name.trim().slice(0, 160),
+        body.description?.trim() || "",
+        body.sourceType?.trim() || "generic",
+        JSON.stringify(body.targetClasses || []),
+        JSON.stringify(body.mapping),
+        (request.user as any)?.id || null,
+      ]
+    );
+    const profile = mappingProfileRow(result.rows[0]);
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.mapping_profile_saved",
+      entityType: "DiscoveryMappingProfile",
+      entityId: profile.id,
+      newValues: profile,
+      metadata: { source: "api.discovery", surface: "discovery", sourceType: profile.sourceType },
+    });
+    return { profile };
+  });
+
+  fastify.put("/discovery/mapping-profiles/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const { id } = request.params as { id: string };
+    const body = request.body as { name?: string; description?: string; sourceType?: string; targetClasses?: unknown[]; mapping?: unknown };
+    if (!body.name?.trim() || !body.mapping || typeof body.mapping !== "object") {
+      return reply.status(400).send({ error: "name and mapping are required" });
+    }
+    const result = await fastify.pg.query(
+      `UPDATE discovery_mapping_profiles
+       SET name = $2,
+           description = $3,
+           source_type = $4,
+           target_classes = $5,
+           mapping = $6,
+           updated_by = $7,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, description, source_type, target_classes, mapping, created_by, updated_by, created_at, updated_at`,
+      [
+        id,
+        body.name.trim().slice(0, 160),
+        body.description?.trim() || "",
+        body.sourceType?.trim() || "generic",
+        JSON.stringify(body.targetClasses || []),
+        JSON.stringify(body.mapping),
+        (request.user as any)?.id || null,
+      ]
+    );
+    if (!result.rows.length) return reply.status(404).send({ error: "Mapping profile not found" });
+    const profile = mappingProfileRow(result.rows[0]);
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.mapping_profile_updated",
+      entityType: "DiscoveryMappingProfile",
+      entityId: id,
+      newValues: profile,
+      metadata: { source: "api.discovery", surface: "discovery", sourceType: profile.sourceType },
+    });
+    return { profile };
+  });
+
+  fastify.delete("/discovery/mapping-profiles/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const { id } = request.params as { id: string };
+    const result = await fastify.pg.query(
+      `DELETE FROM discovery_mapping_profiles
+       WHERE id = $1
+       RETURNING id, name, description, source_type, target_classes, mapping, created_by, updated_by, created_at, updated_at`,
+      [id]
+    );
+    if (!result.rows.length) return reply.status(404).send({ error: "Mapping profile not found" });
+    const profile = mappingProfileRow(result.rows[0]);
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.mapping_profile_deleted",
+      entityType: "DiscoveryMappingProfile",
+      entityId: id,
+      oldValues: profile,
+      metadata: { source: "api.discovery", surface: "discovery" },
+    });
+    return { ok: true };
+  });
+
+  fastify.post("/discovery/mapping-profiles/:id/apply", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const { id } = request.params as { id: string };
+    const result = await fastify.pg.query(
+      `SELECT id, name, description, source_type, target_classes, mapping, created_by, updated_by, created_at, updated_at
+       FROM discovery_mapping_profiles
+       WHERE id = $1`,
+      [id]
+    );
+    if (!result.rows.length) return reply.status(404).send({ error: "Mapping profile not found" });
+    const profile = mappingProfileRow(result.rows[0]);
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.mapping_profile_applied",
+      entityType: "DiscoveryMappingProfile",
+      entityId: id,
+      metadata: { source: "api.discovery", surface: "discovery", sourceType: profile.sourceType },
+    });
+    return { profile, definitionPatch: { proposal: profile.mapping, targetClasses: profile.targetClasses } };
+  });
+
   fastify.get("/discovery/pipelines", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
     const result = await fastify.pg.query(

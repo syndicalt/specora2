@@ -139,6 +139,68 @@ describe("discoveryRoutes", () => {
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("published_definition = definition"), ["pipe-1"]);
   });
 
+  it("creates, lists, applies, and deletes discovery mapping profiles", async () => {
+    const app = await buildApp();
+    const mapping = {
+      title: "Server map",
+      summary: "Map server inventory",
+      confidence: 0.9,
+      classRoutes: [{ targetClass: "Server", sourcePattern: "columns", confidence: 0.9, rationale: "host columns" }],
+      fieldMappings: [{ sourceField: "hostname", targetClass: "Server", targetField: "name", transform: "trim_lowercase", confidence: 0.9 }],
+      relationshipRules: [],
+      reconciliationRules: [{ targetClass: "Server", matchKeys: ["name"], strategy: "create_or_update" }],
+      assumptions: [],
+      risks: [],
+      aiGenerated: false,
+    };
+    const row = {
+      id: "profile-1",
+      name: "Server Inventory",
+      description: "Reusable server map",
+      source_type: "csv",
+      target_classes: ["Server"],
+      mapping,
+      created_by: "u1",
+      updated_by: "u1",
+      created_at: "now",
+      updated_at: "now",
+    };
+    (app as any).pg.queuedResults.push(
+      { rows: [row] },
+      { rows: [] },
+      { rows: [{ id: "audit-1" }] },
+      { rows: [row] },
+      { rows: [row] },
+      { rows: [] },
+      { rows: [{ id: "audit-2" }] },
+      { rows: [row] },
+      { rows: [] },
+      { rows: [{ id: "audit-3" }] },
+    );
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/discovery/mapping-profiles",
+      payload: { name: "Server Inventory", description: "Reusable server map", sourceType: "csv", targetClasses: ["Server"], mapping },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(JSON.parse(created.body).profile).toMatchObject({ id: "profile-1", sourceType: "csv", mapping: { title: "Server map" } });
+
+    const listed = await app.inject({ method: "GET", url: "/discovery/mapping-profiles" });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.body).profiles[0]).toMatchObject({ id: "profile-1", name: "Server Inventory" });
+
+    const applied = await app.inject({ method: "POST", url: "/discovery/mapping-profiles/profile-1/apply" });
+    expect(applied.statusCode).toBe(200);
+    expect(JSON.parse(applied.body).definitionPatch).toMatchObject({ proposal: { title: "Server map" }, targetClasses: ["Server"] });
+
+    const deleted = await app.inject({ method: "DELETE", url: "/discovery/mapping-profiles/profile-1" });
+    expect(deleted.statusCode).toBe(200);
+    expect(JSON.parse(deleted.body)).toEqual({ ok: true });
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.mapping_profile_saved", "DiscoveryMappingProfile", "profile-1"]));
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.mapping_profile_applied", "DiscoveryMappingProfile", "profile-1"]));
+  });
+
   it("deletes discovery pipelines", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push({ rows: [{ id: "pipe-1" }] });
