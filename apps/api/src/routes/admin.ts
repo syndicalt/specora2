@@ -174,6 +174,13 @@ function csvCell(value: any) {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+function timestampString(value: any) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function auditRow(row: any) {
   return {
     id: row.id,
@@ -189,7 +196,7 @@ function auditRow(row: any) {
     previousHash: row.previous_hash || null,
     entryHash: row.entry_hash || null,
     integrityVersion: row.integrity_version || 1,
-    createdAt: row.created_at,
+    createdAt: timestampString(row.created_at),
   };
 }
 

@@ -435,6 +435,13 @@ function tableViewRow(row: any) {
   };
 }
 
+function timestampString(value: any) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function actorKey(user: any) {
   return user?.id || user?.email || user?.role || "anonymous";
 }
@@ -1200,7 +1207,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         previousHash: row.previous_hash,
         entryHash: row.entry_hash,
         integrityVersion: row.integrity_version,
-        createdAt: row.created_at,
+        createdAt: timestampString(row.created_at),
       })),
     };
   });

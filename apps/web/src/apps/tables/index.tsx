@@ -94,7 +94,8 @@ type AuditEntry = {
   oldValues?: Record<string, unknown> | null;
   newValues?: Record<string, unknown> | null;
   entryHash?: string | null;
-  createdAt: string;
+  createdAt?: string | null;
+  created_at?: string | null;
 };
 
 type InlineEdit = {
@@ -155,6 +156,12 @@ function formatValue(value: unknown) {
   if (value === undefined || value === null || value === "") return "-";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "Unknown date";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Unknown date" : date.toLocaleString();
 }
 
 function canReadAttr(attr?: AttributeDef) {
@@ -1557,7 +1564,7 @@ function RecordEditor({
                 <div key={entry.id} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="font-mono text-xs text-gray-300">{entry.action}</div>
-                    <div className="text-[10px] text-gray-600">{new Date(entry.createdAt).toLocaleString()}</div>
+                    <div className="text-[10px] text-gray-600">{formatDateTime(entry.createdAt || entry.created_at)}</div>
                   </div>
                   <div className="mt-2 grid gap-2 text-xs text-gray-500">
                     <AuditDiff before={entry.oldValues} after={entry.newValues} />

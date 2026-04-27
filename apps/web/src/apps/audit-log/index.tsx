@@ -13,7 +13,14 @@ interface AuditEntry {
   oldValues?: Record<string, unknown>;
   newValues?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
-  createdAt: string;
+  createdAt?: string | null;
+  created_at?: string | null;
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "Unknown date";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Unknown date" : date.toLocaleString();
 }
 
 export default function AuditLogApp({ shell }: { shell: ShellAPI }) {
@@ -111,7 +118,7 @@ export default function AuditLogApp({ shell }: { shell: ShellAPI }) {
                   >
                     {entry.action}
                   </span>
-                  <span className="text-xs text-gray-500">{new Date(entry.createdAt).toLocaleString()}</span>
+                  <span className="text-xs text-gray-500">{formatDateTime(entry.createdAt || entry.created_at)}</span>
                   {entry.actorId && <span className="text-xs text-gray-500">Actor: {entry.actorId}</span>}
                 </div>
                 <div className="text-sm text-gray-300 mb-2">

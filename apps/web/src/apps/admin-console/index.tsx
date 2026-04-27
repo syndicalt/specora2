@@ -328,7 +328,14 @@ interface AuditEntry {
   previousHash: string | null;
   entryHash: string | null;
   integrityVersion: number;
-  createdAt: string;
+  createdAt?: string | null;
+  created_at?: string | null;
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "Unknown date";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Unknown date" : date.toLocaleString();
 }
 
 interface AuditIntegrity {
@@ -1814,7 +1821,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     <div key={entry.id} className="border-b border-gray-800 px-3 py-3 last:border-0">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="font-mono text-xs text-gray-300">{entry.action}</div>
-                        <div className="text-xs text-gray-600">{new Date(entry.createdAt).toLocaleString()}</div>
+                        <div className="text-xs text-gray-600">{formatDateTime(entry.createdAt || entry.created_at)}</div>
                       </div>
                       <div className="mt-1 text-sm text-gray-400">{entry.entityType} <span className="font-mono text-xs text-gray-600">{entry.entityId}</span></div>
                       <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-gray-600">

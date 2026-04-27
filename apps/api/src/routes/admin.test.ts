@@ -611,7 +611,11 @@ describe("adminRoutes", () => {
       headers: authHeader(app),
     });
     expect(listed.statusCode).toBe(200);
-    expect(JSON.parse(listed.payload).entries[0]).toMatchObject({ action: "rbac.permission.created", actorEmail: "admin@example.com" });
+    expect(JSON.parse(listed.payload).entries[0]).toMatchObject({
+      action: "rbac.permission.created",
+      actorEmail: "admin@example.com",
+      createdAt: "2026-04-26T12:00:00.000Z",
+    });
 
     const exported = await app.inject({
       method: "GET",

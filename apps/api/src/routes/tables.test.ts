@@ -280,7 +280,7 @@ describe("tableRoutes", () => {
     const res = await app.inject({ method: "GET", url: "/api/tables/cmdb.Location/records/loc-1/audit" });
 
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).entries[0]).toMatchObject({ action: "table.record.updated", entryHash: "hash" });
+    expect(JSON.parse(res.body).entries[0]).toMatchObject({ action: "table.record.updated", entryHash: "hash", createdAt: "2026-04-27T00:00:00.000Z" });
   });
 
   it("exports selected table records as audited CSV", async () => {
