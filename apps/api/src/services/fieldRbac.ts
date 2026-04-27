@@ -7,6 +7,7 @@ type PgClient = {
 type FieldAccessInput = {
   pg: PgClient;
   role: string;
+  userId?: string;
   tableId: string;
   fieldNames: string[];
   writableFieldNames?: string[];
@@ -81,6 +82,7 @@ export function clearFieldRestrictionCache(): void {
 export async function resolveFieldAccess({
   pg,
   role,
+  userId,
   tableId,
   fieldNames,
   writableFieldNames = fieldNames,
@@ -92,8 +94,8 @@ export async function resolveFieldAccess({
   for (const field of fieldNames) {
     const resource = fieldResource(tableId, field);
     const restricted = configured.resources.has(resource) || configured.fields.has(field) || isSensitiveFieldName(field);
-    const read = restricted ? await hasPermission(pg, { role, resource, action: "read" }) : true;
-    const write = writable.has(field) && (restricted ? await hasPermission(pg, { role, resource, action: "write" }) : true);
+    const read = restricted ? await hasPermission(pg, { role, userId, resource, action: "read" }) : true;
+    const write = writable.has(field) && (restricted ? await hasPermission(pg, { role, userId, resource, action: "write" }) : true);
     access.set(field, { field, resource, read, write, restricted });
   }
 

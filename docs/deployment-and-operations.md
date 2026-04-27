@@ -313,7 +313,8 @@ API:
 - Optional Google/GitHub OAuth providers require matching client IDs/secrets and stable `API_PUBLIC_URL` callback configuration.
 - OAuth and OIDC callbacks use short-lived, one-time `auth_handoffs` codes rather than placing bearer tokens directly into redirect URLs.
 - Just-in-time OAuth-created users default to `OAUTH_DEFAULT_ROLE` or `user`; production deployments should grant access through RBAC after identity proofing.
-- Enterprise SSO is configured in Admin Console through `sso_configs`. Multiple SAML/OIDC providers can coexist by domain set. Matching domains can enforce SSO and block password login. OIDC callback exchange is implemented; SAML assertion validation remains the next adapter layer.
+- Enterprise SSO is configured in Admin Console through `sso_configs`. Multiple SAML/OIDC providers can coexist by domain set. Matching domains can enforce SSO and block password login. SAML admins can provide metadata by URL or pasted/downloaded XML, and the Admin Console exposes the platform ACS URL and Entity ID needed by the IdP. OIDC callback exchange is implemented; SAML assertion validation remains the next adapter layer.
+- Identity groups are stored in PostgreSQL for RBAC inheritance. Local admins can create groups, memberships, and group grants; OIDC group claims can also sync provider-managed groups and memberships.
 - Use Redis for multi-instance WebSocket/event propagation.
 - Ensure all API instances share the same `JWT_SECRET`.
 - API instances must share PostgreSQL and Neo4j.
@@ -363,7 +364,7 @@ Known gaps before production claims:
 - Worker does not expose a standard health endpoint.
 - Redis is documented and supported by API code but not included in local compose.
 - Package provisioning jobs complete immediately; entitlement checks, rollback, and install progress are roadmap work.
-- Field-level RBAC is implemented for Tables and explainable through Admin RBAC utilities. Condition-based record ACLs remain a roadmap item.
+- Field-level RBAC and identity-group permission inheritance are implemented and explainable through Admin RBAC utilities. Condition-based record ACLs remain a roadmap item.
 - Backup/restore procedures are documented separately but should be rehearsed and automated.
 - Secrets should be supplied by a secret manager, not committed `.env` files or compose defaults.
 - Audit hash-chain external anchoring is not yet implemented. High-compliance deployments should plan immutable external retention or head-hash anchoring.

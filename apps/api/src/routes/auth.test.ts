@@ -9,6 +9,8 @@ class FakePg {
   sessions: any[] = [];
   handoffs: any[] = [];
   ssoConfigs: any[] = [];
+  identityGroups: any[] = [];
+  identityMemberships: any[] = [];
   audit: any[] = [];
 
   constructor(users: any[] = []) {
@@ -147,6 +149,18 @@ class FakePg {
       const domain = params[0];
       const config = this.ssoConfigs.find((item) => item.status === "active" && item.email_domains?.includes(domain));
       return { rows: config ? [config] : [], rowCount: config ? 1 : 0 };
+    }
+    if (sql.includes("INSERT INTO identity_groups")) {
+      const existing = this.identityGroups.find((item) => item.source === params[3] && item.external_id === params[4]);
+      const group = existing || { id: `group-${this.identityGroups.length + 1}`, name: params[0], slug: params[1], description: params[2], source: params[3], external_id: params[4] };
+      group.name = params[0];
+      if (!existing) this.identityGroups.push(group);
+      return { rows: [{ id: group.id }], rowCount: 1 };
+    }
+    if (sql.includes("INSERT INTO identity_group_memberships")) {
+      const existing = this.identityMemberships.find((item) => item.group_id === params[0] && item.user_id === params[1]);
+      if (!existing) this.identityMemberships.push({ group_id: params[0], user_id: params[1], source: params[2] });
+      return { rows: [], rowCount: existing ? 0 : 1 };
     }
     if (sql.includes("SELECT entry_hash FROM audit_log")) return { rows: [], rowCount: 0 };
     if (sql.includes("INSERT INTO audit_log")) {
@@ -335,6 +349,43 @@ describe("auth routes", () => {
     expect(location).toContain("https://idp.example/authorize");
     expect(location).toContain("redirect_uri=http%3A%2F%2Flocalhost%3A4000%2Fapi%2Fauth%2Fsso%2Fsso-1%2Fcallback");
     expect(location).toContain("client_id=client-1");
+  });
+
+  it("syncs OIDC group claims into identity groups", async () => {
+    process.env.TEST_OIDC_SECRET = "secret";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        sub: "idp-user-1",
+        email: "alice@example.com",
+        name: "Alice",
+        email_verified: true,
+        groups: ["Service Desk", "Change Managers"],
+      }), { status: 200 }));
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "sso-1",
+      name: "Okta",
+      provider: "oidc",
+      status: "active",
+      enforce_sso: true,
+      email_domains: ["example.com"],
+      token_url: "https://idp.example/token",
+      userinfo_url: "https://idp.example/userinfo",
+      client_id: "client-1",
+      client_secret_ref: "env:TEST_OIDC_SECRET",
+      default_role: "operator",
+      attribute_mapping: { email: "email", name: "name", groups: "groups" },
+    });
+    const app = await buildApp(pg);
+    const state = Buffer.from(JSON.stringify({ typ: "sso-state", configId: "sso-1", returnTo: "/admin" })).toString("base64url");
+
+    const res = await app.inject({ method: "GET", url: `/api/auth/sso/sso-1/callback?code=abc&state=${state}` });
+
+    expect(res.statusCode).toBe(302);
+    expect(pg.identityGroups.map((group) => group.name)).toEqual(["Service Desk", "Change Managers"]);
+    expect(pg.identityMemberships).toHaveLength(2);
+    fetchMock.mockRestore();
+    delete process.env.TEST_OIDC_SECRET;
   });
 });
 

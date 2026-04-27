@@ -24,6 +24,17 @@ describe("rbac", () => {
     expect(result).toBe(false);
   });
 
+  it("allows permissions inherited from identity group memberships", async () => {
+    const pg = {
+      query: vi.fn()
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [{ _: 1 }], rowCount: 1 }),
+    };
+    const result = await hasPermission(pg, { role: "viewer", userId: "user-1", resource: "discovery", action: "write" });
+    expect(result).toBe(true);
+    expect(pg.query).toHaveBeenNthCalledWith(2, expect.stringContaining("identity_group_memberships"), ["user-1", "discovery", "write"]);
+  });
+
   it("caches permission results", async () => {
     const pg = mockPg([{ _: 1 }]);
     await hasPermission(pg, { role: "operator", resource: "cmdb", action: "write" });

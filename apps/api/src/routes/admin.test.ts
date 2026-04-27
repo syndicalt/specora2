@@ -156,17 +156,18 @@ describe("adminRoutes", () => {
           idp_cert: params?.[6],
           sp_entity_id: params?.[7],
           metadata_url: params?.[8],
-          jit_enabled: params?.[9],
-          client_id: params?.[10],
-          client_secret_ref: params?.[11],
-          issuer_url: params?.[12],
-          authorization_url: params?.[13],
-          token_url: params?.[14],
-          userinfo_url: params?.[15],
-          scopes: JSON.parse(params?.[16]),
-          enforce_sso: params?.[17],
-          default_role: params?.[18],
-          attribute_mapping: JSON.parse(params?.[19]),
+          metadata_xml: params?.[9],
+          jit_enabled: params?.[10],
+          client_id: params?.[11],
+          client_secret_ref: params?.[12],
+          issuer_url: params?.[13],
+          authorization_url: params?.[14],
+          token_url: params?.[15],
+          userinfo_url: params?.[16],
+          scopes: JSON.parse(params?.[17]),
+          enforce_sso: params?.[18],
+          default_role: params?.[19],
+          attribute_mapping: JSON.parse(params?.[20]),
           created_at: "2026-01-01",
           updated_at: "2026-01-01",
         };
@@ -206,6 +207,7 @@ describe("adminRoutes", () => {
     });
     expect(created.statusCode).toBe(200);
     expect(JSON.parse(created.payload).config.provider).toBe("oidc");
+    expect(JSON.parse(created.payload).config.spAcsUrl).toContain("/api/auth/sso/sso-1/acs");
 
     const listed = await app.inject({ method: "GET", url: "/api/admin/identity/sso-configs", headers: authHeader(app) });
     expect(listed.statusCode).toBe(200);
@@ -237,6 +239,52 @@ describe("adminRoutes", () => {
       payload: { name: "Bad", provider: "ldap", emailDomains: ["example.com"] },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("creates identity groups, memberships, and inherited grants", async () => {
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO identity_groups")) {
+        return Promise.resolve({ rows: [{ id: "group-1", name: params?.[0], slug: params?.[1], description: params?.[2], source: params?.[3], external_id: params?.[4], cmdb_ci_id: params?.[5] }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO identity_group_memberships")) {
+        return Promise.resolve({ rows: [{ id: "member-1", group_id: params?.[0], user_id: params?.[1], source: params?.[2] }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO identity_group_permissions")) {
+        return Promise.resolve({ rows: [{ id: "grant-1", group_id: params?.[0], resource: params?.[1], action: params?.[2] }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT entry_hash FROM audit_log")) return Promise.resolve({ rows: [], rowCount: 0 });
+      if (sql.includes("INSERT INTO audit_log")) return Promise.resolve({ rows: [], rowCount: 1 });
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const group = await app.inject({
+      method: "POST",
+      url: "/api/admin/identity/groups",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { name: "Network Operations", cmdbCiId: "grp-network-ops" },
+    });
+    expect(group.statusCode).toBe(200);
+    expect(JSON.parse(group.payload).group.slug).toBe("network-operations");
+
+    const member = await app.inject({
+      method: "POST",
+      url: "/api/admin/identity/groups/group-1/members",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { userId: "550e8400-e29b-41d4-a716-446655440001" },
+    });
+    expect(member.statusCode).toBe(200);
+
+    const grant = await app.inject({
+      method: "POST",
+      url: "/api/admin/identity/groups/group-1/permissions",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { resource: "discovery", action: "write" },
+    });
+    expect(grant.statusCode).toBe(200);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity_group.permission_granted", "IdentityGroup", "group-1"]));
   });
 
   it("analyzes RBAC access decisions", async () => {

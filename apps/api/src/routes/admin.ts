@@ -8,6 +8,8 @@ import { recordAuditEvent, verifyAuditIntegrity } from "../services/auditLog";
 import { getAllAppToolDefinitions } from "../services/appTools";
 import { resolveAppToolPolicy } from "./appToolPolicy";
 
+const API_PUBLIC_URL = process.env.API_PUBLIC_URL || (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/graphql").replace("/graphql", "");
+
 const CORE_ADMIN_PANELS = [
   { id: "rbac", name: "RBAC", icon: "Shield", permissions: ["rbac:read"] },
   { id: "identity", name: "Identity Providers", icon: "KeyRound", permissions: ["identity:read"] },
@@ -16,6 +18,20 @@ const CORE_ADMIN_PANELS = [
 ];
 
 const CORE_PERMISSION_TARGETS = [
+  permissionTarget("identity-groups", "read", {
+    label: "Identity Groups",
+    category: "Admin",
+    source: "Core admin panel",
+    description: "Allows a role to view identity groups, memberships, and inherited grants.",
+    risk: "high",
+  }),
+  permissionTarget("identity-groups", "write", {
+    label: "Identity Groups",
+    category: "Admin",
+    source: "Core admin panel",
+    description: "Allows a role to manage identity groups, memberships, CMDB links, and inherited grants.",
+    risk: "critical",
+  }),
   permissionTarget("identity", "read", {
     label: "Identity Provider Administration",
     category: "Admin",
@@ -78,7 +94,7 @@ function normalizeSequenceConfig(body: { prefix?: string; nextValue?: number; pa
 }
 
 function permissionRisk(resource: string, action: string) {
-  if (resource === "rbac" || resource === "system-properties" || resource === "identity") return "critical";
+  if (resource === "rbac" || resource === "system-properties" || resource === "identity" || resource === "identity-groups") return "critical";
   if (resource.startsWith("field:") && action === "write") return "high";
   if (resource.startsWith("field:")) return "medium";
   if (["admin", "govern", "approve", "remediate", "delete"].includes(action)) return "high";
@@ -89,7 +105,7 @@ function permissionRisk(resource: string, action: string) {
 function permissionCategory(resource: string, action: string) {
   if (resource.startsWith("field:")) return "Field";
   if (resource === "tables" || resource.startsWith("pg.") || resource.startsWith("cmdb.")) return "Table";
-  if (resource === "rbac" || resource === "system-properties" || resource === "number-sequences" || resource === "identity") return "Admin";
+  if (resource === "rbac" || resource === "system-properties" || resource === "number-sequences" || resource === "identity" || resource === "identity-groups") return "Admin";
   if (resource.includes("package") || resource.includes("provision")) return "Package";
   if (["operate", "execute", "approve", "remediate"].includes(action)) return "Automation";
   return "Application";
@@ -126,6 +142,9 @@ function permissionDescription(resource: string, action: string, label?: string)
   }
   if (resource === "identity") {
     return "Controls enterprise identity provider configuration, SSO discovery, and login governance.";
+  }
+  if (resource === "identity-groups") {
+    return "Controls platform identity groups, memberships, inherited grants, and CMDB group links.";
   }
   return `Allows a role to ${actionPhrase(action)} ${label || resource}.`;
 }
@@ -189,6 +208,26 @@ function normalizeStringArray(value: unknown, fallback: string[] = []) {
   return Array.from(new Set(raw.map((item) => String(item).trim()).filter(Boolean)));
 }
 
+function parseSamlMetadata(metadataXml?: string) {
+  if (!metadataXml) return {};
+  const entityMatch = metadataXml.match(/<[^>]*EntityDescriptor\b[^>]*\bentityID=["']([^"']+)["']/i);
+  const ssoMatch = metadataXml.match(/<[^>]*SingleSignOnService\b[^>]*\bLocation=["']([^"']+)["']/i);
+  const certMatch = metadataXml.match(/<[^>]*X509Certificate[^>]*>([\s\S]*?)<\/[^>]*X509Certificate>/i);
+  return {
+    idpEntityId: entityMatch?.[1]?.trim(),
+    idpSsoUrl: ssoMatch?.[1]?.trim(),
+    idpCert: certMatch?.[1]?.replace(/\s+/g, ""),
+  };
+}
+
+function spEntityIdFor(configId: string, configured?: string | null) {
+  return configured || `${API_PUBLIC_URL}/saml/sp/${configId}`;
+}
+
+function spAcsUrlFor(configId: string) {
+  return `${API_PUBLIC_URL}/api/auth/sso/${configId}/acs`;
+}
+
 function normalizeSsoConfigBody(body: any, partial = false) {
   const provider = body.provider === undefined ? undefined : String(body.provider).toLowerCase();
   if (provider !== undefined && !["saml", "oidc"].includes(provider)) {
@@ -206,6 +245,8 @@ function normalizeSsoConfigBody(body: any, partial = false) {
     return { error: "email domains must be valid domain names" };
   }
   const scopes = body.scopes === undefined ? undefined : normalizeStringArray(body.scopes, ["openid", "email", "profile"]);
+  const metadataXml = body.metadataXml === undefined ? undefined : String(body.metadataXml).trim();
+  const metadataValues = parseSamlMetadata(metadataXml);
   const attributeMapping = body.attributeMapping === undefined ? undefined : {
     email: String(body.attributeMapping?.email || "email"),
     name: String(body.attributeMapping?.name || "name"),
@@ -216,11 +257,12 @@ function normalizeSsoConfigBody(body: any, partial = false) {
     provider,
     status,
     emailDomains: domains,
-    idpEntityId: body.idpEntityId === undefined ? undefined : String(body.idpEntityId).trim(),
-    idpSsoUrl: body.idpSsoUrl === undefined ? undefined : String(body.idpSsoUrl).trim(),
-    idpCert: body.idpCert === undefined ? undefined : String(body.idpCert).trim(),
+    idpEntityId: body.idpEntityId === undefined ? metadataValues.idpEntityId : String(body.idpEntityId).trim() || metadataValues.idpEntityId,
+    idpSsoUrl: body.idpSsoUrl === undefined ? metadataValues.idpSsoUrl : String(body.idpSsoUrl).trim() || metadataValues.idpSsoUrl,
+    idpCert: body.idpCert === undefined ? metadataValues.idpCert : String(body.idpCert).trim() || metadataValues.idpCert,
     spEntityId: body.spEntityId === undefined ? undefined : String(body.spEntityId).trim(),
     metadataUrl: body.metadataUrl === undefined ? undefined : String(body.metadataUrl).trim(),
+    metadataXml,
     clientId: body.clientId === undefined ? undefined : String(body.clientId).trim(),
     clientSecretRef: body.clientSecretRef === undefined ? undefined : String(body.clientSecretRef).trim(),
     issuerUrl: body.issuerUrl === undefined ? undefined : String(body.issuerUrl).trim(),
@@ -245,8 +287,10 @@ function ssoConfigRow(row: any) {
     idpEntityId: row.idp_entity_id || "",
     idpSsoUrl: row.idp_sso_url || "",
     idpCertPresent: Boolean(row.idp_cert),
-    spEntityId: row.sp_entity_id || "",
+    spEntityId: spEntityIdFor(row.id, row.sp_entity_id),
+    spAcsUrl: spAcsUrlFor(row.id),
     metadataUrl: row.metadata_url || "",
+    metadataXmlPresent: Boolean(row.metadata_xml),
     jitEnabled: row.jit_enabled,
     clientId: row.client_id || "",
     clientSecretRef: row.client_secret_ref || "",
@@ -606,6 +650,38 @@ async function roleHasGrant(pg: any, role: string, resource: string, action: str
   return result.rows[0] || null;
 }
 
+async function userGroupGrants(pg: any, userId?: string | null) {
+  if (!userId) return { groups: [], grants: [] };
+  const groups = await pg.query(
+    `SELECT g.id, g.name, g.slug, g.description, g.source, g.external_id, g.cmdb_ci_id
+     FROM identity_group_memberships gm
+     JOIN identity_groups g ON g.id = gm.group_id
+     WHERE gm.user_id = $1
+     ORDER BY g.name`,
+    [userId]
+  );
+  const grants = await pg.query(
+    `SELECT gp.id, gp.group_id, g.name AS group_name, g.slug AS group_slug, gp.resource, gp.action
+     FROM identity_group_memberships gm
+     JOIN identity_groups g ON g.id = gm.group_id
+     JOIN identity_group_permissions gp ON gp.group_id = g.id
+     WHERE gm.user_id = $1
+     ORDER BY g.name, gp.resource, gp.action`,
+    [userId]
+  );
+  return { groups: groups.rows, grants: grants.rows };
+}
+
+function evaluateGrantWithGroups(role: string, grants: any[], groupGrants: any[], resource: string, action: string) {
+  const base = evaluateGrant(role, grants, resource, action);
+  if (base.allowed) return { ...base, inheritedGrant: null };
+  const inheritedGrant = groupGrants.find((grant: any) => grant.resource === resource && grant.action === action) || null;
+  if (inheritedGrant) {
+    return { allowed: true, reason: "inherited_group_grant", directGrant: null, inheritedGrant };
+  }
+  return { ...base, inheritedGrant: null };
+}
+
 async function analyzeAccess(
   fastify: FastifyInstance,
   body: { userId?: string; email?: string; role?: string; resource?: string; action?: string }
@@ -636,8 +712,10 @@ async function analyzeAccess(
     [role]
   );
   const grants = grantsResult.rows;
+  const inherited = await userGroupGrants(fastify.pg, user?.id);
   const directGrant = grants.find((grant: any) => grant.resource === resource && grant.action === action) ||
     await roleHasGrant(fastify.pg, role, resource, action);
+  const inheritedGrant = inherited.grants.find((grant: any) => grant.resource === resource && grant.action === action) || null;
 
   let allowed = false;
   let reason = "missing_permission";
@@ -653,6 +731,10 @@ async function analyzeAccess(
     allowed = true;
     reason = "direct_role_grant";
     trace.push({ status: "allow", label: "Direct role grant", detail: `${role} has ${resource}:${action}.` });
+  } else if (inheritedGrant) {
+    allowed = true;
+    reason = "inherited_group_grant";
+    trace.push({ status: "allow", label: "Inherited group grant", detail: `${inheritedGrant.group_name} grants ${resource}:${action}.` });
   } else {
     trace.push({ status: "deny", label: "Missing role grant", detail: `${role} does not have ${resource}:${action}.` });
   }
@@ -680,6 +762,9 @@ async function analyzeAccess(
       resource,
       action,
       directGrant: directGrant || null,
+      inheritedGrant,
+      inheritedGroups: inherited.groups,
+      inheritedGrants: inherited.grants,
       grants,
       relatedApps,
       missing: allowed ? [] : [{ resource, action }],
@@ -737,11 +822,12 @@ async function explainAppAccess(
     [role]
   );
   const grants = grantsResult.rows;
+  const inherited = await userGroupGrants(fastify.pg, user?.id);
   const requirements = app.permissions
     .map((permission) => {
       const parsed = permissionToResourceAction(permission);
       if (!parsed) return null;
-      const evaluation = evaluateGrant(role, grants, parsed.resource, parsed.action);
+      const evaluation = evaluateGrantWithGroups(role, grants, inherited.grants, parsed.resource, parsed.action);
       const target = permissionTarget(parsed.resource, parsed.action, {
         label: app.name,
         source: `Native app: ${app.name}`,
@@ -754,6 +840,7 @@ async function explainAppAccess(
         allowed: evaluation.allowed,
         reason: evaluation.reason,
         directGrant: evaluation.directGrant,
+        inheritedGrant: evaluation.inheritedGrant,
         risk: target.risk,
         description: target.description,
       };
@@ -799,6 +886,8 @@ async function explainAppAccess(
       requirements,
       missing,
       grants,
+      inheritedGroups: inherited.groups,
+      inheritedGrants: inherited.grants,
       trace,
       remediation: missing.map((item) => ({
         role,
@@ -953,7 +1042,8 @@ async function explainToolAccess(
     [role]
   );
   const grants = grantsResult.rows;
-  const evaluation = evaluateGrant(role, grants, tool.resource, tool.action);
+  const inherited = await userGroupGrants(fastify.pg, user?.id);
+  const evaluation = evaluateGrantWithGroups(role, grants, inherited.grants, tool.resource, tool.action);
   const target = permissionTarget(tool.resource, tool.action, {
     label: `${tool.appId} / ${tool.toolName}`,
     source: "App tool policy",
@@ -990,10 +1080,13 @@ async function explainToolAccess(
         allowed: evaluation.allowed,
         reason: evaluation.reason,
         directGrant: evaluation.directGrant,
+        inheritedGrant: evaluation.inheritedGrant,
         risk: target.risk,
         description: target.description,
       },
       missing: evaluation.allowed ? [] : [{ resource: tool.resource, action: tool.action, risk: target.risk }],
+      inheritedGroups: inherited.groups,
+      inheritedGrants: inherited.grants,
       trace,
       remediation: evaluation.allowed ? [] : [{
         role,
@@ -1031,11 +1124,13 @@ async function explainTableAccess(
     [role]
   );
   const grants = grantsResult.rows;
-  const tableRead = evaluateGrant(role, grants, "tables", "read");
-  const tableWrite = evaluateGrant(role, grants, "tables", "write");
+  const inherited = await userGroupGrants(fastify.pg, user?.id);
+  const tableRead = evaluateGrantWithGroups(role, grants, inherited.grants, "tables", "read");
+  const tableWrite = evaluateGrantWithGroups(role, grants, inherited.grants, "tables", "write");
   const fieldAccessMap = await resolveFieldAccess({
     pg: fastify.pg,
     role,
+    userId: user?.id,
     tableId: table.id,
     fieldNames: fieldOptions.map((field) => field.name),
     writableFieldNames: fieldOptions.filter((field) => field.writable).map((field) => field.name),
@@ -1119,6 +1214,8 @@ async function explainTableAccess(
       fields,
       missing,
       grants,
+      inheritedGroups: inherited.groups,
+      inheritedGrants: inherited.grants,
       trace,
       remediation: missing.map((item) => ({
         role,
@@ -1204,9 +1301,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   fastify.get("/api/admin/rbac/options", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (_request, reply) => {
     try {
-      const [usersResult, permissionsResult, apps] = await Promise.all([
+      const [usersResult, permissionsResult, groupsResult, apps] = await Promise.all([
         fastify.pg.query("SELECT id, name, email, role FROM users ORDER BY name, email"),
         fastify.pg.query("SELECT id, role, resource, action FROM app_permissions ORDER BY role, resource, action"),
+        fastify.pg.query("SELECT id, name, slug, source, cmdb_ci_id FROM identity_groups ORDER BY name"),
         getAllRegisteredApps(fastify),
       ]);
       const tables = await getTables(fastify).catch(() => []);
@@ -1244,6 +1342,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         .sort((a: any, b: any) => `${a.resource}:${a.action}`.localeCompare(`${b.resource}:${b.action}`));
       return {
         users: usersResult.rows,
+        groups: groupsResult.rows,
         roles,
         permissions: permissionsResult.rows,
         targets: permissionTargets,
@@ -1438,7 +1537,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     try {
       const result = await fastify.pg.query(
         `SELECT id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
                 token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at
          FROM sso_configs
          ORDER BY status DESC, name`
@@ -1463,12 +1562,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       const result = await fastify.pg.query(
         `INSERT INTO sso_configs (
            name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-           metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+           metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
            token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
          RETURNING id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                   metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                   metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
                    token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at`,
         [
           config.name,
@@ -1480,6 +1579,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
           config.idpCert || null,
           config.spEntityId || null,
           config.metadataUrl || null,
+          config.metadataXml || null,
           config.jitEnabled !== false,
           config.clientId || null,
           config.clientSecretRef || null,
@@ -1516,7 +1616,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     try {
       const existing = await fastify.pg.query(
         `SELECT id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
                 token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at
          FROM sso_configs WHERE id = $1`,
         [id]
@@ -1532,21 +1632,22 @@ export async function adminRoutes(fastify: FastifyInstance) {
            idp_cert = COALESCE($8, idp_cert),
            sp_entity_id = COALESCE($9, sp_entity_id),
            metadata_url = COALESCE($10, metadata_url),
-           jit_enabled = COALESCE($11, jit_enabled),
-           client_id = COALESCE($12, client_id),
-           client_secret_ref = COALESCE($13, client_secret_ref),
-           issuer_url = COALESCE($14, issuer_url),
-           authorization_url = COALESCE($15, authorization_url),
-           token_url = COALESCE($16, token_url),
-           userinfo_url = COALESCE($17, userinfo_url),
-           scopes = COALESCE($18, scopes),
-           enforce_sso = COALESCE($19, enforce_sso),
-           default_role = COALESCE($20, default_role),
-           attribute_mapping = COALESCE($21, attribute_mapping),
+           metadata_xml = COALESCE($11, metadata_xml),
+           jit_enabled = COALESCE($12, jit_enabled),
+           client_id = COALESCE($13, client_id),
+           client_secret_ref = COALESCE($14, client_secret_ref),
+           issuer_url = COALESCE($15, issuer_url),
+           authorization_url = COALESCE($16, authorization_url),
+           token_url = COALESCE($17, token_url),
+           userinfo_url = COALESCE($18, userinfo_url),
+           scopes = COALESCE($19, scopes),
+           enforce_sso = COALESCE($20, enforce_sso),
+           default_role = COALESCE($21, default_role),
+           attribute_mapping = COALESCE($22, attribute_mapping),
            updated_at = NOW()
          WHERE id = $1
          RETURNING id, name, provider, status, email_domains, idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                   metadata_url, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
+                   metadata_url, metadata_xml, jit_enabled, client_id, client_secret_ref, issuer_url, authorization_url,
                    token_url, userinfo_url, scopes, enforce_sso, default_role, attribute_mapping, created_at, updated_at`,
         [
           id,
@@ -1559,6 +1660,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
           config.idpCert || null,
           config.spEntityId || null,
           config.metadataUrl || null,
+          config.metadataXml || null,
           config.jitEnabled ?? null,
           config.clientId || null,
           config.clientSecretRef || null,
@@ -1612,6 +1714,181 @@ export async function adminRoutes(fastify: FastifyInstance) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to delete identity provider" });
     }
+  });
+
+  fastify.get("/api/admin/identity/groups", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "read")] }, async (_request, reply) => {
+    try {
+      const [groups, memberships, permissions] = await Promise.all([
+        fastify.pg.query(
+          `SELECT id, name, slug, description, source, external_id, cmdb_ci_id, created_at, updated_at
+           FROM identity_groups ORDER BY name`
+        ),
+        fastify.pg.query(
+          `SELECT gm.id, gm.group_id, gm.user_id, gm.source, u.name AS user_name, u.email AS user_email
+           FROM identity_group_memberships gm
+           JOIN users u ON u.id = gm.user_id
+           ORDER BY u.name, u.email`
+        ),
+        fastify.pg.query(
+          `SELECT gp.id, gp.group_id, gp.resource, gp.action
+           FROM identity_group_permissions gp
+           ORDER BY gp.resource, gp.action`
+        ),
+      ]);
+      return { groups: groups.rows, memberships: memberships.rows, permissions: permissions.rows };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to fetch identity groups" });
+    }
+  });
+
+  fastify.post("/api/admin/identity/groups", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "write")] }, async (request, reply) => {
+    const body = request.body as { name?: string; slug?: string; description?: string; cmdbCiId?: string; source?: string; externalId?: string };
+    const name = body.name?.trim();
+    const slug = (body.slug || name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    if (!name || !slug) return reply.status(400).send({ error: "name required" });
+    try {
+      const result = await fastify.pg.query(
+        `INSERT INTO identity_groups (name, slug, description, source, external_id, cmdb_ci_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, name, slug, description, source, external_id, cmdb_ci_id, created_at, updated_at`,
+        [name, slug, body.description || null, body.source || "local", body.externalId || null, body.cmdbCiId || null]
+      );
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "identity_group.created",
+        entityType: "IdentityGroup",
+        entityId: result.rows[0].id,
+        newValues: result.rows[0],
+        metadata: { source: "api.admin", surface: "admin-console" },
+      });
+      return { group: result.rows[0] };
+    } catch (err: any) {
+      if (err.code === "23505") return reply.status(409).send({ error: "Identity group already exists" });
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to create identity group" });
+    }
+  });
+
+  fastify.patch("/api/admin/identity/groups/:id", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "write")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { name?: string; description?: string; cmdbCiId?: string | null };
+    try {
+      const existing = await fastify.pg.query("SELECT id, name, slug, description, source, external_id, cmdb_ci_id FROM identity_groups WHERE id = $1", [id]);
+      const result = await fastify.pg.query(
+        `UPDATE identity_groups
+         SET name = COALESCE($2, name),
+             description = COALESCE($3, description),
+             cmdb_ci_id = $4,
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING id, name, slug, description, source, external_id, cmdb_ci_id, created_at, updated_at`,
+        [id, body.name || null, body.description || null, body.cmdbCiId ?? existing.rows[0]?.cmdb_ci_id ?? null]
+      );
+      if (!result.rows.length) return reply.status(404).send({ error: "Identity group not found" });
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "identity_group.updated",
+        entityType: "IdentityGroup",
+        entityId: id,
+        oldValues: existing.rows[0] || undefined,
+        newValues: result.rows[0],
+        metadata: { source: "api.admin", surface: "admin-console" },
+      });
+      clearPermissionCache();
+      return { group: result.rows[0] };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to update identity group" });
+    }
+  });
+
+  fastify.post("/api/admin/identity/groups/:id/members", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "write")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { userId?: string; source?: string };
+    if (!body.userId) return reply.status(400).send({ error: "userId required" });
+    try {
+      const result = await fastify.pg.query(
+        `INSERT INTO identity_group_memberships (group_id, user_id, source)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (group_id, user_id) DO UPDATE SET source = EXCLUDED.source
+         RETURNING id, group_id, user_id, source, created_at`,
+        [id, body.userId, body.source || "local"]
+      );
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "identity_group.member_added",
+        entityType: "IdentityGroup",
+        entityId: id,
+        newValues: result.rows[0],
+        metadata: { source: "api.admin", surface: "admin-console" },
+      });
+      clearPermissionCache();
+      return { membership: result.rows[0] };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to add group member" });
+    }
+  });
+
+  fastify.delete("/api/admin/identity/groups/:groupId/members/:userId", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "write")] }, async (request) => {
+    const { groupId, userId } = request.params as { groupId: string; userId: string };
+    await fastify.pg.query("DELETE FROM identity_group_memberships WHERE group_id = $1 AND user_id = $2", [groupId, userId]);
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "identity_group.member_removed",
+      entityType: "IdentityGroup",
+      entityId: groupId,
+      oldValues: { groupId, userId },
+      metadata: { source: "api.admin", surface: "admin-console" },
+    });
+    clearPermissionCache();
+    return { success: true };
+  });
+
+  fastify.post("/api/admin/identity/groups/:id/permissions", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "write")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { resource?: string; action?: string };
+    if (!body.resource || !body.action) return reply.status(400).send({ error: "resource and action required" });
+    try {
+      const result = await fastify.pg.query(
+        `INSERT INTO identity_group_permissions (group_id, resource, action)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (group_id, resource, action) DO NOTHING
+         RETURNING id, group_id, resource, action`,
+        [id, body.resource, body.action]
+      );
+      const grant = result.rows[0] || { group_id: id, resource: body.resource, action: body.action };
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "identity_group.permission_granted",
+        entityType: "IdentityGroup",
+        entityId: id,
+        newValues: grant,
+        metadata: { source: "api.admin", surface: "admin-console" },
+      });
+      clearPermissionCache();
+      return { permission: grant };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to grant group permission" });
+    }
+  });
+
+  fastify.delete("/api/admin/identity/groups/:groupId/permissions/:permissionId", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "write")] }, async (request) => {
+    const { groupId, permissionId } = request.params as { groupId: string; permissionId: string };
+    const existing = await fastify.pg.query("SELECT id, group_id, resource, action FROM identity_group_permissions WHERE id = $1 AND group_id = $2", [permissionId, groupId]);
+    await fastify.pg.query("DELETE FROM identity_group_permissions WHERE id = $1 AND group_id = $2", [permissionId, groupId]);
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "identity_group.permission_revoked",
+      entityType: "IdentityGroup",
+      entityId: groupId,
+      oldValues: existing.rows[0] || { permissionId, groupId },
+      metadata: { source: "api.admin", surface: "admin-console" },
+    });
+    clearPermissionCache();
+    return { success: true };
   });
 
   fastify.get("/api/admin/number-sequences", { onRequest: [fastify.authenticate, requirePermission("number-sequences", "read")] }, async (_request, reply) => {

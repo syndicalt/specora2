@@ -69,7 +69,9 @@ interface SsoConfig {
   idpSsoUrl: string;
   idpCertPresent: boolean;
   spEntityId: string;
+  spAcsUrl: string;
   metadataUrl: string;
+  metadataXmlPresent: boolean;
   jitEnabled: boolean;
   clientId: string;
   clientSecretRef: string;
@@ -85,6 +87,32 @@ interface SsoConfig {
   updatedAt: string;
 }
 
+interface IdentityGroup {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string | null;
+  source: string;
+  external_id?: string | null;
+  cmdb_ci_id?: string | null;
+}
+
+interface IdentityGroupMembership {
+  id: string;
+  group_id: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  source: string;
+}
+
+interface IdentityGroupPermission {
+  id: string;
+  group_id: string;
+  resource: string;
+  action: string;
+}
+
 interface AdminPanel {
   id: string;
   name: string;
@@ -98,6 +126,14 @@ interface RbacUser {
   name: string;
   email: string;
   role: string;
+}
+
+interface RbacGroup {
+  id: string;
+  name: string;
+  slug: string;
+  source: string;
+  cmdb_ci_id?: string | null;
 }
 
 interface RbacTarget {
@@ -396,6 +432,12 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [numberSequences, setNumberSequences] = useState<NumberSequence[]>([]);
   const [numberSequenceOptions, setNumberSequenceOptions] = useState<NumberSequenceOption[]>([]);
   const [ssoConfigs, setSsoConfigs] = useState<SsoConfig[]>([]);
+  const [identityGroups, setIdentityGroups] = useState<IdentityGroup[]>([]);
+  const [identityGroupMemberships, setIdentityGroupMemberships] = useState<IdentityGroupMembership[]>([]);
+  const [identityGroupPermissions, setIdentityGroupPermissions] = useState<IdentityGroupPermission[]>([]);
+  const [newIdentityGroup, setNewIdentityGroup] = useState({ name: "", description: "", cmdbCiId: "" });
+  const [groupMemberUserId, setGroupMemberUserId] = useState("");
+  const [groupGrant, setGroupGrant] = useState({ resource: "", action: "" });
   const [newSsoConfig, setNewSsoConfig] = useState({
     name: "",
     provider: "saml" as "saml" | "oidc",
@@ -404,6 +446,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     idpSsoUrl: "",
     idpEntityId: "",
     metadataUrl: "",
+    metadataXml: "",
     issuerUrl: "",
     authorizationUrl: "",
     tokenUrl: "",
@@ -416,6 +459,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     defaultRole: "user",
   });
   const [rbacUsers, setRbacUsers] = useState<RbacUser[]>([]);
+  const [rbacGroups, setRbacGroups] = useState<RbacGroup[]>([]);
   const [rbacTargets, setRbacTargets] = useState<RbacTarget[]>([]);
   const [rbacApps, setRbacApps] = useState<RbacApp[]>([]);
   const [rbacTools, setRbacTools] = useState<RbacTool[]>([]);
@@ -477,13 +521,14 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, identityRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/identity/sso-configs`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/identity/groups`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/field-restrictions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/policy-drift`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -502,6 +547,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const identityData = identityRes.ok ? await identityRes.json() : { configs: [] };
+      const groupsData = groupsRes.ok ? await groupsRes.json() : { groups: [], memberships: [], permissions: [] };
       const rbacOptionsData = rbacOptionsRes.ok ? await rbacOptionsRes.json() : { users: [], targets: [] };
       const fieldRestrictionsData = fieldRestrictionsRes.ok ? await fieldRestrictionsRes.json() : { tables: [] };
       const driftData = driftRes.ok ? await driftRes.json() : null;
@@ -516,7 +562,11 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setNumberSequences(sequenceData.sequences || []);
       setNumberSequenceOptions(sequenceOptionsData.options || []);
       setSsoConfigs(identityData.configs || []);
+      setIdentityGroups(groupsData.groups || []);
+      setIdentityGroupMemberships(groupsData.memberships || []);
+      setIdentityGroupPermissions(groupsData.permissions || []);
       setRbacUsers(rbacOptionsData.users || []);
+      setRbacGroups(rbacOptionsData.groups || []);
       setRbacTargets(rbacOptionsData.targets || []);
       setRbacApps(rbacOptionsData.apps || []);
       setRbacTools(rbacOptionsData.tools || []);
@@ -901,6 +951,17 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     return value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
   }
 
+  async function readSamlMetadataFile(file?: File | null) {
+    if (!file) return;
+    const metadataXml = await file.text();
+    setNewSsoConfig((current) => ({ ...current, metadataXml }));
+  }
+
+  function copyValue(value: string) {
+    if (!value) return;
+    navigator.clipboard?.writeText(value).catch(() => {});
+  }
+
   async function addSsoConfig(e: React.FormEvent) {
     e.preventDefault();
     if (!newSsoConfig.name || !newSsoConfig.emailDomains) return;
@@ -927,6 +988,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
         idpSsoUrl: "",
         idpEntityId: "",
         metadataUrl: "",
+        metadataXml: "",
         issuerUrl: "",
         authorizationUrl: "",
         tokenUrl: "",
@@ -978,6 +1040,77 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to delete identity provider");
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addIdentityGroup(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newIdentityGroup.name) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/identity/groups`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({
+          name: newIdentityGroup.name,
+          description: newIdentityGroup.description || undefined,
+          cmdbCiId: newIdentityGroup.cmdbCiId || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add identity group");
+      setNewIdentityGroup({ name: "", description: "", cmdbCiId: "" });
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addIdentityGroupMember(groupId: string) {
+    if (!groupMemberUserId) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/identity/groups/${groupId}/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({ userId: groupMemberUserId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add group member");
+      setGroupMemberUserId("");
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addIdentityGroupGrant(groupId: string) {
+    if (!groupGrant.resource || !groupGrant.action) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/identity/groups/${groupId}/permissions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify(groupGrant),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to grant group permission");
+      setGroupGrant({ resource: "", action: "" });
       await fetchData();
     } catch (err: any) {
       setError(err.message);
@@ -1145,7 +1278,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     { label: "Permission grants", value: permissions.length, tone: "text-indigo-200", detail: `${roles.length} active roles` },
     { label: "Counter registries", value: numberSequences.length, tone: "text-emerald-200", detail: `${availableSequenceOptions.length} available targets` },
     { label: "Package jobs", value: provisioningJobs.length, tone: "text-cyan-200", detail: "Install and uninstall history" },
-    { label: "Identity providers", value: ssoConfigs.length, tone: "text-sky-200", detail: `${ssoConfigs.filter((config) => config.status === "active").length} active` },
+    { label: "Identity providers", value: ssoConfigs.length, tone: "text-sky-200", detail: `${ssoConfigs.filter((config) => config.status === "active").length} active / ${rbacGroups.length} groups` },
     { label: "Admin panels", value: panels.length + 4, tone: "text-amber-200", detail: "Core and app-owned" },
   ];
 
@@ -2438,6 +2571,10 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
             <h3 className="mb-4 flex items-center gap-2 text-sm font-medium text-gray-300">
               <Plus className="h-4 w-4" /> Register Identity Provider
             </h3>
+            <div className="mb-4 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm text-cyan-100">
+              <div className="font-medium">SAML service provider values are generated after saving the provider.</div>
+              <div className="mt-1 text-cyan-200/70">Create the provider first, then copy the ACS URL and Entity ID from its card into the IdP configuration.</div>
+            </div>
             <div className="grid gap-3 lg:grid-cols-4">
               <FieldInput label="Name" value={newSsoConfig.name} onChange={(value) => setNewSsoConfig((current) => ({ ...current, name: value }))} placeholder="Okta Workforce" />
               <FieldSelect
@@ -2458,6 +2595,20 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                   <FieldInput label="IdP SSO URL" value={newSsoConfig.idpSsoUrl} onChange={(value) => setNewSsoConfig((current) => ({ ...current, idpSsoUrl: value }))} placeholder="https://idp.example/sso" />
                   <FieldInput label="IdP Entity ID" value={newSsoConfig.idpEntityId} onChange={(value) => setNewSsoConfig((current) => ({ ...current, idpEntityId: value }))} />
                   <FieldInput label="Metadata URL" value={newSsoConfig.metadataUrl} onChange={(value) => setNewSsoConfig((current) => ({ ...current, metadataUrl: value }))} />
+                  <div>
+                    <label className="mb-1 block text-xs text-gray-500">Metadata XML</label>
+                    <input type="file" accept=".xml,text/xml,application/xml" onChange={(event) => readSamlMetadataFile(event.target.files?.[0])} className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-300 file:mr-3 file:rounded file:border-0 file:bg-gray-700 file:px-2 file:py-1 file:text-gray-200" />
+                  </div>
+                  <div className="lg:col-span-4">
+                    <label className="mb-1 block text-xs text-gray-500">Paste Metadata XML</label>
+                    <textarea
+                      value={newSsoConfig.metadataXml}
+                      onChange={(event) => setNewSsoConfig((current) => ({ ...current, metadataXml: event.target.value }))}
+                      placeholder="<EntityDescriptor ...>"
+                      rows={4}
+                      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
                 </>
               ) : (
                 <>
@@ -2489,6 +2640,85 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
             </div>
           </form>
 
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-medium text-gray-300">
+              <ShieldCheck className="h-4 w-4 text-indigo-300" /> Identity Groups
+            </h3>
+            <form onSubmit={addIdentityGroup} className="grid items-end gap-3 lg:grid-cols-[1fr_1fr_1fr_auto]">
+              <FieldInput label="Group Name" value={newIdentityGroup.name} onChange={(value) => setNewIdentityGroup((current) => ({ ...current, name: value }))} placeholder="Network Operations" />
+              <FieldInput label="Description" value={newIdentityGroup.description} onChange={(value) => setNewIdentityGroup((current) => ({ ...current, description: value }))} />
+              <FieldInput label="Linked CMDB CI" value={newIdentityGroup.cmdbCiId} onChange={(value) => setNewIdentityGroup((current) => ({ ...current, cmdbCiId: value }))} placeholder="optional group CI id" />
+              <button type="submit" disabled={saving || !newIdentityGroup.name} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Add Group
+              </button>
+            </form>
+            <div className="mt-4 grid gap-3">
+              {identityGroups.map((group) => {
+                const members = identityGroupMemberships.filter((member) => member.group_id === group.id);
+                const grants = identityGroupPermissions.filter((grant) => grant.group_id === group.id);
+                return (
+                  <div key={group.id} className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-gray-100">{group.name}</div>
+                        <div className="mt-1 text-xs text-gray-500">{group.slug} · {group.source}{group.cmdb_ci_id ? ` · CMDB ${group.cmdb_ci_id}` : ""}</div>
+                        {group.description && <div className="mt-2 text-sm text-gray-400">{group.description}</div>}
+                      </div>
+                      <div className="flex gap-2 text-xs">
+                        <span className="rounded bg-gray-800 px-2 py-1 text-gray-300">{members.length} members</span>
+                        <span className="rounded bg-gray-800 px-2 py-1 text-gray-300">{grants.length} grants</span>
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                      <div>
+                        <div className="mb-2 text-xs font-medium uppercase text-gray-500">Members</div>
+                        <div className="space-y-1">
+                          {members.map((member) => (
+                            <div key={member.id} className="rounded bg-gray-900 px-2 py-1 text-sm text-gray-300">{member.user_name || member.user_email}</div>
+                          ))}
+                          {!members.length && <div className="text-sm text-gray-600">No members</div>}
+                        </div>
+                        <div className="mt-2 flex gap-2">
+                          <select value={groupMemberUserId} onChange={(event) => setGroupMemberUserId(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-gray-200">
+                            <option value="">Add user...</option>
+                            {rbacUsers.map((user) => <option key={user.id} value={user.id}>{user.name || user.email}</option>)}
+                          </select>
+                          <button onClick={() => addIdentityGroupMember(group.id)} className="rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:border-indigo-400">Add</button>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="mb-2 text-xs font-medium uppercase text-gray-500">Inherited Grants</div>
+                        <div className="space-y-1">
+                          {grants.map((grant) => (
+                            <div key={grant.id} className="rounded bg-gray-900 px-2 py-1 text-sm text-gray-300">{grant.resource}:{grant.action}</div>
+                          ))}
+                          {!grants.length && <div className="text-sm text-gray-600">No grants</div>}
+                        </div>
+                        <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
+                          <select
+                            value={groupGrant.resource && groupGrant.action ? encodePermissionValue(groupGrant.resource, groupGrant.action) : ""}
+                            onChange={(event) => {
+                              const [resource, action] = decodePermissionValue(event.target.value);
+                              setGroupGrant({ resource, action });
+                            }}
+                            className="min-w-0 rounded-lg border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-gray-200"
+                          >
+                            <option value="">Grant permission...</option>
+                            {rbacTargets.map((target) => (
+                              <option key={`${target.resource}:${target.action}`} value={encodePermissionValue(target.resource, target.action)}>{target.label || target.resource}:{target.action}</option>
+                            ))}
+                          </select>
+                          <button onClick={() => addIdentityGroupGrant(group.id)} className="rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:border-indigo-400">Grant</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {!identityGroups.length && <div className="rounded-lg border border-dashed border-gray-800 p-6 text-center text-sm text-gray-500">No identity groups are registered yet.</div>}
+            </div>
+          </div>
+
           <div className="grid gap-4">
             {ssoConfigs.map((config) => (
               <div key={config.id} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
@@ -2514,7 +2744,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     </button>
                   </div>
                 </div>
-                <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
+                <div className="mt-4 grid gap-3 text-sm md:grid-cols-3 xl:grid-cols-5">
                   <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
                     <div className="text-xs text-gray-500">Start URL</div>
                     <div className="mt-1 truncate text-gray-300">{config.provider === "oidc" ? config.authorizationUrl || "-" : config.idpSsoUrl || "-"}</div>
@@ -2523,9 +2753,18 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     <div className="text-xs text-gray-500">Issuer / Entity</div>
                     <div className="mt-1 truncate text-gray-300">{config.provider === "oidc" ? config.issuerUrl || "-" : config.idpEntityId || "-"}</div>
                   </div>
+                  <button type="button" onClick={() => copyValue(config.spAcsUrl)} className="rounded-lg border border-gray-800 bg-gray-950 p-3 text-left hover:border-cyan-500/60">
+                    <div className="text-xs text-gray-500">SP ACS URL</div>
+                    <div className="mt-1 truncate text-gray-300">{config.spAcsUrl || "-"}</div>
+                  </button>
+                  <button type="button" onClick={() => copyValue(config.spEntityId)} className="rounded-lg border border-gray-800 bg-gray-950 p-3 text-left hover:border-cyan-500/60">
+                    <div className="text-xs text-gray-500">SP Entity ID</div>
+                    <div className="mt-1 truncate text-gray-300">{config.spEntityId || "-"}</div>
+                  </button>
                   <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
                     <div className="text-xs text-gray-500">JIT / Role</div>
                     <div className="mt-1 text-gray-300">{config.jitEnabled ? "JIT enabled" : "JIT disabled"} / {config.defaultRole}</div>
+                    {config.provider === "saml" && <div className="mt-1 text-xs text-gray-600">{config.metadataXmlPresent ? "Metadata XML stored" : "No metadata XML"}</div>}
                   </div>
                 </div>
               </div>

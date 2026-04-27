@@ -4,6 +4,7 @@ interface PermissionCheck {
   role: string;
   resource: string;
   action: string;
+  userId?: string;
 }
 
 const MAX_CACHE_SIZE = 1000;
@@ -65,9 +66,9 @@ interface PgClient {
 
 export async function hasPermission(
   pg: PgClient,
-  { role, resource, action }: PermissionCheck
+  { role, resource, action, userId }: PermissionCheck
 ): Promise<boolean> {
-  const key = `${role}:${resource}:${action}`;
+  const key = `${role}:${userId || "role-only"}:${resource}:${action}`;
 
   // Check local cache first (fastest)
   if (permissionCache.has(key)) {
@@ -97,7 +98,18 @@ export async function hasPermission(
     "SELECT 1 FROM app_permissions WHERE role = $1 AND resource = $2 AND action = $3",
     [role, resource, action]
   );
-  const allowed = result.rows.length > 0;
+  let allowed = result.rows.length > 0;
+  if (!allowed && userId) {
+    const groupResult = await pg.query(
+      `SELECT 1
+       FROM identity_group_memberships gm
+       JOIN identity_group_permissions gp ON gp.group_id = gm.group_id
+       WHERE gm.user_id = $1 AND gp.resource = $2 AND gp.action = $3
+       LIMIT 1`,
+      [userId, resource, action]
+    );
+    allowed = groupResult.rows.length > 0;
+  }
   setCache(key, allowed);
   return allowed;
 }
@@ -119,7 +131,7 @@ export function requirePermission(resource: string, action: string) {
     if (!role) {
       return reply.status(403).send({ error: "Forbidden: no role assigned" });
     }
-    const allowed = await hasPermission(request.server.pg, { role, resource, action });
+    const allowed = await hasPermission(request.server.pg, { role, resource, action, userId: user?.id });
     if (!allowed) {
       return reply.status(403).send({ error: `Forbidden: ${role} cannot ${action} ${resource}` });
     }

@@ -286,6 +286,7 @@ Implemented:
 - Added configured Google/GitHub OAuth login primitives plus enterprise SSO domain discovery/start routes.
 - Added Identity Provider administration in Admin Console with multi-provider SAML/OIDC configuration, domain discovery, JIT/default-role settings, SSO enforcement, and mutation audit events.
 - Hardened auth callbacks with one-time handoff codes, access-token session revocation checks, same-origin return handling, OIDC callback exchange/userinfo retrieval, and SAML ACS fail-closed behavior until the SAML adapter is implemented.
+- Added identity groups, memberships, group-based RBAC inheritance, inherited access explanations, OIDC group-claim synchronization, SAML metadata XML storage/parsing, and copyable SAML SP ACS/Entity ID values in Admin Console.
 
 Exit criteria:
 

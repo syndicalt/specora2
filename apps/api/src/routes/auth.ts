@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { issueAuthTokens, listUserSessions, revokeRefreshToken, revokeUserSession, rotateRefreshToken } from "../services/authSessions";
 import { recordAuditEvent } from "../services/auditLog";
+import { clearPermissionCache } from "../services/rbac";
 
 type OAuthProfile = {
   id: string;
@@ -60,6 +61,33 @@ function resolveSecret(ref?: string | null) {
   if (!ref) return "";
   if (ref.startsWith("env:")) return process.env[ref.slice(4)] || "";
   return process.env[ref] || "";
+}
+
+function slugifyIdentityGroup(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "group";
+}
+
+function readMappedClaim(source: Record<string, unknown>, path?: string) {
+  if (!path) return undefined;
+  return path.split(".").reduce<unknown>((current, key) => {
+    if (!current || typeof current !== "object") return undefined;
+    return (current as Record<string, unknown>)[key];
+  }, source);
+}
+
+function normalizeGroupClaims(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 function configuredOAuthProviders() {
@@ -266,6 +294,35 @@ async function upsertFederatedUser(fastify: FastifyInstance, provider: string, p
     [user.id, provider, profile.id, profile.email, profile.emailVerified, JSON.stringify(profile.raw)]
   );
   return user;
+}
+
+async function syncFederatedGroups(fastify: FastifyInstance, userId: string, config: SsoConfig, profile: OAuthProfile) {
+  const mapping = config.attribute_mapping || {};
+  const groupNames = normalizeGroupClaims(readMappedClaim(profile.raw, mapping.groups || "groups"));
+  if (!groupNames.length) return;
+
+  const source = `sso:${config.id}`;
+  for (const groupName of groupNames) {
+    const slug = `${slugifyIdentityGroup(source)}-${slugifyIdentityGroup(groupName)}`.slice(0, 120);
+    const group = await fastify.pg.query(
+      `INSERT INTO identity_groups (name, slug, description, source, external_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (source, external_id) DO UPDATE SET
+         name = EXCLUDED.name,
+         updated_at = NOW()
+       RETURNING id`,
+      [groupName, slug, `Federated group from ${config.name}`, source, groupName]
+    );
+    const groupId = group.rows[0]?.id;
+    if (!groupId) continue;
+    await fastify.pg.query(
+      `INSERT INTO identity_group_memberships (group_id, user_id, source)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (group_id, user_id) DO UPDATE SET source = EXCLUDED.source`,
+      [groupId, userId, source]
+    );
+  }
+  clearPermissionCache();
 }
 
 async function createAuthHandoff(fastify: FastifyInstance, issued: Awaited<ReturnType<typeof issueAuthTokens>>, options: { returnTo?: string; provider: string }) {
@@ -541,6 +598,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         if (!existing.rows[0]) return reply.status(403).send({ error: "JIT user creation is disabled for this provider" });
       }
       const user = await upsertFederatedUser(fastify, `sso:${params.id}`, profile, config.default_role || "user");
+      await syncFederatedGroups(fastify, user.id, config, profile);
       const issued = await issueAuthTokens(fastify, user, request);
       await auditAuth(fastify, { actorId: user.id, action: "auth.login.success", entityId: user.id, metadata: { method: "sso:oidc", ssoConfigId: params.id } });
       const code = await createAuthHandoff(fastify, issued, { returnTo: state.returnTo, provider: `sso:${params.id}` });
