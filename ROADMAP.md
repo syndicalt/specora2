@@ -61,8 +61,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 
 ## Next Up
 
-- **Tables stewardship cockpit** — Saved views, advanced filters, column sets, inline edit, audit diffs, validation state, bulk actions, CSV/XLSX/JSON import with upsert/match preview, export, and AI-assisted cleanup.
-- **Reporting API surface** — RBAC-aware operational KPI endpoints and metadata contracts for Grafana, PowerBI, Tableau, and warehouse integration.
+- **Reporting API depth** — Seeded enterprise reporting tests, Grafana/PowerBI/Tableau dashboard guidance, CAB effectiveness metrics, knowledge trust/reuse metrics, and operational readiness reporting.
 - **Discovery RC push** — Rollback records/UI, saved mapping profiles, credential-provider abstraction, richer AI mapping rationale, and edge/collector source integration.
 - **Operability and scale hardening** — Restore rehearsal, worker health checks, full SSO validation, build reliability, Redis-backed multi-instance state, and audit-head external anchoring design.
 - **Real-time events** — WebSocket pub/sub for event bus and SSE chat streaming.

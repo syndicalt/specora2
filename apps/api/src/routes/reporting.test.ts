@@ -17,6 +17,20 @@ function makePg(handler?: (sql: string, params?: any[]) => any) {
 async function buildApp(user: any, pgHandler?: (sql: string, params?: any[]) => any) {
   const app = Fastify();
   app.decorate("pg", makePg(pgHandler));
+  app.decorate("neo4j", {
+    session: () => ({
+      run: vi.fn(async () => ({
+        records: [{
+          get: (key: string) => {
+            if (key === "total") return { toNumber: () => 10 };
+            if (key === "complete") return { toNumber: () => 8 };
+            return null;
+          },
+        }],
+      })),
+      close: vi.fn(async () => undefined),
+    }),
+  });
   app.decorate("authenticate", async (request: any) => {
     request.user = user;
   });
@@ -113,6 +127,78 @@ describe("reportingRoutes", () => {
     const app = await buildApp({ id: "u1", role: "admin" });
 
     const res = await app.inject({ method: "GET", url: "/api/reports/contracts/looker" });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("returns governed KPI summaries for visible reporting domains", async () => {
+    const pgHandler = (sql: string) => {
+      if (sql.includes("FROM incidents") && sql.includes("total_open")) {
+        return { rows: [{ total_open: 9, at_risk: 2 }] };
+      }
+      if (sql.includes("SUM(deflection_count)")) {
+        return { rows: [{ deflections: 30, incidents: 70 }] };
+      }
+      if (sql.includes("FROM change_requests") && sql.includes("collisions")) {
+        return { rows: [{ collisions: 1, affected_cis: 1, max_ci_change_count: 2 }] };
+      }
+      if (sql.includes("FROM knowledge_items") && sql.includes("average_trust")) {
+        return { rows: [{ published: 10, fresh: 9, average_trust: 0.82 }] };
+      }
+      if (sql.includes("FROM catalog_requests") && sql.includes("average_age_days")) {
+        return { rows: [{ backlog: 12, average_age_days: 3.4, high_priority: 2 }] };
+      }
+      if (sql.includes("FROM audit_log") && sql.includes("hashed_events")) {
+        return { rows: [{ total_events: 50, hashed_events: 50, privileged_events: 7, distinct_actors: 4 }] };
+      }
+      return null;
+    };
+    const app = await buildApp({ id: "u1", role: "admin" }, pgHandler);
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/reports/kpis?from=2026-04-01T00:00:00.000Z&to=2026-04-30T00:00:00.000Z",
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.window).toEqual({ from: "2026-04-01T00:00:00.000Z", to: "2026-04-30T00:00:00.000Z" });
+    expect(body.kpis).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "sla_risk", value: 2, unit: "count", status: "watch" }),
+      expect.objectContaining({ id: "incident_deflection", value: 30, unit: "percent" }),
+      expect.objectContaining({ id: "cmdb_completeness", value: 80, unit: "percent" }),
+      expect.objectContaining({ id: "audit_security_posture", value: 100, status: "good" }),
+    ]));
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["report.kpis.read", "ReportKpi", "summary"]));
+  });
+
+  it("returns a single KPI by id", async () => {
+    const pgHandler = (sql: string) => {
+      if (sql.includes("FROM catalog_requests") && sql.includes("average_age_days")) {
+        return { rows: [{ backlog: 64, average_age_days: 8.2, high_priority: 6 }] };
+      }
+      return null;
+    };
+    const app = await buildApp({ id: "u1", role: "admin" }, pgHandler);
+
+    const res = await app.inject({ method: "GET", url: "/api/reports/kpis/request_backlog" });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.kpi).toMatchObject({
+      id: "request_backlog",
+      label: "Request Backlog",
+      value: 64,
+      status: "risk",
+      details: { averageAgeDays: 8.2, highPriority: 6 },
+    });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["report.kpi.read", "ReportKpi", "request_backlog"]));
+  });
+
+  it("rejects unknown report KPIs", async () => {
+    const app = await buildApp({ id: "u1", role: "admin" });
+
+    const res = await app.inject({ method: "GET", url: "/api/reports/kpis/magic" });
 
     expect(res.statusCode).toBe(404);
   });

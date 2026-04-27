@@ -44,6 +44,38 @@ type ReportQueryInput = {
   format?: unknown;
 };
 
+type ReportWindow = {
+  from: Date;
+  to: Date;
+};
+
+type ReportKpiStatus = "good" | "watch" | "risk" | "unknown";
+type ReportKpiDirection = "higher_is_better" | "lower_is_better" | "neutral";
+
+type ReportKpiResult = {
+  id: string;
+  label: string;
+  description: string;
+  domain: string;
+  value: number | null;
+  unit: "count" | "percent" | "ratio" | "days";
+  status: ReportKpiStatus;
+  direction: ReportKpiDirection;
+  window: { from: string; to: string };
+  details: Record<string, unknown>;
+};
+
+type ReportKpiDefinition = {
+  id: string;
+  label: string;
+  description: string;
+  domain: string;
+  resources: string[];
+  unit: ReportKpiResult["unit"];
+  direction: ReportKpiDirection;
+  run: (fastify: FastifyInstance, window: ReportWindow) => Promise<Omit<ReportKpiResult, "id" | "label" | "description" | "domain" | "unit" | "direction" | "window">>;
+};
+
 const DATASETS: ReportDataset[] = [
   {
     id: "incidents",
@@ -215,6 +247,14 @@ function parseNonNegativeInt(value: unknown, fallback: number, max: number) {
   return Math.min(parsed, max);
 }
 
+function parseReportWindow(input: { from?: unknown; to?: unknown }): ReportWindow {
+  const now = new Date();
+  const defaultFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const from = parseDate(input.from) || defaultFrom;
+  const to = parseDate(input.to) || now;
+  return from <= to ? { from, to } : { from: to, to: from };
+}
+
 function parseList(value: unknown): string[] {
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
   if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -382,6 +422,45 @@ async function canReadDataset(fastify: FastifyInstance, role: string | null, dat
   return hasPermission(fastify.pg, { role, resource: dataset.resource, action: "read" });
 }
 
+async function canReadResources(fastify: FastifyInstance, role: string | null, resources: string[]) {
+  if (!role) return false;
+  const canReport = await canUseReporting(fastify, role, "read");
+  if (!canReport) return false;
+  for (const resource of resources) {
+    if (!(await hasPermission(fastify.pg, { role, resource, action: "read" }))) return false;
+  }
+  return true;
+}
+
+function numeric(value: unknown): number {
+  if (value && typeof value === "object" && "toNumber" in value && typeof (value as { toNumber: () => number }).toNumber === "function") {
+    return (value as { toNumber: () => number }).toNumber();
+  }
+  const next = Number(value);
+  return Number.isFinite(next) ? next : 0;
+}
+
+function ratio(numerator: number, denominator: number) {
+  return denominator > 0 ? numerator / denominator : null;
+}
+
+function percent(numerator: number, denominator: number) {
+  const value = ratio(numerator, denominator);
+  return value === null ? null : Math.round(value * 1000) / 10;
+}
+
+function kpiStatus(value: number | null, direction: ReportKpiDirection, good: number, watch: number): ReportKpiStatus {
+  if (value === null) return "unknown";
+  if (direction === "lower_is_better") {
+    if (value <= good) return "good";
+    if (value <= watch) return "watch";
+    return "risk";
+  }
+  if (value >= good) return "good";
+  if (value >= watch) return "watch";
+  return "risk";
+}
+
 function normalizeReportQuery(dataset: ReportDataset, input: ReportQueryInput) {
   const now = new Date();
   const defaultFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -525,6 +604,252 @@ function savedReportRow(row: any) {
   };
 }
 
+const KPI_DEFINITIONS: ReportKpiDefinition[] = [
+  {
+    id: "sla_risk",
+    label: "SLA Risk",
+    description: "Open high-priority or aging incidents that are most likely to breach service commitments.",
+    domain: "Incident",
+    resources: ["incident-manager"],
+    unit: "count",
+    direction: "lower_is_better",
+    run: async (fastify, window) => {
+      const result = await fastify.pg.query(
+        `SELECT
+           COUNT(*)::int AS total_open,
+           COUNT(*) FILTER (
+             WHERE status NOT IN ('resolved', 'closed', 'cancelled')
+               AND (priority <= 2 OR severity IN ('high', 'critical') OR created_at <= NOW() - INTERVAL '4 hours')
+           )::int AS at_risk
+         FROM incidents
+         WHERE created_at >= $1 AND created_at <= $2
+           AND status NOT IN ('resolved', 'closed', 'cancelled')`,
+        [window.from.toISOString(), window.to.toISOString()]
+      );
+      const row = result.rows[0] || {};
+      const value = numeric(row.at_risk);
+      return {
+        value,
+        status: kpiStatus(value, "lower_is_better", 0, 5),
+        details: { totalOpen: numeric(row.total_open), threshold: "priority <= 2, high/critical severity, or older than 4 hours" },
+      };
+    },
+  },
+  {
+    id: "incident_deflection",
+    label: "Incident Deflection",
+    description: "Share of help demand absorbed by knowledge deflections instead of new incidents.",
+    domain: "Incident",
+    resources: ["incident-manager", "knowledge-core"],
+    unit: "percent",
+    direction: "higher_is_better",
+    run: async (fastify, window) => {
+      const result = await fastify.pg.query(
+        `SELECT
+           (SELECT COALESCE(SUM(deflection_count), 0)::int FROM knowledge_items WHERE updated_at >= $1 AND updated_at <= $2) AS deflections,
+           (SELECT COUNT(*)::int FROM incidents WHERE created_at >= $1 AND created_at <= $2) AS incidents`,
+        [window.from.toISOString(), window.to.toISOString()]
+      );
+      const row = result.rows[0] || {};
+      const deflections = numeric(row.deflections);
+      const incidents = numeric(row.incidents);
+      const value = percent(deflections, deflections + incidents);
+      return {
+        value,
+        status: kpiStatus(value, "higher_is_better", 40, 20),
+        details: { deflections, incidents },
+      };
+    },
+  },
+  {
+    id: "change_collision_risk",
+    label: "Change Collision Risk",
+    description: "Scheduled change concentration on the same CI inside the reporting window.",
+    domain: "Change",
+    resources: ["change-manager"],
+    unit: "count",
+    direction: "lower_is_better",
+    run: async (fastify, window) => {
+      const result = await fastify.pg.query(
+        `WITH scheduled AS (
+           SELECT ci_id, COUNT(*)::int AS change_count
+           FROM change_requests
+           WHERE COALESCE(scheduled_at, created_at) >= $1
+             AND COALESCE(scheduled_at, created_at) <= $2
+             AND status NOT IN ('closed', 'cancelled', 'rejected')
+           GROUP BY ci_id
+         )
+         SELECT
+           COALESCE(SUM(GREATEST(change_count - 1, 0)), 0)::int AS collisions,
+           COUNT(*) FILTER (WHERE change_count > 1)::int AS affected_cis,
+           COALESCE(MAX(change_count), 0)::int AS max_ci_change_count
+         FROM scheduled`,
+        [window.from.toISOString(), window.to.toISOString()]
+      );
+      const row = result.rows[0] || {};
+      const value = numeric(row.collisions);
+      return {
+        value,
+        status: kpiStatus(value, "lower_is_better", 0, 3),
+        details: { affectedCis: numeric(row.affected_cis), maxCiChangeCount: numeric(row.max_ci_change_count) },
+      };
+    },
+  },
+  {
+    id: "knowledge_freshness",
+    label: "Knowledge Freshness",
+    description: "Published knowledge validated in the last 180 days.",
+    domain: "Knowledge",
+    resources: ["knowledge-core"],
+    unit: "percent",
+    direction: "higher_is_better",
+    run: async (fastify, window) => {
+      const result = await fastify.pg.query(
+        `SELECT
+           COUNT(*)::int AS published,
+           COUNT(*) FILTER (WHERE last_validated_at >= NOW() - INTERVAL '180 days')::int AS fresh,
+           COALESCE(AVG(trust_score), 0)::float AS average_trust
+         FROM knowledge_items
+         WHERE status = 'published'
+           AND updated_at >= $1 AND updated_at <= $2`,
+        [window.from.toISOString(), window.to.toISOString()]
+      );
+      const row = result.rows[0] || {};
+      const fresh = numeric(row.fresh);
+      const published = numeric(row.published);
+      const value = percent(fresh, published);
+      return {
+        value,
+        status: kpiStatus(value, "higher_is_better", 90, 70),
+        details: { fresh, published, averageTrust: numeric(row.average_trust) },
+      };
+    },
+  },
+  {
+    id: "request_backlog",
+    label: "Request Backlog",
+    description: "Open catalog requests and their average age.",
+    domain: "Request",
+    resources: ["customer-portal"],
+    unit: "count",
+    direction: "lower_is_better",
+    run: async (fastify, window) => {
+      const result = await fastify.pg.query(
+        `SELECT
+           COUNT(*)::int AS backlog,
+           COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400), 0)::float AS average_age_days,
+           COUNT(*) FILTER (WHERE priority <= 2)::int AS high_priority
+         FROM catalog_requests
+         WHERE created_at >= $1 AND created_at <= $2
+           AND status NOT IN ('fulfilled', 'closed', 'cancelled', 'rejected')`,
+        [window.from.toISOString(), window.to.toISOString()]
+      );
+      const row = result.rows[0] || {};
+      const value = numeric(row.backlog);
+      return {
+        value,
+        status: kpiStatus(value, "lower_is_better", 10, 50),
+        details: { averageAgeDays: Math.round(numeric(row.average_age_days) * 10) / 10, highPriority: numeric(row.high_priority) },
+      };
+    },
+  },
+  {
+    id: "cmdb_completeness",
+    label: "CMDB Completeness",
+    description: "Configuration items with required identity fields and at least one relationship.",
+    domain: "CMDB",
+    resources: ["cmdb", "relationships"],
+    unit: "percent",
+    direction: "higher_is_better",
+    run: async (fastify) => {
+      const session = fastify.neo4j.session();
+      try {
+        const result = await session.run(
+          `MATCH (ci:ConfigurationItem)
+           OPTIONAL MATCH (ci)-[r]-(:ConfigurationItem)
+           WITH ci, COUNT(r) AS relCount
+           RETURN
+             COUNT(ci) AS total,
+             SUM(CASE
+               WHEN ci.name IS NOT NULL
+                AND ci.class IS NOT NULL
+                AND ci.environment IS NOT NULL
+                AND relCount > 0
+               THEN 1 ELSE 0 END) AS complete`
+        );
+        const row = result.records[0];
+        const total = numeric(row?.get("total"));
+        const complete = numeric(row?.get("complete"));
+        const value = percent(complete, total);
+        return {
+          value,
+          status: kpiStatus(value, "higher_is_better", 95, 80),
+          details: { complete, total, incomplete: Math.max(total - complete, 0) },
+        };
+      } finally {
+        await session.close();
+      }
+    },
+  },
+  {
+    id: "audit_security_posture",
+    label: "Audit Security Posture",
+    description: "Audit integrity coverage and privileged action volume.",
+    domain: "Audit",
+    resources: ["audit-log"],
+    unit: "percent",
+    direction: "higher_is_better",
+    run: async (fastify, window) => {
+      const result = await fastify.pg.query(
+        `SELECT
+           COUNT(*)::int AS total_events,
+           COUNT(*) FILTER (WHERE entry_hash IS NOT NULL AND entry_hash <> '')::int AS hashed_events,
+           COUNT(*) FILTER (
+             WHERE action ILIKE '%admin%'
+                OR action ILIKE '%permission%'
+                OR action ILIKE '%rbac%'
+                OR action ILIKE '%auth%'
+                OR action ILIKE '%report%'
+           )::int AS privileged_events,
+           COUNT(DISTINCT actor_id)::int AS distinct_actors
+         FROM audit_log
+         WHERE created_at >= $1 AND created_at <= $2`,
+        [window.from.toISOString(), window.to.toISOString()]
+      );
+      const row = result.rows[0] || {};
+      const hashedEvents = numeric(row.hashed_events);
+      const totalEvents = numeric(row.total_events);
+      const value = percent(hashedEvents, totalEvents);
+      return {
+        value,
+        status: kpiStatus(value, "higher_is_better", 100, 95),
+        details: {
+          totalEvents,
+          hashedEvents,
+          privilegedEvents: numeric(row.privileged_events),
+          distinctActors: numeric(row.distinct_actors),
+        },
+      };
+    },
+  },
+];
+
+const KPI_BY_ID = new Map(KPI_DEFINITIONS.map((definition) => [definition.id, definition]));
+
+async function runKpi(fastify: FastifyInstance, definition: ReportKpiDefinition, window: ReportWindow): Promise<ReportKpiResult> {
+  const result = await definition.run(fastify, window);
+  return {
+    id: definition.id,
+    label: definition.label,
+    description: definition.description,
+    domain: definition.domain,
+    unit: definition.unit,
+    direction: definition.direction,
+    window: { from: window.from.toISOString(), to: window.to.toISOString() },
+    ...result,
+  };
+}
+
 export async function reportingRoutes(fastify: FastifyInstance) {
   fastify.get("/api/reports/datasets", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const role = await getRole(fastify, request.user);
@@ -571,6 +896,51 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       metadata: { source: "api.reports", target, datasetCount: visible.length },
     });
     return { contract };
+  });
+
+  fastify.get("/api/reports/kpis", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user);
+    if (!(await canUseReporting(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read report KPIs" });
+    }
+    const window = parseReportWindow(request.query as { from?: unknown; to?: unknown });
+    const kpis: ReportKpiResult[] = [];
+    for (const definition of KPI_DEFINITIONS) {
+      if (await canReadResources(fastify, role, definition.resources)) {
+        kpis.push(await runKpi(fastify, definition, window));
+      }
+    }
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "report.kpis.read",
+      entityType: "ReportKpi",
+      entityId: "summary",
+      metadata: { source: "api.reports", kpiCount: kpis.length, from: window.from.toISOString(), to: window.to.toISOString() },
+    });
+    return { kpis, window: { from: window.from.toISOString(), to: window.to.toISOString() } };
+  });
+
+  fastify.get("/api/reports/kpis/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user);
+    if (!(await canUseReporting(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read report KPIs" });
+    }
+    const { id } = request.params as { id: string };
+    const definition = KPI_BY_ID.get(id);
+    if (!definition) return reply.status(404).send({ error: "Report KPI not found" });
+    if (!(await canReadResources(fastify, role, definition.resources))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read report KPI" });
+    }
+    const window = parseReportWindow(request.query as { from?: unknown; to?: unknown });
+    const kpi = await runKpi(fastify, definition, window);
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "report.kpi.read",
+      entityType: "ReportKpi",
+      entityId: id,
+      metadata: { source: "api.reports", kpiId: id, from: window.from.toISOString(), to: window.to.toISOString() },
+    });
+    return { kpi };
   });
 
   fastify.get("/api/reports/datasets/:id/query", { onRequest: [fastify.authenticate] }, async (request, reply) => {

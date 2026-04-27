@@ -10,6 +10,9 @@ Implemented endpoints:
 - `GET /api/reports/datasets/:id` returns metadata for one dataset.
 - `GET /api/reports/datasets/:id/query` returns rows for a dataset.
 - `GET /api/reports/datasets/:id/query?format=csv` returns signed CSV.
+- `GET /api/reports/kpis` returns RBAC-aware KPI summaries for visible reporting domains.
+- `GET /api/reports/kpis/:id` returns one KPI summary.
+- `GET /api/reports/contracts/:target` returns BI/warehouse integration contracts for `grafana`, `powerbi`, `tableau`, or `warehouse`.
 - `GET /api/reports/saved` lists the caller's saved report definitions.
 - `POST /api/reports/saved` creates or updates a saved report definition.
 - `DELETE /api/reports/saved/:id` deletes a saved report definition owned by the caller.
@@ -62,14 +65,27 @@ Implemented canonical datasets:
 - `discovery`
 - `audit`
 
+## KPI Surface
+
+Implemented KPI IDs:
+
+- `sla_risk`
+- `incident_deflection`
+- `change_collision_risk`
+- `knowledge_freshness`
+- `request_backlog`
+- `cmdb_completeness`
+- `audit_security_posture`
+
+Each KPI response includes `value`, `unit`, `status`, `direction`, `window`, and supporting `details`. KPI visibility is governed by `reporting:read` plus the underlying resource permissions required by that KPI.
+
 Near-term additions:
 
 - CMDB health and CSDM data quality.
 - RBAC/security posture.
 - Operational readiness.
-- SLA risk and request backlog KPIs.
-- Change collision and CAB effectiveness metrics.
-- Knowledge freshness, trust, reuse, and deflection metrics.
+- CAB effectiveness metrics.
+- Knowledge trust and reuse metrics.
 
 ## Philosophy
 
