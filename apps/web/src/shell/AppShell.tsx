@@ -11,6 +11,7 @@ import { X } from "lucide-react";
 import { ChatPanel } from "@/components/ChatPanel";
 import { graphqlClient } from "@/lib/api";
 import { useEventStream } from "@/hooks/useEventStream";
+import { BootstrapLoading } from "@/components/BootstrapLoading";
 
 function createMessageBus() {
   const handlers = new Set<(msg: AppMessage) => void>();
@@ -115,28 +116,45 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
   const [state, dispatch] = useReducer(shellReducer, initialShellState);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
   const [ready, setReady] = useState(false);
+  const [bootstrapPhase, setBootstrapPhase] = useState("Starting platform");
+  const [bootstrapTimedOut, setBootstrapTimedOut] = useState(false);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const messageBus = useRef(createMessageBus()).current;
   const userIdRef = useRef<string | null>(null);
   const initialOpenDone = useRef(false);
   const hasLoadedPrefs = useRef(false);
   const loadedDockRef = useRef<string[] | null>(null);
+  const bootstrapPhaseRef = useRef("Starting platform");
 
   useShellHistory(state, dispatch, registry, ready);
 
   // Initialize IndexedDB registry + fetch user preferences
   useEffect(() => {
     let mounted = true;
-    syncServerRegistry()
-      .catch((err) => {
-        console.error("[AppShell] syncServerRegistry failed:", err);
-        return [];
-      })
-      .then((apps) => {
-        if (!mounted) return;
-        setRegistry(apps);
+    setReady(false);
+    setBootstrapTimedOut(false);
+    setBootstrapPhase("Loading application registry");
+    bootstrapPhaseRef.current = "Loading application registry";
+    const timeout = window.setTimeout(() => {
+      if (!mounted) return;
+      setBootstrapTimedOut(true);
+      console.warn(`[AppShell] bootstrap timeout while ${bootstrapPhaseRef.current}`);
+    }, 10000);
 
-      // Fetch user preferences for dock order
-      graphqlClient.request(ME_QUERY).then((data: any) => {
+    async function initializeShell() {
+      let apps: RegistryEntry[] = [];
+      try {
+        apps = await syncServerRegistry();
+      } catch (err) {
+        console.error("[AppShell] syncServerRegistry failed:", err);
+      }
+      if (!mounted) return;
+      setRegistry(apps);
+      setBootstrapPhase("Loading user preferences");
+      bootstrapPhaseRef.current = "Loading user preferences";
+
+      try {
+        const data: any = await graphqlClient.request(ME_QUERY);
         if (!mounted) return;
         const user = data?.me;
         if (user) {
@@ -153,15 +171,23 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
         }
         hasLoadedPrefs.current = true;
         setReady(true);
-      }).catch(() => {
+      } catch (err) {
+        console.error("[AppShell] user preferences failed:", err);
         if (!mounted) return;
         dispatch({ type: "SET_DOCK_ORDER", order: ["service-map"] });
         hasLoadedPrefs.current = true;
         setReady(true);
-      });
-    });
-    return () => { mounted = false; };
-  }, []);
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+
+    initializeShell();
+    return () => {
+      mounted = false;
+      window.clearTimeout(timeout);
+    };
+  }, [bootstrapAttempt]);
 
   // Auto-open default canvas app once on first load — only if nothing is pinned
   useEffect(() => {
@@ -260,9 +286,12 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
 
   if (!ready) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-gray-950 text-gray-400">
-        Loading platform...
-      </div>
+      <BootstrapLoading
+        label="Loading platform..."
+        detail={bootstrapPhase}
+        timedOut={bootstrapTimedOut}
+        onRetry={() => setBootstrapAttempt((attempt) => attempt + 1)}
+      />
     );
   }
 

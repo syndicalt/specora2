@@ -41,11 +41,12 @@ Implemented:
 - Added `pnpm demo:ready` for the consolidated demo-readiness check.
 - Added Playwright smoke coverage for launcher behavior and app-open surfaces across CMDB Explorer, Tables, Incident, Knowledge, and DCIM.
 - Added a DCIM floorplan E2E path for create, edit, refresh verification, and cleanup.
+- Added a recoverable bootstrap loading state with phase diagnostics and E2E coverage for authenticated home startup.
 
 Priority work:
 
 - Expand Playwright smoke tests from app-open checks into one happy write path for Tables.
-- Fix or document the recurring Next `.next` build artifact issue so production builds are repeatable.
+- Fix or document the recurring Next stale dev-server artifact issue so production builds and E2E runs are repeatable.
 - Extend seed validation as new package apps add required demo data.
 - Keep `pnpm demo:ready` current as the canonical demo readiness command.
 - Review app launcher/dock behavior on common screen sizes.
