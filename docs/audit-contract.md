@@ -50,6 +50,13 @@ New audit rows are written through a serialized PostgreSQL advisory-lock transac
 
 The Admin API exposes `GET /api/admin/audit-log/integrity` to verify the current chain and report checked rows, legacy rows, head hash, and failures. Pre-hardening rows without `entry_hash` are treated as legacy baseline rows rather than tamper failures.
 
+Admins can anchor the verified head hash through:
+
+- `POST /api/admin/audit-log/anchors`
+- `GET /api/admin/audit-log/anchors`
+
+Anchor records persist the head hash, checked row count, legacy row count, provider label, optional external reference, canonical payload, and payload digest. Use `provider` and `externalRef` to record where the same payload was written outside the primary database, for example immutable object storage, a transparency log, or a KMS/HSM-signed evidence register.
+
 CSV exports from `GET /api/admin/audit-log?format=csv` include integrity fields and return signed export headers:
 
 - `x-specora-export-digest`
@@ -149,4 +156,4 @@ Implemented audit sources:
 - Auth, chat session, generic job queue, and non-persisting health-rule execution/generation routes are outside the native app mutation audit scope.
 - Package provisioning edge cases such as entitlement failure, rollback, and validation-state transitions should be audited when those workflows become real provisioning jobs.
 - Audit rows are inserted inline today to preserve accountability and chain ordering. If audit volume becomes material, move persistence behind a queue only with strict per-origin ordering and durable retry semantics.
-- External anchoring of the audit head hash is not yet implemented. For high-compliance environments, periodically anchor the head hash to immutable object storage, a KMS/HSM-signed transparency log, or another external evidence store.
+- For high-compliance environments, periodically anchor the head hash and store the anchor payload outside the primary database, then save that external reference back to Specora.

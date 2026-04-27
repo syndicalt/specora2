@@ -232,6 +232,21 @@ function auditRow(row: any) {
   };
 }
 
+function auditAnchorRow(row: any) {
+  return {
+    id: row.id,
+    headHash: row.head_hash,
+    checkedRows: Number(row.checked_rows || 0),
+    legacyRows: Number(row.legacy_rows || 0),
+    provider: row.provider || "manual",
+    externalRef: row.external_ref || "",
+    payload: typeof row.payload === "string" ? JSON.parse(row.payload || "{}") : row.payload || {},
+    payloadDigest: row.payload_digest,
+    createdBy: row.created_by || null,
+    createdAt: timestampString(row.created_at),
+  };
+}
+
 function exportSignature(body: string, secret?: string) {
   const digest = createHash("sha256").update(body).digest("hex");
   const signature = createHmac("sha256", secret || "specora-dev-secret").update(digest).digest("hex");
@@ -2454,6 +2469,69 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to verify audit integrity" });
+    }
+  });
+
+  fastify.get("/api/admin/audit-log/anchors", { onRequest: [fastify.authenticate, requirePermission("audit-log", "read")] }, async (_request, reply) => {
+    try {
+      const result = await fastify.pg.query(
+        `SELECT id, head_hash, checked_rows, legacy_rows, provider, external_ref, payload, payload_digest, created_by, created_at
+         FROM audit_head_anchors
+         ORDER BY created_at DESC
+         LIMIT 50`
+      );
+      return { anchors: result.rows.map(auditAnchorRow) };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to fetch audit anchors" });
+    }
+  });
+
+  fastify.post("/api/admin/audit-log/anchors", { onRequest: [fastify.authenticate, requirePermission("audit-log", "write")] }, async (request, reply) => {
+    const body = request.body as { provider?: string; externalRef?: string; limit?: number } | undefined;
+    try {
+      const integrity = await verifyAuditIntegrity(fastify.pg, parsePositiveInt(body?.limit, 10000, 100000));
+      if (!integrity.verified) return reply.status(409).send({ error: "Audit chain must verify before anchoring", integrity });
+      if (!integrity.headHash) return reply.status(400).send({ error: "No audit head hash is available to anchor", integrity });
+      const payload = {
+        version: 1,
+        product: "specora",
+        kind: "audit-head-anchor",
+        headHash: integrity.headHash,
+        checkedRows: integrity.checked,
+        legacyRows: integrity.legacyRows,
+        anchoredAt: new Date().toISOString(),
+      };
+      const payloadText = JSON.stringify(payload);
+      const payloadDigest = createHash("sha256").update(payloadText).digest("hex");
+      const result = await fastify.pg.query(
+        `INSERT INTO audit_head_anchors (head_hash, checked_rows, legacy_rows, provider, external_ref, payload, payload_digest, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, head_hash, checked_rows, legacy_rows, provider, external_ref, payload, payload_digest, created_by, created_at`,
+        [
+          integrity.headHash,
+          integrity.checked,
+          integrity.legacyRows,
+          body?.provider?.trim() || "manual",
+          body?.externalRef?.trim() || null,
+          payloadText,
+          payloadDigest,
+          (request.user as any)?.id || null,
+        ]
+      );
+      const anchor = auditAnchorRow(result.rows[0]);
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "audit.anchor.created",
+        entityType: "AuditHeadAnchor",
+        entityId: anchor.id,
+        newValues: anchor,
+        metadata: { source: "api.admin", surface: "admin-console", provider: anchor.provider },
+      });
+      return { anchor };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to anchor audit head" });
     }
   });
 

@@ -6,6 +6,7 @@ import { authPlugin } from "../plugins/jwt";
 import { clearPermissionCache } from "../services/rbac";
 import { clearFieldRestrictionCache } from "../services/fieldRbac";
 import { encryptCredentialSecret } from "../services/credentials";
+import { expectedAuditHash } from "../services/auditLog";
 
 vi.mock("../services/appTools", async () => {
   const actual = await vi.importActual<typeof import("../services/appTools")>("../services/appTools");
@@ -805,6 +806,70 @@ describe("adminRoutes", () => {
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.payload)).toMatchObject({ verified: true, checked: 0 });
+  });
+
+  it("creates and lists audit head anchors", async () => {
+    const auditRow = {
+      id: "audit-1",
+      actor_id: null,
+      action: "rbac.permission.created",
+      entity_type: "AppPermission",
+      entity_id: "perm-1",
+      old_values: null,
+      new_values: { role: "operator" },
+      metadata: { result: "success" },
+      previous_hash: null,
+      entry_hash: "",
+      created_at: "2026-04-26T12:00:00.000Z",
+    };
+    auditRow.entry_hash = expectedAuditHash(auditRow);
+    const anchors: any[] = [];
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("FROM audit_log") && sql.includes("ORDER BY created_at ASC")) {
+        return Promise.resolve({ rows: [auditRow], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO audit_head_anchors")) {
+        const row = {
+          id: "anchor-1",
+          head_hash: params?.[0],
+          checked_rows: params?.[1],
+          legacy_rows: params?.[2],
+          provider: params?.[3],
+          external_ref: params?.[4],
+          payload: JSON.parse(params?.[5]),
+          payload_digest: params?.[6],
+          created_by: params?.[7],
+          created_at: "2026-04-27T00:00:00.000Z",
+        };
+        anchors.push(row);
+        return Promise.resolve({ rows: [row], rowCount: 1 });
+      }
+      if (sql.includes("FROM audit_head_anchors")) {
+        return Promise.resolve({ rows: anchors, rowCount: anchors.length });
+      }
+      if (sql.includes("SELECT entry_hash FROM audit_log")) return Promise.resolve({ rows: [], rowCount: 0 });
+      if (sql.includes("INSERT INTO audit_log")) return Promise.resolve({ rows: [], rowCount: 1 });
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/audit-log/anchors",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { provider: "object-storage", externalRef: "s3://evidence/audit-head.json" },
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(JSON.parse(created.payload).anchor).toMatchObject({
+      id: "anchor-1",
+      headHash: auditRow.entry_hash,
+      provider: "object-storage",
+      externalRef: "s3://evidence/audit-head.json",
+    });
+
+    const listed = await app.inject({ method: "GET", url: "/api/admin/audit-log/anchors", headers: authHeader(app) });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.payload).anchors).toHaveLength(1);
   });
 
   it("manages number sequences", async () => {

@@ -375,7 +375,7 @@ Application logs currently come from each service process/container. Important o
 
 The canonical audit contract is documented in [Audit Contract](audit-contract.md). Current server-side coverage includes CMDB event-bus mutations, Discovery completion events, generic Tables create/update/delete paths, Arc app install/uninstall provisioning, Admin number sequence, RBAC permission, system property, state-machine changes, app tool execution/queue/denial/failure outcomes, Incident automation workflows, and native app mutation routes for Change, Knowledge, Asset, Prevention, Discovery, Data Foundations, and IT Visibility DCIM.
 
-Audit records are append-only in PostgreSQL and include a tamper-evident hash chain for new rows. Admin users can verify the chain through the Admin Console or `GET /api/admin/audit-log/integrity`. Audit CSV exports include integrity hashes and signed digest headers for evidence handling.
+Audit records are append-only in PostgreSQL and include a tamper-evident hash chain for new rows. Admin users can verify the chain through the Admin Console or `GET /api/admin/audit-log/integrity`. Verified head hashes can be anchored through `POST /api/admin/audit-log/anchors` with a provider label and external evidence reference. Audit CSV exports include integrity hashes and signed digest headers for evidence handling.
 
 Audit is intentionally stored separately from app-specific event tables. Event tables explain workflow history inside an app; `audit_log` explains accountable platform mutations across apps and integration surfaces.
 
@@ -390,4 +390,4 @@ Known gaps before production claims:
 - Field-level RBAC and identity-group permission inheritance are implemented and explainable through Admin RBAC utilities. Condition-based record ACLs remain a roadmap item.
 - Backup/restore procedures are documented separately and have a local rehearsal command; managed production restore runbooks still need environment-specific validation.
 - Secrets should be supplied by a secret manager, not committed `.env` files or compose defaults.
-- Audit hash-chain external anchoring is not yet implemented. High-compliance deployments should plan immutable external retention or head-hash anchoring.
+- Audit head anchoring records are implemented; high-compliance deployments still need an environment-specific immutable external evidence store such as object-lock storage, a transparency log, or a KMS/HSM-backed register.
