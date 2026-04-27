@@ -107,6 +107,8 @@ type DiffRow = {
 
 const PAGE_SIZE = 100;
 const TABLES_LAUNCH_KEY = "specora_tables_launch";
+const SELECT_CLASS = "appearance-none rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500";
+const INLINE_SELECT_CLASS = "w-full min-w-32 appearance-none rounded border border-indigo-500 bg-gray-950 px-2 py-1 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-50";
 
 const OPERATORS: Array<{ value: FilterOperator; label: string; needsValue: boolean }> = [
   { value: "contains", label: "contains", needsValue: true },
@@ -791,7 +793,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             <button onClick={() => loadRecords()} className="rounded-lg border border-gray-700 bg-gray-900 p-2 text-gray-300 hover:text-white" title="Refresh">
               <RefreshCw className={`h-4 w-4 ${recordLoading ? "animate-spin" : ""}`} />
             </button>
-            <select value={density} onChange={(event) => setDensity(event.target.value as typeof density)} className="rounded-lg border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-300 outline-none focus:border-indigo-500" title="Density">
+            <select value={density} onChange={(event) => setDensity(event.target.value as typeof density)} className={SELECT_CLASS} title="Density">
               <option value="compact">Compact</option>
               <option value="comfortable">Comfortable</option>
               <option value="spacious">Spacious</option>
@@ -851,10 +853,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             <div className="mt-3 space-y-2">
               {filters.map((filter) => (
                 <div key={filter.id} className="grid grid-cols-[220px_160px_1fr_36px] gap-2">
-                  <select value={filter.field} onChange={(event) => updateFilter(filter.id, { field: event.target.value })} className="rounded-lg border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-300 outline-none focus:border-indigo-500">
+                  <select value={filter.field} onChange={(event) => updateFilter(filter.id, { field: event.target.value })} className={SELECT_CLASS}>
                   {availableColumns.filter((column) => canReadColumn(column.key)).map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
                   </select>
-                  <select value={filter.operator} onChange={(event) => updateFilter(filter.id, { operator: event.target.value as FilterOperator })} className="rounded-lg border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-300 outline-none focus:border-indigo-500">
+                  <select value={filter.operator} onChange={(event) => updateFilter(filter.id, { operator: event.target.value as FilterOperator })} className={SELECT_CLASS}>
                     {OPERATORS.map((operator) => <option key={operator.value} value={operator.value}>{operator.label}</option>)}
                   </select>
                   {isValueOperator(filter.operator) ? (
@@ -992,7 +994,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
 function FilterValueInput({ filter, attr, onChange }: { filter: TableFilter; attr?: AttributeDef; onChange: (value: string) => void }) {
   if (attr?.attrType === "boolean") {
     return (
-      <select value={filter.value || "true"} onChange={(event) => onChange(event.target.value)} className="rounded-lg border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-300 outline-none focus:border-indigo-500">
+      <select value={filter.value || "true"} onChange={(event) => onChange(event.target.value)} className={SELECT_CLASS}>
         <option value="true">true</option>
         <option value="false">false</option>
       </select>
@@ -1000,7 +1002,7 @@ function FilterValueInput({ filter, attr, onChange }: { filter: TableFilter; att
   }
   if (attr?.attrType === "enum" && attr.enumValues?.length) {
     return (
-      <select value={filter.value} onChange={(event) => onChange(event.target.value)} className="rounded-lg border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-300 outline-none focus:border-indigo-500">
+      <select value={filter.value} onChange={(event) => onChange(event.target.value)} className={SELECT_CLASS}>
         <option value="">Select value</option>
         {attr.enumValues.map((value) => <option key={value} value={value}>{value}</option>)}
       </select>
@@ -1050,7 +1052,7 @@ function InlineCellEditor({
   };
   if (attr?.attrType === "boolean") {
     return (
-      <select autoFocus disabled={saving} value={value || "false"} onBlur={commitOnce} onKeyDown={onKeyDown} onChange={(event) => onChange(event.target.value)} className={className}>
+      <select autoFocus disabled={saving} value={value || "false"} onBlur={commitOnce} onKeyDown={onKeyDown} onChange={(event) => onChange(event.target.value)} className={INLINE_SELECT_CLASS}>
         <option value="true">true</option>
         <option value="false">false</option>
       </select>
@@ -1058,7 +1060,7 @@ function InlineCellEditor({
   }
   if (attr?.attrType === "enum" && attr.enumValues?.length) {
     return (
-      <select autoFocus disabled={saving} value={value} onBlur={commitOnce} onKeyDown={onKeyDown} onChange={(event) => onChange(event.target.value)} className={className}>
+      <select autoFocus disabled={saving} value={value} onBlur={commitOnce} onKeyDown={onKeyDown} onChange={(event) => onChange(event.target.value)} className={INLINE_SELECT_CLASS}>
         <option value="">Select value</option>
         {attr.enumValues.map((item) => <option key={item} value={item}>{item}</option>)}
       </select>
@@ -1233,7 +1235,7 @@ function AttributeInput({ attr, value, onChange }: { attr: AttributeDef; value: 
     );
   } else if (attr.attrType === "enum" && attr.enumValues?.length) {
     input = (
-      <select disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500">
+      <select disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} className={`w-full ${SELECT_CLASS}`}>
         <option value="">Select value</option>
         {attr.enumValues.map((item) => <option key={item} value={item}>{item}</option>)}
       </select>
