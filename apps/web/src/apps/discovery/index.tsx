@@ -92,7 +92,18 @@ type DiscoveryCredentialReference = {
   lastError?: string | null;
 };
 
-type SourceForm = { name: string; type: string; sample: string; endpoint: string; credentialRef: string };
+type DiscoveryCollector = {
+  id: string;
+  name: string;
+  status: string;
+  site?: string;
+  version?: string;
+  labels?: Record<string, unknown>;
+  lastHeartbeatAt?: string | null;
+  lastSeenIp?: string | null;
+};
+
+type SourceForm = { name: string; type: string; sample: string; endpoint: string; credentialRef: string; collectorId: string };
 
 type TransformProposal = {
   title: string;
@@ -243,6 +254,7 @@ function sourceConfigFromForm(form: SourceForm) {
   return {
     endpoint: form.endpoint,
     credentialRef: form.credentialRef || null,
+    collectorId: form.collectorId || null,
     placeholder: true,
   };
 }
@@ -269,6 +281,7 @@ function sourceFormFromSource(source: DiscoverySource): SourceForm {
     sample: String(config.sample || (columns.length && rows.length ? rowsToCsv(columns, rows) : SAMPLE)),
     endpoint: String(config.endpoint || ""),
     credentialRef: String(config.credentialRef || source.credentialRef || ""),
+    collectorId: String(config.collectorId || ""),
   };
 }
 
@@ -496,6 +509,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [jobs, setJobs] = useState<DiscoveryJob[]>([]);
   const [sources, setSources] = useState<DiscoverySource[]>([]);
   const [credentialRefs, setCredentialRefs] = useState<DiscoveryCredentialReference[]>([]);
+  const [collectors, setCollectors] = useState<DiscoveryCollector[]>([]);
   const [classes, setClasses] = useState<TargetClass[]>([]);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [mappingProfiles, setMappingProfiles] = useState<MappingProfile[]>([]);
@@ -507,7 +521,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [preview, setPreview] = useState<PipelinePreview | null>(null);
   const [staged, setStaged] = useState<StagedDiscoveryJob | null>(null);
   const [rollbacks, setRollbacks] = useState<DiscoveryRollback[]>([]);
-  const [sourceForm, setSourceForm] = useState<SourceForm>({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "" });
+  const [sourceForm, setSourceForm] = useState<SourceForm>({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "", collectorId: "" });
+  const [collectorForm, setCollectorForm] = useState({ name: "", site: "", version: "" });
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [mappingProfileName, setMappingProfileName] = useState("Reusable mapping");
@@ -703,6 +718,15 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
         setCredentialRefs(credentialData.credentials || []);
       } catch {
         errorKey += "credentials";
+      }
+
+      try {
+        const collectorRes = await api.fetch("/discovery/collectors");
+        if (!collectorRes.ok) throw new Error(`Collector request failed: ${collectorRes.status}`);
+        const collectorData = await collectorRes.json();
+        setCollectors(collectorData.collectors || []);
+      } catch {
+        errorKey += "collectors";
       }
 
       if (errorKey && loadErrorRef.current !== errorKey) {
@@ -1096,7 +1120,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     const config = sourceConfigFromForm(sourceForm);
     try {
       const created = await shell.mutate(CREATE_SOURCE, { name: sourceForm.name || "Untitled source", type: sourceForm.type, config });
-      setSourceForm({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "" });
+      setSourceForm({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "", collectorId: "" });
       setEditingSourceId(null);
       if (created?.createDiscoverySource) applySource(created.createDiscoverySource);
       shell.notify("Discovery source created", "success");
@@ -1111,7 +1135,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     const config = sourceConfigFromForm(sourceForm);
     try {
       const updated = await shell.mutate(UPDATE_SOURCE, { id: editingSourceId, name: sourceForm.name || "Untitled source", type: sourceForm.type, config });
-      setSourceForm({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "" });
+      setSourceForm({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "", collectorId: "" });
       setEditingSourceId(null);
       if (updated?.updateDiscoverySource) applySource(updated.updateDiscoverySource);
       shell.notify("Discovery source updated", "success");
@@ -1128,7 +1152,27 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   function cancelSourceEdit() {
     setEditingSourceId(null);
-    setSourceForm({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "" });
+    setSourceForm({ name: "", type: "csv", sample: SAMPLE, endpoint: "", credentialRef: "", collectorId: "" });
+  }
+
+  async function registerCollector() {
+    if (!collectorForm.name.trim()) {
+      shell.notify("Collector name is required", "error");
+      return;
+    }
+    try {
+      const res = await shell.fetch("/discovery/collectors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collectorForm),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setCollectorForm({ name: "", site: "", version: "" });
+      shell.notify("Collector registered", "success");
+      refresh();
+    } catch {
+      shell.notify("Collector could not be registered", "error");
+    }
   }
 
   async function deleteSource(id: string) {
@@ -1346,6 +1390,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 <option value="api">REST API</option>
                 <option value="database">Database</option>
                 <option value="cloud">Cloud inventory</option>
+                <option value="edge">Edge collector</option>
                 <option value="manual">Manual table</option>
               </select>
               {(sourceForm.type === "csv" || sourceForm.type === "manual") ? (
@@ -1357,6 +1402,24 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 <>
                   <label className="block text-xs text-gray-500">Endpoint or connection placeholder</label>
                   <input value={sourceForm.endpoint} onChange={(event) => setSourceForm({ ...sourceForm, endpoint: event.target.value })} className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500" placeholder="https://inventory.example/api/assets" />
+                  {sourceForm.type === "edge" && (
+                    <>
+                      <label className="block text-xs text-gray-500">Collector</label>
+                      <select
+                        value={sourceForm.collectorId}
+                        onChange={(event) => setSourceForm({ ...sourceForm, collectorId: event.target.value })}
+                        className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                      >
+                        <option value="">Select an edge collector</option>
+                        {collectors.map((collector) => (
+                          <option key={collector.id} value={collector.id}>
+                            {collector.name} · {collector.status}{collector.site ? ` · ${collector.site}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      {!collectors.length && <div className="text-xs leading-5 text-gray-500">Register a collector below before binding edge sources.</div>}
+                    </>
+                  )}
                   <label className="block text-xs text-gray-500">Credential reference</label>
                   <select
                     value={sourceForm.credentialRef}
@@ -1379,6 +1442,33 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 {editingSourceId ? "Save source" : "Create source"}
               </button>
             </div>
+          </section>
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold">Edge Collectors</h2>
+            <div className="space-y-2 rounded-lg border border-gray-800 bg-gray-900 p-4">
+              <input value={collectorForm.name} onChange={(event) => setCollectorForm({ ...collectorForm, name: event.target.value })} className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500" placeholder="Austin edge collector" />
+              <div className="grid grid-cols-2 gap-2">
+                <input value={collectorForm.site} onChange={(event) => setCollectorForm({ ...collectorForm, site: event.target.value })} className="rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500" placeholder="Site" />
+                <input value={collectorForm.version} onChange={(event) => setCollectorForm({ ...collectorForm, version: event.target.value })} className="rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500" placeholder="Version" />
+              </div>
+              <button onClick={registerCollector} className="w-full rounded-md border border-cyan-500/40 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/10">Register collector</button>
+            </div>
+            {collectors.length ? collectors.map((collector) => (
+              <div key={collector.id} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-gray-100">{collector.name}</div>
+                    <div className="mt-1 text-xs text-gray-500">{collector.site || "No site"}{collector.version ? ` · v${collector.version}` : ""}</div>
+                  </div>
+                  <span className={`rounded px-2 py-0.5 text-xs ${collector.status === "healthy" ? "bg-emerald-500/10 text-emerald-300" : collector.status === "degraded" ? "bg-amber-500/10 text-amber-200" : "bg-gray-800 text-gray-400"}`}>{collector.status}</span>
+                </div>
+                <div className="mt-2 text-xs text-gray-500">
+                  {collector.lastHeartbeatAt ? `Last heartbeat ${new Date(collector.lastHeartbeatAt).toLocaleString()}` : "No heartbeat received"}
+                </div>
+              </div>
+            )) : (
+              <div className="rounded-lg border border-dashed border-gray-800 p-5 text-center text-sm text-gray-500">No edge collectors registered.</div>
+            )}
           </section>
           <section className="space-y-3">
             <h2 className="text-sm font-semibold">Configured Sources</h2>

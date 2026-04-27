@@ -12,6 +12,7 @@ describe("discoveryRoutes", () => {
       queuedResults,
       query: vi.fn(async (sql: string) => {
         if (sql.includes("FROM app_permissions")) return { rows: [{ ok: 1 }] };
+        if (sql.includes("SELECT entry_hash FROM audit_log") || sql.includes("INSERT INTO audit_log")) return { rows: [], rowCount: 1 };
         if (queuedResults.length) return queuedResults.shift();
         return { rows: [{ id: "dj-1" }] };
       }),
@@ -77,6 +78,32 @@ describe("discoveryRoutes", () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)[0].name).toBe("AWS import");
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("FROM discovery_pipelines"));
+  });
+
+  it("registers and heartbeats discovery collectors", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push(
+      { rows: [{ id: "collector-1", name: "Edge Collector", status: "registered", site: "Austin", version: "1.0.0", labels: { zone: "prod" }, config: {}, created_at: "2026-04-27", updated_at: "2026-04-27" }] },
+      { rows: [{ id: "collector-1", name: "Edge Collector", status: "healthy", site: "Austin", version: "1.0.1", labels: { zone: "prod" }, config: { lastStats: { hosts: 12 } }, last_heartbeat_at: "2026-04-27", created_at: "2026-04-27", updated_at: "2026-04-27" }] }
+    );
+
+    const registered = await app.inject({
+      method: "POST",
+      url: "/discovery/collectors",
+      payload: { name: "Edge Collector", site: "Austin", version: "1.0.0", labels: { zone: "prod" } },
+    });
+    expect(registered.statusCode).toBe(200);
+    expect(JSON.parse(registered.body).collector).toMatchObject({ id: "collector-1", name: "Edge Collector", status: "registered" });
+
+    const heartbeat = await app.inject({
+      method: "POST",
+      url: "/discovery/collectors/collector-1/heartbeat",
+      payload: { status: "healthy", version: "1.0.1", stats: { hosts: 12 } },
+    });
+    expect(heartbeat.statusCode).toBe(200);
+    expect(JSON.parse(heartbeat.body).collector).toMatchObject({ id: "collector-1", status: "healthy", version: "1.0.1" });
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.collector_registered", "DiscoveryCollector", "collector-1"]));
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.collector_heartbeat", "DiscoveryCollector", "collector-1"]));
   });
 
   it("lists only active discovery-scoped credential references", async () => {
@@ -189,15 +216,9 @@ describe("discoveryRoutes", () => {
     };
     (app as any).pg.queuedResults.push(
       { rows: [row] },
-      { rows: [] },
-      { rows: [{ id: "audit-1" }] },
       { rows: [row] },
       { rows: [row] },
-      { rows: [] },
-      { rows: [{ id: "audit-2" }] },
       { rows: [row] },
-      { rows: [] },
-      { rows: [{ id: "audit-3" }] },
     );
 
     const created = await app.inject({

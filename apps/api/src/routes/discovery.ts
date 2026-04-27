@@ -30,6 +30,22 @@ function mappingProfileRow(row: any) {
   };
 }
 
+function collectorRow(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    site: row.site || "",
+    version: row.version || "",
+    labels: typeof row.labels === "string" ? JSON.parse(row.labels || "{}") : row.labels || {},
+    config: typeof row.config === "string" ? JSON.parse(row.config || "{}") : row.config || {},
+    lastHeartbeatAt: row.last_heartbeat_at || null,
+    lastSeenIp: row.last_seen_ip || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 async function requireDiscoveryPermission(fastify: FastifyInstance, request: any, reply: any, action: "read" | "write") {
   const role = await resolveUserRole(fastify.pg, request.user as any);
   if (!role || !(await hasPermission(fastify.pg, { role, resource: "discovery", action }))) {
@@ -40,6 +56,91 @@ async function requireDiscoveryPermission(fastify: FastifyInstance, request: any
 }
 
 export async function discoveryRoutes(fastify: FastifyInstance) {
+  fastify.get("/discovery/collectors", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const result = await fastify.pg.query(
+      `SELECT id, name, status, site, version, labels, config, last_heartbeat_at, last_seen_ip, created_at, updated_at
+       FROM discovery_collectors
+       ORDER BY COALESCE(last_heartbeat_at, created_at) DESC, name`
+    );
+    return { collectors: result.rows.map(collectorRow) };
+  });
+
+  fastify.post("/discovery/collectors", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const body = request.body as { name?: string; site?: string; version?: string; labels?: Record<string, unknown>; config?: Record<string, unknown> };
+    const name = body.name?.trim();
+    if (!name) return reply.status(400).send({ error: "name is required" });
+    const result = await fastify.pg.query(
+      `INSERT INTO discovery_collectors (name, status, site, version, labels, config, created_by, updated_by)
+       VALUES ($1, 'registered', $2, $3, $4, $5, $6, $6)
+       ON CONFLICT (name) DO UPDATE SET
+         site = EXCLUDED.site,
+         version = EXCLUDED.version,
+         labels = EXCLUDED.labels,
+         config = EXCLUDED.config,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = NOW()
+       RETURNING id, name, status, site, version, labels, config, last_heartbeat_at, last_seen_ip, created_at, updated_at`,
+      [
+        name.slice(0, 160),
+        body.site?.trim() || null,
+        body.version?.trim() || null,
+        JSON.stringify(body.labels || {}),
+        JSON.stringify(body.config || {}),
+        (request.user as any)?.id || null,
+      ]
+    );
+    const collector = collectorRow(result.rows[0]);
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.collector_registered",
+      entityType: "DiscoveryCollector",
+      entityId: collector.id,
+      newValues: collector,
+      metadata: { source: "api.discovery", surface: "discovery" },
+    });
+    return { collector };
+  });
+
+  fastify.post("/discovery/collectors/:id/heartbeat", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const { id } = request.params as { id: string };
+    const body = request.body as { status?: string; version?: string; labels?: Record<string, unknown>; stats?: Record<string, unknown> };
+    const status = ["healthy", "degraded", "offline"].includes(body.status || "") ? body.status as string : "healthy";
+    const result = await fastify.pg.query(
+      `UPDATE discovery_collectors
+       SET status = $2,
+           version = COALESCE($3, version),
+           labels = COALESCE($4::jsonb, labels),
+           config = config || $5::jsonb,
+           last_heartbeat_at = NOW(),
+           last_seen_ip = $6,
+           updated_by = $7,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, status, site, version, labels, config, last_heartbeat_at, last_seen_ip, created_at, updated_at`,
+      [
+        id,
+        status,
+        body.version?.trim() || null,
+        body.labels ? JSON.stringify(body.labels) : null,
+        JSON.stringify({ lastStats: body.stats || {} }),
+        request.ip,
+        (request.user as any)?.id || null,
+      ]
+    );
+    if (!result.rows.length) return reply.status(404).send({ error: "Collector not found" });
+    const collector = collectorRow(result.rows[0]);
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.collector_heartbeat",
+      entityType: "DiscoveryCollector",
+      entityId: collector.id,
+      newValues: collector,
+      metadata: { source: "api.discovery", surface: "discovery", status },
+    });
+    return { collector };
+  });
+
   fastify.get("/discovery/credential-references", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
     const result = await fastify.pg.query(
