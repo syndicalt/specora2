@@ -4,6 +4,8 @@ import { getAllRegisteredApps, permissionToResourceAction } from "../services/ap
 import { clearFieldRestrictionCache, fieldTargetsForTable } from "../services/fieldRbac";
 import { getTables } from "./tables";
 import { recordAuditEvent } from "../services/auditLog";
+import { getAllAppToolDefinitions } from "../services/appTools";
+import { resolveAppToolPolicy } from "./appToolPolicy";
 
 const CORE_ADMIN_PANELS = [
   { id: "rbac", name: "RBAC", icon: "Shield", permissions: ["rbac:read"] },
@@ -594,6 +596,104 @@ async function explainAppAccess(
   };
 }
 
+function toolNameParts(fullName: string) {
+  const splitAt = fullName.indexOf("_");
+  if (splitAt === -1) return null;
+  return { appId: fullName.slice(0, splitAt), toolName: fullName.slice(splitAt + 1) };
+}
+
+function registeredAppTools() {
+  return getAllAppToolDefinitions()
+    .map((tool: any) => {
+      const parts = toolNameParts(tool.name);
+      if (!parts) return null;
+      const policy = resolveAppToolPolicy(parts.appId, parts.toolName);
+      return {
+        appId: parts.appId,
+        toolName: parts.toolName,
+        fullName: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+        resource: policy.resource,
+        action: policy.action,
+      };
+    })
+    .filter((tool): tool is NonNullable<typeof tool> => Boolean(tool))
+    .sort((a, b) => `${a.appId}:${a.toolName}`.localeCompare(`${b.appId}:${b.toolName}`));
+}
+
+async function explainToolAccess(
+  fastify: FastifyInstance,
+  body: { userId?: string; email?: string; role?: string; appId?: string; toolName?: string }
+) {
+  const appId = body.appId?.trim();
+  const toolName = body.toolName?.trim();
+  if (!appId || !toolName) return { error: "appId and toolName required" };
+
+  const { user, role } = await resolveAccessSubject(fastify, body);
+  if (!role) return { error: "user or role required" };
+
+  const tool = registeredAppTools().find((candidate) => candidate.appId === appId && candidate.toolName === toolName);
+  if (!tool) return { error: "tool not found" };
+
+  const grantsResult = await fastify.pg.query(
+    "SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY resource, action",
+    [role]
+  );
+  const grants = grantsResult.rows;
+  const evaluation = evaluateGrant(role, grants, tool.resource, tool.action);
+  const target = permissionTarget(tool.resource, tool.action, {
+    label: `${tool.appId} / ${tool.toolName}`,
+    source: "App tool policy",
+    category: "Automation",
+  });
+
+  const trace: Array<{ status: "allow" | "deny" | "info"; label: string; detail: string }> = [
+    { status: "info", label: "Registered app tool", detail: `${tool.fullName} resolves to ${tool.resource}:${tool.action}.` },
+    { status: "info", label: "Policy source", detail: tool.action === "write" ? "Tool name starts with a write/action verb and requires write access." : "Tool name is read-oriented and requires read access." },
+  ];
+  if (evaluation.allowed) {
+    trace.push({ status: "allow", label: "Execution allowed", detail: `${role} can execute ${tool.fullName}.` });
+  } else {
+    trace.push({ status: "deny", label: "Missing grant", detail: `${role} needs ${tool.resource}:${tool.action} to execute ${tool.fullName}.` });
+  }
+
+  return {
+    result: {
+      allowed: evaluation.allowed,
+      user,
+      role,
+      tool: {
+        appId: tool.appId,
+        toolName: tool.toolName,
+        fullName: tool.fullName,
+        description: tool.description,
+        resource: tool.resource,
+        action: tool.action,
+        risk: target.risk,
+      },
+      requirement: {
+        resource: tool.resource,
+        action: tool.action,
+        allowed: evaluation.allowed,
+        reason: evaluation.reason,
+        directGrant: evaluation.directGrant,
+        risk: target.risk,
+        description: target.description,
+      },
+      missing: evaluation.allowed ? [] : [{ resource: tool.resource, action: tool.action, risk: target.risk }],
+      trace,
+      remediation: evaluation.allowed ? [] : [{
+        role,
+        resource: tool.resource,
+        action: tool.action,
+        risk: target.risk,
+        reason: `Grant ${tool.resource}:${tool.action} to ${role} to allow ${tool.fullName}.`,
+      }],
+    },
+  };
+}
+
 export async function getStateMachineConfig(pg: any): Promise<any> {
   const result = await pg.query("SELECT value FROM system_properties WHERE key = 'change_manager.state_machine'");
   if (!result.rows.length) return null;
@@ -710,6 +810,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         permissions: permissionsResult.rows,
         targets: permissionTargets,
         apps: apps.map((app) => ({ id: app.id, name: app.name, permissions: app.permissions })),
+        tools: registeredAppTools(),
       };
     } catch (err: any) {
       fastify.log.error(err);
@@ -736,6 +837,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to explain app access" });
+    }
+  });
+
+  fastify.post("/api/admin/rbac/explain-tool-access", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (request, reply) => {
+    try {
+      const result = await explainToolAccess(fastify, request.body as any);
+      if ("error" in result) return reply.status(400).send(result);
+      return result;
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to explain app tool access" });
     }
   });
 

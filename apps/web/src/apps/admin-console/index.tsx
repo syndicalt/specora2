@@ -89,6 +89,15 @@ interface RbacApp {
   permissions: string[];
 }
 
+interface RbacTool {
+  appId: string;
+  toolName: string;
+  fullName: string;
+  description?: string;
+  resource: string;
+  action: string;
+}
+
 interface AccessAnalysis {
   allowed: boolean;
   reason: string;
@@ -125,6 +134,32 @@ interface AppAccessExplanation {
     risk: string;
     description: string;
   }>;
+  missing: Array<{ resource: string; action: string; risk: string }>;
+  remediation: Array<{ role: string; resource: string; action: string; risk: string; reason: string }>;
+  trace: { status: "allow" | "deny" | "info"; label: string; detail: string }[];
+}
+
+interface ToolAccessExplanation {
+  allowed: boolean;
+  user: RbacUser | null;
+  role: string;
+  tool: {
+    appId: string;
+    toolName: string;
+    fullName: string;
+    description?: string;
+    resource: string;
+    action: string;
+    risk: string;
+  };
+  requirement: {
+    resource: string;
+    action: string;
+    allowed: boolean;
+    reason: string;
+    risk: string;
+    description: string;
+  };
   missing: Array<{ resource: string; action: string; risk: string }>;
   remediation: Array<{ role: string; resource: string; action: string; risk: string; reason: string }>;
   trace: { status: "allow" | "deny" | "info"; label: string; detail: string }[];
@@ -231,10 +266,13 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [rbacUsers, setRbacUsers] = useState<RbacUser[]>([]);
   const [rbacTargets, setRbacTargets] = useState<RbacTarget[]>([]);
   const [rbacApps, setRbacApps] = useState<RbacApp[]>([]);
+  const [rbacTools, setRbacTools] = useState<RbacTool[]>([]);
   const [accessProbe, setAccessProbe] = useState({ userId: "", role: "", target: "" });
   const [accessAnalysis, setAccessAnalysis] = useState<AccessAnalysis | null>(null);
   const [appAccessProbe, setAppAccessProbe] = useState({ userId: "", role: "", appId: "" });
   const [appAccessExplanation, setAppAccessExplanation] = useState<AppAccessExplanation | null>(null);
+  const [toolAccessProbe, setToolAccessProbe] = useState({ userId: "", role: "", tool: "" });
+  const [toolAccessExplanation, setToolAccessExplanation] = useState<ToolAccessExplanation | null>(null);
   const [provisioningJobs, setProvisioningJobs] = useState<ProvisioningJob[]>([]);
   const [operationalIntelligence, setOperationalIntelligence] = useState<OperationalIntelligence | null>(null);
   const [loading, setLoading] = useState(true);
@@ -298,6 +336,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setRbacUsers(rbacOptionsData.users || []);
       setRbacTargets(rbacOptionsData.targets || []);
       setRbacApps(rbacOptionsData.apps || []);
+      setRbacTools(rbacOptionsData.tools || []);
       setProvisioningJobs(jobsData.jobs || []);
       setOperationalIntelligence(opsData);
       setAccessProbe((current) => {
@@ -318,6 +357,16 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
           userId: firstUser?.id || "",
           role: firstUser?.role || "",
           appId: firstApp?.id || "",
+        };
+      });
+      setToolAccessProbe((current) => {
+        if (current.userId || current.role || current.tool) return current;
+        const firstUser = rbacOptionsData.users?.[0];
+        const firstTool = rbacOptionsData.tools?.[0];
+        return {
+          userId: firstUser?.id || "",
+          role: firstUser?.role || "",
+          tool: firstTool ? `${firstTool.appId}${PERMISSION_VALUE_SEPARATOR}${firstTool.toolName}` : "",
         };
       });
     } catch (err: any) {
@@ -413,6 +462,34 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to explain access");
       setAppAccessExplanation(data.result);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function explainToolAccess(e?: React.FormEvent) {
+    e?.preventDefault();
+    const [appId, toolName] = decodePermissionValue(toolAccessProbe.tool);
+    if ((!toolAccessProbe.userId && !toolAccessProbe.role) || !appId || !toolName) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/rbac/explain-tool-access`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({
+          userId: toolAccessProbe.userId || undefined,
+          role: toolAccessProbe.userId ? undefined : toolAccessProbe.role,
+          appId,
+          toolName,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to explain tool access");
+      setToolAccessExplanation(data.result);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -952,6 +1029,120 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                   {appAccessExplanation.remediation.length > 0 && (
                     <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
                       Add the missing grants below in Grant Builder, then rerun this explanation to verify access.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                  <Activity className="h-4 w-4 text-indigo-300" />
+                  Explain Tool Access
+                </h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Troubleshoot chat, automation, and app-tool execution failures against the same policy used at runtime.
+                </p>
+              </div>
+              {toolAccessExplanation && (
+                <div className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  toolAccessExplanation.allowed ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"
+                }`}>
+                  {toolAccessExplanation.allowed ? "Executable" : "Blocked"}
+                </div>
+              )}
+            </div>
+
+            <form onSubmit={explainToolAccess} className="mt-4 grid items-end gap-3 lg:grid-cols-[1.2fr_1fr_1.5fr_auto]">
+              <FieldSelect
+                label="User"
+                value={toolAccessProbe.userId}
+                onChange={(value) => {
+                  const user = rbacUsers.find((candidate) => candidate.id === value);
+                  setToolAccessProbe((current) => ({ ...current, userId: value, role: user?.role || current.role }));
+                }}
+                options={[
+                  { value: "", label: "Explain role only" },
+                  ...rbacUsers.map((user) => ({ value: user.id, label: `${user.name || user.email} (${user.role})` })),
+                ]}
+              />
+              <FieldSelect
+                label="Role"
+                value={toolAccessProbe.role}
+                onChange={(value) => setToolAccessProbe((current) => ({ ...current, role: value, userId: "" }))}
+                options={allRoles.map((role) => ({ value: role, label: role }))}
+              />
+              <FieldSelect
+                label="Tool"
+                value={toolAccessProbe.tool}
+                onChange={(value) => setToolAccessProbe((current) => ({ ...current, tool: value }))}
+                options={rbacTools.map((tool) => ({
+                  value: encodePermissionValue(tool.appId, tool.toolName),
+                  label: `${tool.fullName} -> ${tool.resource}:${tool.action}`,
+                }))}
+              />
+              <button
+                type="submit"
+                disabled={saving || (!toolAccessProbe.userId && !toolAccessProbe.role) || !toolAccessProbe.tool}
+                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Explain
+              </button>
+            </form>
+
+            {toolAccessExplanation && (
+              <div className="mt-5 grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+                <div className={`rounded-lg border p-4 ${
+                  toolAccessExplanation.allowed ? "border-emerald-500/30 bg-emerald-500/10" : "border-red-500/30 bg-red-500/10"
+                }`}>
+                  <div className="flex items-center gap-2">
+                    {toolAccessExplanation.allowed ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <XCircle className="h-5 w-5 text-red-300" />}
+                    <div className="font-medium text-gray-100">
+                      {toolAccessExplanation.role} {toolAccessExplanation.allowed ? "can execute" : "cannot execute"} {toolAccessExplanation.tool.fullName}
+                    </div>
+                  </div>
+                  <div className="mt-3 text-sm leading-6 text-gray-400">{toolAccessExplanation.tool.description || "No tool description registered."}</div>
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <MiniMetric label="Resolved resource" value={toolAccessExplanation.tool.resource} />
+                    <MiniMetric label="Required action" value={toolAccessExplanation.tool.action} />
+                    <MiniMetric label="Risk" value={toolAccessExplanation.tool.risk} />
+                    <MiniMetric label="Policy result" value={toolAccessExplanation.requirement.reason.replaceAll("_", " ")} />
+                  </div>
+                  {!toolAccessExplanation.allowed && (
+                    <button
+                      type="button"
+                      onClick={() => prepareGrant(toolAccessExplanation.role, toolAccessExplanation.tool.resource, toolAccessExplanation.tool.action)}
+                      className="mt-4 rounded-md border border-indigo-500/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/10"
+                    >
+                      Prepare missing grant
+                    </button>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-gray-200">Runtime Decision Trace</div>
+                    <span className={`rounded border px-2 py-0.5 text-xs ${riskClass(toolAccessExplanation.tool.risk)}`}>{toolAccessExplanation.tool.risk}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {toolAccessExplanation.trace.map((step, index) => (
+                      <div key={`${step.label}-${index}`} className="rounded-md border border-gray-800 bg-gray-900 px-3 py-2">
+                        <div className="flex items-center gap-2 text-xs font-medium text-gray-300">
+                          <span className={`h-2 w-2 rounded-full ${
+                            step.status === "allow" ? "bg-emerald-400" : step.status === "deny" ? "bg-red-400" : "bg-indigo-400"
+                          }`} />
+                          {step.label}
+                        </div>
+                        <div className="mt-1 text-xs leading-5 text-gray-500">{step.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {toolAccessExplanation.remediation.length > 0 && (
+                    <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                      This is the same resource/action check used by app tool REST, queued jobs, and chat tool execution.
                     </div>
                   )}
                 </div>
