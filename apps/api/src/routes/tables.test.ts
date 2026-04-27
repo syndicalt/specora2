@@ -302,6 +302,75 @@ describe("tableRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.exported", "cmdb.Location", "cmdb.Location"]));
   });
 
+  it("imports mapped table rows through the audited create path", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-import-1", name: "Dallas DC", class: "Location", environment: "Production", attributes: "{\"city\":\"Dallas\"}" }) })],
+      [makeRecord({ n: makeNode({ id: "loc-import-2", name: "Austin Office", class: "Location", environment: "Production", attributes: "{\"city\":\"Austin\"}" }) })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/import",
+      payload: {
+        source: { filename: "locations.csv", fileType: "csv", rowCount: 2 },
+        rows: [
+          { name: "Dallas DC", environment: "Production", attributes: { city: "Dallas" } },
+          { name: "Austin Office", environment: "Production", attributes: { city: "Austin" } },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.summary).toMatchObject({ requested: 2, created: 2, failed: 0 });
+    expect(body.created.map((record: any) => record.name)).toEqual(["Dallas DC", "Austin Office"]);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.imported", "cmdb.Location", "cmdb.Location"]));
+  });
+
+  it("rejects imports with missing names before creating records", async () => {
+    const neo4j = makeNeo4j();
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/import",
+      payload: { rows: [{ environment: "Production", attributes: { city: "Dallas" } }] },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).errors[0]).toMatchObject({ row: 1, error: "name is required" });
+    expect(neo4j.run).not.toHaveBeenCalled();
+  });
+
+  it("previews upsert imports with update and create decisions", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-existing", name: "Dallas DC", class: "Location", city: "Dallas", attributes: "{\"city\":\"Dallas\"}" }) })],
+      [],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/import",
+      payload: {
+        dryRun: true,
+        mode: "upsert",
+        matchKeys: ["name"],
+        rows: [
+          { name: "Dallas DC", environment: "Production", attributes: { city: "Dallas" } },
+          { name: "Austin Office", environment: "Production", attributes: { city: "Austin" } },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.decisions.map((decision: any) => decision.action)).toEqual(["update", "create"]);
+    expect(body.summary).toMatchObject({ requested: 2, update: 1, create: 1 });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.import_previewed", "cmdb.Location", "cmdb.Location"]));
+  });
+
   it("queues selected records for cleanup review", async () => {
     const neo4j = makeNeo4j([
       [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", attributes: "{\"city\":\"Austin\"}" }) })],
@@ -444,7 +513,7 @@ describe("tableRoutes", () => {
 
     const deleted = await app.inject({ method: "DELETE", url: "/api/tables/cmdb.Location/records/loc-2" });
     expect(deleted.statusCode).toBe(200);
-    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.record.created", "cmdb.Location", "loc-2"]));
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.record.created", "cmdb.Location"]));
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.record.updated", "cmdb.Location", "loc-2"]));
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.record.deleted", "cmdb.Location", "loc-2"]));
   });

@@ -20,6 +20,7 @@ import {
   TableProperties,
   Trash2,
   Undo2,
+  Upload,
   X,
 } from "lucide-react";
 
@@ -135,7 +136,28 @@ type ValidationIssue = {
   reason?: string;
 };
 
+type ImportRow = Record<string, string>;
+type ImportPayloadRow = {
+  name?: string;
+  environment?: string;
+  attributes: Record<string, unknown>;
+};
+type ImportField = {
+  key: string;
+  label: string;
+  attr?: AttributeDef;
+};
+type ImportMode = "create" | "update" | "upsert";
+type ImportDecision = {
+  row: number;
+  action: "create" | "update" | "skip" | "conflict" | "error";
+  recordId?: string;
+  recordName?: string | null;
+  reason?: string;
+};
+
 const PAGE_SIZE = 100;
+const IMPORT_LIMIT = 250;
 const TABLES_LAUNCH_KEY = "specora_tables_launch";
 const SELECT_CLASS = "appearance-none rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500";
 const INLINE_SELECT_CLASS = "w-full min-w-32 appearance-none rounded border border-indigo-500 bg-gray-950 px-2 py-1 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-50";
@@ -291,6 +313,146 @@ function initialForm(table: TableDef, record?: TableRecord): Record<string, stri
   return next;
 }
 
+function normalizeImportKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function primitiveCellValue(value: unknown) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function parseCsv(text: string): ImportRow[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (quoted) {
+      if (char === "\"" && next === "\"") {
+        cell += "\"";
+        index += 1;
+      } else if (char === "\"") {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+    } else if (char === "\"") {
+      quoted = true;
+    } else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else if (char !== "\r") {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  rows.push(row);
+  const headers = (rows.shift() || []).map((header) => header.trim()).filter(Boolean);
+  return rows
+    .filter((items) => items.some((item) => item.trim() !== ""))
+    .map((items) => Object.fromEntries(headers.map((header, index) => [header, items[index]?.trim() || ""])));
+}
+
+function parseJsonImport(text: string): ImportRow[] {
+  const parsed = JSON.parse(text);
+  const rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.records) ? parsed.records : Array.isArray(parsed?.rows) ? parsed.rows : [];
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter((row) => row && typeof row === "object")
+    .map((row) => Object.fromEntries(Object.entries(row as Record<string, unknown>).map(([key, value]) => [key, primitiveCellValue(value)])));
+}
+
+function columnIndexFromRef(ref: string) {
+  const letters = ref.replace(/[^A-Z]/gi, "").toUpperCase();
+  let index = 0;
+  for (const letter of letters) index = index * 26 + letter.charCodeAt(0) - 64;
+  return Math.max(index - 1, 0);
+}
+
+async function inflateRaw(data: Uint8Array) {
+  const Decompression = (globalThis as any).DecompressionStream;
+  if (!Decompression) throw new Error("XLSX parsing requires a browser with decompression support.");
+  const input = new Uint8Array(data.byteLength);
+  input.set(data);
+  const stream = new Blob([input.buffer]).stream().pipeThrough(new Decompression("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function unzipEntries(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  let eocd = -1;
+  for (let offset = bytes.length - 22; offset >= 0; offset -= 1) {
+    if (view.getUint32(offset, true) === 0x06054b50) {
+      eocd = offset;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("Invalid XLSX file.");
+  let offset = view.getUint32(eocd + 16, true);
+  const entries = new Map<string, Uint8Array>();
+  const decoder = new TextDecoder();
+  while (offset + 46 <= bytes.length && view.getUint32(offset, true) === 0x02014b50) {
+    const method = view.getUint16(offset + 10, true);
+    const compressedSize = view.getUint32(offset + 20, true);
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const localOffset = view.getUint32(offset + 42, true);
+    const name = decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength));
+    const localNameLength = view.getUint16(localOffset + 26, true);
+    const localExtraLength = view.getUint16(localOffset + 28, true);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    const data = bytes.slice(dataStart, dataStart + compressedSize);
+    entries.set(name, method === 0 ? data : method === 8 ? await inflateRaw(data) : new Uint8Array());
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+async function parseXlsxImport(file: File): Promise<ImportRow[]> {
+  const entries = await unzipEntries(await file.arrayBuffer());
+  const decoder = new TextDecoder();
+  const xml = (path: string) => entries.has(path) ? new DOMParser().parseFromString(decoder.decode(entries.get(path)), "application/xml") : null;
+  const sharedDoc = xml("xl/sharedStrings.xml");
+  const sharedStrings = sharedDoc ? Array.from(sharedDoc.getElementsByTagName("si")).map((item) => Array.from(item.getElementsByTagName("t")).map((part) => part.textContent || "").join("")) : [];
+  const sheetPath = entries.has("xl/worksheets/sheet1.xml") ? "xl/worksheets/sheet1.xml" : Array.from(entries.keys()).find((key) => key.startsWith("xl/worksheets/") && key.endsWith(".xml"));
+  if (!sheetPath) throw new Error("No worksheet found in XLSX file.");
+  const sheet = xml(sheetPath);
+  if (!sheet) return [];
+  const matrix: string[][] = [];
+  for (const row of Array.from(sheet.getElementsByTagName("row"))) {
+    const values: string[] = [];
+    for (const cell of Array.from(row.getElementsByTagName("c"))) {
+      const ref = cell.getAttribute("r") || "";
+      const type = cell.getAttribute("t");
+      const valueNode = cell.getElementsByTagName("v")[0];
+      const inlineNode = cell.getElementsByTagName("t")[0];
+      const raw = valueNode?.textContent || inlineNode?.textContent || "";
+      values[columnIndexFromRef(ref)] = type === "s" ? sharedStrings[Number(raw)] || "" : raw;
+    }
+    if (values.some((value) => value)) matrix.push(values);
+  }
+  const headers = (matrix.shift() || []).map((header) => String(header || "").trim()).filter(Boolean);
+  return matrix.map((items) => Object.fromEntries(headers.map((header, index) => [header, primitiveCellValue(items[index])])));
+}
+
+async function parseImportFile(file: File) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".json")) return parseJsonImport(await file.text());
+  if (name.endsWith(".xlsx")) return parseXlsxImport(file);
+  return parseCsv(await file.text());
+}
+
 export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [mode, setMode] = useState<"records" | "stewardship">("records");
   const [tables, setTables] = useState<TableDef[]>([]);
@@ -328,6 +490,15 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [cleanupLoading, setCleanupLoading] = useState(false);
   const [issuePopover, setIssuePopover] = useState<string | null>(null);
   const [serverValidationIssues, setServerValidationIssues] = useState<ValidationIssue[] | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importRows, setImportRows] = useState<ImportRow[]>([]);
+  const [importHeaders, setImportHeaders] = useState<string[]>([]);
+  const [importMapping, setImportMapping] = useState<Record<string, string>>({});
+  const [importFileName, setImportFileName] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importMode, setImportMode] = useState<ImportMode>("create");
+  const [importMatchKeys, setImportMatchKeys] = useState<string[]>(["name"]);
+  const [importDecisions, setImportDecisions] = useState<ImportDecision[]>([]);
   const handledLaunchRef = useRef<string | null>(null);
 
   const availableColumns = useMemo<ColumnDef[]>(() => {
@@ -372,6 +543,20 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     return { needsReview, clean: records.length - needsReview, requiredAttrs };
   }, [records, selected]);
   const writableBulkColumns = useMemo(() => availableColumns.filter((column) => column.key !== "name" && (!column.core || column.key === "environment")).filter((column) => canWriteColumn(column.key)), [availableColumns, selected]);
+  const importFields = useMemo<ImportField[]>(() => {
+    if (!selected) return [];
+    return [
+      { key: "name", label: "Name" },
+      ...(selected.provider === "cmdb-class" ? [{ key: "environment", label: "Environment" }] : []),
+      ...selected.attributes.filter((attr) => canWriteAttr(attr)).map((attr) => ({ key: attr.name, label: attr.displayName || attr.name, attr })),
+    ];
+  }, [selected]);
+  const importPreview = useMemo(() => importRows.map((row) => importPayloadForRow(row)).slice(0, 10), [importRows, importMapping, selected]);
+  const importReadyCount = useMemo(() => importRows.map((row) => importPayloadForRow(row)).filter((row) => row.name?.trim()).length, [importRows, importMapping, selected]);
+  const importDecisionCounts = useMemo(() => importDecisions.reduce((acc, decision) => {
+    acc[decision.action] = (acc[decision.action] || 0) + 1;
+    return acc;
+  }, {} as Record<ImportDecision["action"], number>), [importDecisions]);
 
   function tableAttr(key: string) {
     return selected?.attributes.find((attr) => attr.name === key);
@@ -402,6 +587,8 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setSelectedRows({});
     setBulkEditorOpen(false);
     setCleanupOpen(false);
+    setImportOpen(false);
+    resetImport();
     setServerValidationIssues(null);
   }
 
@@ -819,6 +1006,129 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  function resetImport() {
+    setImportRows([]);
+    setImportHeaders([]);
+    setImportMapping({});
+    setImportFileName("");
+    setImportBusy(false);
+    setImportMode("create");
+    setImportMatchKeys(["name"]);
+    setImportDecisions([]);
+  }
+
+  function autoMapImportHeaders(headers: string[]) {
+    const targets = new Map(importFields.flatMap((field) => {
+      const keys = [field.key, field.label, field.attr?.name, field.attr?.displayName].filter(Boolean).map((value) => normalizeImportKey(String(value)));
+      return keys.map((key) => [key, field.key] as const);
+    }));
+    return Object.fromEntries(headers.map((header) => [header, targets.get(normalizeImportKey(header)) || ""]));
+  }
+
+  async function handleImportFile(file: File | null) {
+    if (!selected || !file) return;
+    setImportBusy(true);
+    try {
+      const rows = (await parseImportFile(file)).slice(0, IMPORT_LIMIT);
+      const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+      if (!rows.length || !headers.length) throw new Error("No importable rows found");
+      setImportRows(rows);
+      setImportHeaders(headers);
+      setImportMapping(autoMapImportHeaders(headers));
+      setImportFileName(file.name);
+      setImportDecisions([]);
+      shell.notify(`Loaded ${rows.length} import row${rows.length === 1 ? "" : "s"}`, "success");
+    } catch (err: any) {
+      resetImport();
+      shell.notify(err.message || "Failed to parse import file", "error");
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  function importPayloadForRow(row: ImportRow): ImportPayloadRow {
+    const payload: ImportPayloadRow = { attributes: {} };
+    for (const [header, target] of Object.entries(importMapping)) {
+      if (!target) continue;
+      const raw = row[header] || "";
+      if (target === "name") payload.name = raw.trim();
+      else if (target === "environment") payload.environment = raw.trim();
+      else {
+        const attr = selected?.attributes.find((item) => item.name === target);
+        payload.attributes[target] = coerceValue(raw, attr);
+      }
+    }
+    return payload;
+  }
+
+  async function commitImport() {
+    if (!selected || !importRows.length) return;
+    const rows = importRows.map((row) => importPayloadForRow(row));
+    const invalidIndex = rows.findIndex((row) => !row.name?.trim());
+    if (invalidIndex >= 0) {
+      shell.notify(`Import row ${invalidIndex + 1} is missing a name`, "error");
+      return;
+    }
+    if (importMode !== "create" && !importMatchKeys.length) {
+      shell.notify("Choose at least one match key for update or upsert", "error");
+      return;
+    }
+    if (importMode !== "create" && !importDecisions.length) {
+      shell.notify("Generate an import preview before committing updates", "error");
+      return;
+    }
+    if (importMode !== "create" && (importDecisionCounts.conflict || 0) > 0) {
+      shell.notify("Resolve import conflicts before committing", "error");
+      return;
+    }
+    setImportBusy(true);
+    try {
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows, mode: importMode, matchKeys: importMatchKeys, source: { filename: importFileName, fileType: importFileName.split(".").pop(), rowCount: rows.length } }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.errors?.[0]?.error || "Failed to import records");
+      const created = data.summary?.created || data.created?.length || 0;
+      const updated = data.summary?.updated || data.updated?.length || 0;
+      const failed = data.summary?.failed || data.errors?.length || 0;
+      shell.notify(`Imported ${created} created, ${updated} updated${failed ? `, ${failed} failed` : ""}`, failed ? "info" : "success");
+      resetImport();
+      setImportOpen(false);
+      await loadRecords();
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to import records", "error");
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  async function previewImport() {
+    if (!selected || !importRows.length) return;
+    const rows = importRows.map((row) => importPayloadForRow(row));
+    if (importMode !== "create" && !importMatchKeys.length) {
+      shell.notify("Choose at least one match key", "error");
+      return;
+    }
+    setImportBusy(true);
+    try {
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dryRun: true, rows, mode: importMode, matchKeys: importMatchKeys, source: { filename: importFileName, fileType: importFileName.split(".").pop(), rowCount: rows.length } }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.errors?.[0]?.error || "Failed to preview import");
+      setImportDecisions(data.decisions || []);
+      shell.notify("Import preview generated", "success");
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to preview import", "error");
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
   async function deleteSelectedRows() {
     if (!selected || !selectedRecordIds.length) return;
     if (!confirm(`Delete ${selectedRecordIds.length} selected records? This cannot be undone.`)) return;
@@ -1136,6 +1446,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               <Download className="h-4 w-4" />
               Export
             </button>
+            <button onClick={() => setImportOpen((open) => !open)} disabled={!selected || importBusy} className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/15 disabled:opacity-40">
+              <Upload className="h-4 w-4" />
+              Import
+            </button>
             <button onClick={openCreate} disabled={!selected} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-40">
               <Plus className="h-4 w-4" />
               New
@@ -1252,6 +1566,35 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             </div>
           )}
         </section>
+
+        {selected && importOpen && (
+          <ImportWorkbench
+            table={selected}
+            headers={importHeaders}
+            rows={importRows}
+            fields={importFields}
+            mapping={importMapping}
+            fileName={importFileName}
+            busy={importBusy}
+            mode={importMode}
+            matchKeys={importMatchKeys}
+            decisions={importDecisions}
+            decisionCounts={importDecisionCounts}
+            readyCount={importReadyCount}
+            preview={importPreview}
+            onFile={handleImportFile}
+            onMap={(header, target) => setImportMapping((current) => ({ ...current, [header]: target }))}
+            onModeChange={(mode) => { setImportMode(mode); setImportDecisions([]); }}
+            onToggleMatchKey={(key) => {
+              setImportMatchKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+              setImportDecisions([]);
+            }}
+            onPreview={previewImport}
+            onCommit={commitImport}
+            onReset={resetImport}
+            onClose={() => setImportOpen(false)}
+          />
+        )}
 
         {selectedRecordIds.length > 0 && (
           <section className="shrink-0 border-b border-cyan-500/20 bg-cyan-950/20 px-5 py-2 text-sm">
@@ -1439,6 +1782,187 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
         />
       )}
     </div>
+  );
+}
+
+function ImportWorkbench({
+  table,
+  headers,
+  rows,
+  fields,
+  mapping,
+  fileName,
+  busy,
+  mode,
+  matchKeys,
+  decisions,
+  decisionCounts,
+  readyCount,
+  preview,
+  onFile,
+  onMap,
+  onModeChange,
+  onToggleMatchKey,
+  onPreview,
+  onCommit,
+  onReset,
+  onClose,
+}: {
+  table: TableDef;
+  headers: string[];
+  rows: ImportRow[];
+  fields: ImportField[];
+  mapping: Record<string, string>;
+  fileName: string;
+  busy: boolean;
+  mode: ImportMode;
+  matchKeys: string[];
+  decisions: ImportDecision[];
+  decisionCounts: Record<ImportDecision["action"], number>;
+  readyCount: number;
+  preview: ImportPayloadRow[];
+  onFile: (file: File | null) => void;
+  onMap: (header: string, target: string) => void;
+  onModeChange: (mode: ImportMode) => void;
+  onToggleMatchKey: (key: string) => void;
+  onPreview: () => void;
+  onCommit: () => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  const previewIssues = preview.map((row) => validationIssuesForForm(table, {
+    id: "",
+    name: row.name || "",
+    environment: row.environment || "",
+    ...Object.fromEntries(table.attributes.map((attr) => [attr.name, primitiveCellValue(row.attributes[attr.name])])),
+  }));
+  return (
+    <section className="shrink-0 border-b border-cyan-500/20 bg-cyan-950/10 px-5 py-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-semibold text-cyan-100">
+            <Upload className="h-4 w-4" />
+            Import Records
+          </div>
+          <p className="mt-1 text-xs text-gray-500">CSV, JSON, or first-sheet XLSX. Create, update, or upsert with server-side matching and generated IDs.</p>
+        </div>
+        <button onClick={onClose} className="rounded-lg border border-gray-700 p-2 text-gray-400 hover:text-white" title="Close import">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="mt-4 grid gap-4 xl:grid-cols-[340px_1fr]">
+        <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Source file</label>
+          <input
+            type="file"
+            accept=".csv,.json,.xlsx,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={(event) => onFile(event.target.files?.[0] || null)}
+            className="mt-2 block w-full cursor-pointer rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-300 file:mr-3 file:rounded-md file:border-0 file:bg-cyan-500 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-gray-950 hover:border-cyan-500/50"
+          />
+          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+            <MetricPill label="Rows" value={rows.length} />
+            <MetricPill label="Ready" value={readyCount} tone={readyCount === rows.length && rows.length ? "good" : "warn"} />
+            <MetricPill label="Limit" value={IMPORT_LIMIT} />
+          </div>
+          <div className="mt-3">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Import mode</label>
+            <select data-testid="tables-import-mode" value={mode} onChange={(event) => onModeChange(event.target.value as ImportMode)} className={`mt-2 w-full ${SELECT_CLASS}`}>
+              <option value="create">Create only</option>
+              <option value="update">Update matched records only</option>
+              <option value="upsert">Upsert matched records</option>
+            </select>
+          </div>
+          {mode !== "create" && (
+            <div className="mt-3">
+              <div className="text-xs font-semibold uppercase tracking-wider text-gray-500">Match keys</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {fields.map((field) => (
+                  <button
+                    key={field.key}
+                    type="button"
+                    onClick={() => onToggleMatchKey(field.key)}
+                    className={`rounded-full border px-2.5 py-1 text-xs ${matchKeys.includes(field.key) ? "border-cyan-400 bg-cyan-500/15 text-cyan-100" : "border-gray-700 text-gray-400 hover:text-white"}`}
+                  >
+                    {field.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {fileName && <div className="mt-3 truncate font-mono text-xs text-gray-500">{fileName}</div>}
+          <div className="mt-3 flex gap-2">
+            <button onClick={onPreview} disabled={busy || !rows.length || readyCount !== rows.length || (mode !== "create" && !matchKeys.length)} className="rounded-lg border border-cyan-500/40 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
+              Preview
+            </button>
+            <button onClick={onCommit} disabled={busy || !rows.length || readyCount !== rows.length || (mode !== "create" && (!decisions.length || !!decisionCounts.conflict))} className="flex-1 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-400 disabled:opacity-50">
+              {busy ? "Working..." : "Commit import"}
+            </button>
+            <button onClick={onReset} disabled={busy || !rows.length} className="rounded-lg border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-50">
+              Reset
+            </button>
+          </div>
+        </div>
+        <div className="min-w-0 rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Column mapping</div>
+              <div className="scrollbar-thin max-h-64 space-y-2 overflow-y-auto pr-1">
+                {headers.map((header) => (
+                  <div key={header} className="grid grid-cols-[minmax(0,1fr)_220px] items-center gap-2 rounded-lg border border-gray-800 bg-gray-950 px-2 py-2">
+                    <div className="truncate text-sm text-gray-300" title={header}>{header}</div>
+                    <select value={mapping[header] || ""} onChange={(event) => onMap(header, event.target.value)} className={SELECT_CLASS}>
+                      <option value="">Do not import</option>
+                      {fields.map((field) => <option key={field.key} value={field.key}>{field.label}</option>)}
+                    </select>
+                  </div>
+                ))}
+                {!headers.length && <div className="rounded-lg border border-dashed border-gray-800 px-3 py-8 text-center text-sm text-gray-600">Choose a file to map columns.</div>}
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold uppercase tracking-wider text-gray-500">Preview</div>
+                {decisions.length > 0 && (
+                  <div className="flex gap-1 text-[10px]">
+                    <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-200">{decisionCounts.create || 0} create</span>
+                    <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-indigo-200">{decisionCounts.update || 0} update</span>
+                    <span className="rounded bg-gray-700/40 px-1.5 py-0.5 text-gray-300">{decisionCounts.skip || 0} skip</span>
+                    {!!decisionCounts.conflict && <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-200">{decisionCounts.conflict} conflict</span>}
+                  </div>
+                )}
+              </div>
+              <div className="scrollbar-thin max-h-64 space-y-2 overflow-y-auto pr-1">
+                {preview.map((row, index) => (
+                  <div key={index} className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="truncate text-sm font-medium text-gray-200">{row.name || `Row ${index + 1}`}</div>
+                      {decisions[index] ? (
+                        <span className={`rounded px-2 py-0.5 text-xs ${
+                          decisions[index].action === "conflict" ? "bg-red-500/10 text-red-200" :
+                          decisions[index].action === "update" ? "bg-indigo-500/10 text-indigo-200" :
+                          decisions[index].action === "skip" ? "bg-gray-700/40 text-gray-300" :
+                          "bg-emerald-500/10 text-emerald-200"
+                        }`}>
+                          {decisions[index].action}
+                        </span>
+                      ) : previewIssues[index]?.length ? (
+                        <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-200">{previewIssues[index].length} issue(s)</span>
+                      ) : (
+                        <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-200">ready</span>
+                      )}
+                    </div>
+                    <div className="mt-1 truncate text-xs text-gray-500">{row.environment || "No environment"} / {Object.keys(row.attributes).filter((key) => row.attributes[key] !== "").join(", ") || "no attributes"}</div>
+                    {decisions[index]?.recordName && <div className="mt-1 truncate text-xs text-indigo-300">Match: {decisions[index].recordName}</div>}
+                    {decisions[index]?.reason && <div className="mt-1 truncate text-xs text-amber-300">{decisions[index].reason}</div>}
+                  </div>
+                ))}
+                {!preview.length && <div className="rounded-lg border border-dashed border-gray-800 px-3 py-8 text-center text-sm text-gray-600">Preview appears after mapping.</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 

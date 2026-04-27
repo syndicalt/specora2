@@ -190,7 +190,6 @@ Priority work:
 
 - Add sharing scope for saved table views once team-level stewardship workflows are needed.
 - Add richer bulk actions for assign owner and tag workflows.
-- Add import primitives with clear limits and audit events.
 - Add AI-assisted cleanup suggestions that explain evidence, confidence, and required approval.
 
 Implemented:
@@ -205,6 +204,7 @@ Implemented:
 - Added low-risk bulk update from selected rows, still routed through existing field-aware, audited record update endpoints.
 - Added an audited bulk cleanup review queue for selected records, registered as a platform table for follow-up stewardship work.
 - Added a Tables-native Stewardship Queue workbench for cleanup review triage, record opening, start, resolve, and dismiss actions.
+- Added CSV, JSON, and first-sheet XLSX import with explicit create/update/upsert modes, generated IDs, server-side match-key dry-run previews, conflict blocking, RBAC/field-write enforcement, and audited batch/record events.
 - Preserved existing saved filters, column sets, density, inline edit, export, delete, and audit diff behavior.
 
 Exit criteria:

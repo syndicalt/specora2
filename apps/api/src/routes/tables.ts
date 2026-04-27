@@ -37,6 +37,21 @@ type TableSavedViewInput = {
   sortDirection?: "asc" | "desc";
 };
 
+type TableImportRow = {
+  name?: string;
+  environment?: string;
+  attributes?: Record<string, unknown>;
+};
+type TableImportMode = "create" | "update" | "upsert";
+type TableImportDecision = {
+  row: number;
+  action: "create" | "update" | "skip" | "conflict" | "error";
+  recordId?: string;
+  recordName?: string | null;
+  reason?: string;
+  payload: TableImportRow;
+};
+
 type TableDefinition = {
   id: string;
   name: string;
@@ -927,6 +942,180 @@ async function createPostgresRecord(
   return postgresRecord(table, row);
 }
 
+async function createCmdbRecord(
+  fastify: FastifyInstance,
+  table: TableDefinition,
+  body: { name?: string; environment?: string; attributes?: Record<string, unknown> }
+) {
+  const attrs = splitAttrs(body.attributes);
+  const record = {
+    id: randomUUID(),
+    name: body.name!.trim(),
+    className: table.className,
+    environment: body.environment || null,
+    attributes: JSON.stringify(attrs),
+    props: attrs,
+  };
+  const session = fastify.neo4j.session();
+  try {
+    const result = await session.run(
+      `CREATE (n:ConfigurationItem {id: $id, name: $name, class: $className, environment: $environment, attributes: $attributes})
+       SET n += $props
+       RETURN n`,
+      record
+    );
+    return parseNode(result.records[0].get("n"));
+  } finally {
+    await session.close();
+  }
+}
+
+async function updateCmdbRecord(
+  fastify: FastifyInstance,
+  table: TableDefinition,
+  id: string,
+  body: { name?: string; environment?: string; attributes?: Record<string, unknown> }
+) {
+  const before = await getCmdbRecord(fastify, table, id);
+  if (!before) return null;
+  const hasAttributes = body.attributes !== undefined;
+  const attrs = hasAttributes ? { ...(before.attributes || {}), ...splitAttrs(body.attributes) } : before.attributes || {};
+  const session = fastify.neo4j.session();
+  try {
+    const result = await session.run(
+      `MATCH (n:ConfigurationItem {id: $id})
+       WHERE n.class = $className
+       SET n.name = coalesce($name, n.name),
+           n.environment = coalesce($environment, n.environment),
+           n.attributes = coalesce($attributes, n.attributes)
+       SET n += $props
+       RETURN n`,
+      {
+        id,
+        className: table.className,
+        name: body.name?.trim() || null,
+        environment: body.environment ?? null,
+        attributes: hasAttributes ? JSON.stringify(attrs) : null,
+        props: hasAttributes ? attrs : {},
+      }
+    );
+    const node = result.records[0]?.get("n");
+    return node ? parseNode(node) : null;
+  } finally {
+    await session.close();
+  }
+}
+
+async function getCmdbRecord(fastify: FastifyInstance, table: TableDefinition, id: string, access?: Map<string, FieldAccess>) {
+  const session = fastify.neo4j.session();
+  try {
+    const result = await session.run(
+      `MATCH (n:ConfigurationItem {id: $id})
+       WHERE n.class = $className
+       RETURN n`,
+      { id, className: table.className }
+    );
+    const node = result.records[0]?.get("n");
+    if (!node) return null;
+    const record = parseNode(node);
+    return access ? redactRecord(record, access) : record;
+  } finally {
+    await session.close();
+  }
+}
+
+function importValueForField(row: TableImportRow, field: string) {
+  if (field === "name") return row.name?.trim() || "";
+  if (field === "environment") return row.environment?.trim() || "";
+  return splitAttrs(row.attributes)[field];
+}
+
+function normalizeImportMode(value: unknown): TableImportMode {
+  return value === "update" || value === "upsert" ? value : "create";
+}
+
+function sanitizeMatchKeys(table: TableDefinition, keys: unknown, access: Map<string, FieldAccess>) {
+  if (!Array.isArray(keys)) return [];
+  const allowed = new Set(writableTableFieldNames(table));
+  return Array.from(new Set(keys.filter((key): key is string =>
+    typeof key === "string" &&
+    key !== "id" &&
+    key !== "number" &&
+    allowed.has(key) &&
+    access.get(key)?.read !== false
+  ))).slice(0, 5);
+}
+
+async function findImportMatches(
+  fastify: FastifyInstance,
+  table: TableDefinition,
+  row: TableImportRow,
+  matchKeys: string[]
+) {
+  if (!matchKeys.length || matchKeys.some((key) => isMissing(importValueForField(row, key)))) return [];
+  if (table.provider === "postgres-table") {
+    if (!table.tableName) return [];
+    const params = matchKeys.map((key) => serializePostgresValue(importValueForField(row, key), table.attributes.find((attr) => attr.name === key)?.attrType));
+    const clauses = matchKeys.map((key, index) => {
+      const column = postgresColumnForField(table, key);
+      if (!column) throw new Error(`Cannot match on ${key}`);
+      return `${quoteIdentifier(column)} = $${index + 1}`;
+    });
+    const result = await fastify.pg.query(
+      `SELECT * FROM ${quoteIdentifier(table.tableName)} WHERE ${clauses.join(" AND ")} LIMIT 3`,
+      params
+    );
+    return result.rows.map((item: any) => postgresRecord(table, item));
+  }
+
+  const params: Record<string, unknown> = { className: table.className };
+  const clauses = matchKeys.map((key, index) => {
+    const param = `match_${index}`;
+    params[param] = importValueForField(row, key);
+    return `${propertyExpression(key)} = $${param}`;
+  });
+  const session = fastify.neo4j.session();
+  try {
+    const result = await session.run(
+      `MATCH (n:ConfigurationItem)
+       WHERE n.class = $className AND ${clauses.join(" AND ")}
+       RETURN n
+       LIMIT 3`,
+      params
+    );
+    return result.records.map((record) => parseNode(record.get("n")));
+  } finally {
+    await session.close();
+  }
+}
+
+async function planImportDecisions(
+  fastify: FastifyInstance,
+  table: TableDefinition,
+  rows: TableImportRow[],
+  mode: TableImportMode,
+  matchKeys: string[]
+): Promise<TableImportDecision[]> {
+  const decisions: TableImportDecision[] = [];
+  for (const [index, payload] of rows.entries()) {
+    if (mode === "create") {
+      decisions.push({ row: index + 1, action: "create", payload });
+      continue;
+    }
+    const matches = await findImportMatches(fastify, table, payload, matchKeys);
+    if (matches.length > 1) {
+      decisions.push({ row: index + 1, action: "conflict", reason: `Matched ${matches.length} records`, payload });
+    } else if (matches.length === 1) {
+      decisions.push({ row: index + 1, action: "update", recordId: matches[0].id, recordName: matches[0].name, payload });
+    } else if (mode === "upsert") {
+      decisions.push({ row: index + 1, action: "create", reason: "No match found", payload });
+    } else {
+      decisions.push({ row: index + 1, action: "skip", reason: "No match found", payload });
+    }
+  }
+  return decisions;
+}
+
 async function updatePostgresRecord(
   fastify: FastifyInstance,
   table: TableDefinition,
@@ -1473,6 +1662,151 @@ export async function tableRoutes(fastify: FastifyInstance) {
     };
   });
 
+  fastify.post("/api/tables/:table/import", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot write tables" });
+    }
+    const { table: tableId } = request.params as { table: string };
+    const body = request.body as {
+      dryRun?: boolean;
+      mode?: string;
+      matchKeys?: unknown;
+      rows?: unknown;
+      source?: { filename?: string; fileType?: string; rowCount?: number };
+    };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    const rows = Array.isArray(body.rows) ? body.rows.slice(0, 250) as TableImportRow[] : [];
+    if (!rows.length) return reply.status(400).send({ error: "rows required" });
+    if (Array.isArray(body.rows) && body.rows.length > 250) {
+      return reply.status(400).send({ error: "Imports are limited to 250 rows per commit" });
+    }
+    const mode = normalizeImportMode(body.mode);
+    const matchKeys = sanitizeMatchKeys(tableForUser, body.matchKeys, access);
+    if (mode !== "create" && !matchKeys.length) {
+      return reply.status(400).send({ error: "matchKeys required for update and upsert imports" });
+    }
+
+    const errors: Array<{ row: number; error: string }> = [];
+    const candidates = rows.map((row, index) => {
+      const payload: TableImportRow = {
+        name: typeof row?.name === "string" ? row.name.trim() : row?.name == null ? "" : String(row.name).trim(),
+        environment: typeof row?.environment === "string" ? row.environment.trim() || undefined : row?.environment == null ? undefined : String(row.environment).trim() || undefined,
+        attributes: splitAttrs(row?.attributes),
+      };
+      if (!payload.name) errors.push({ row: index + 1, error: "name is required" });
+      const blockedField = assertWritablePayload(payload, access);
+      if (blockedField) errors.push({ row: index + 1, error: `cannot write ${blockedField}` });
+      return payload;
+    });
+    if (errors.length) return reply.status(400).send({ table: tableForUser, created: [], errors });
+
+    const decisions = await planImportDecisions(fastify, tableForUser, candidates, mode, matchKeys);
+    const counts = decisions.reduce((acc, decision) => {
+      acc[decision.action] = (acc[decision.action] || 0) + 1;
+      return acc;
+    }, {} as Record<TableImportDecision["action"], number>);
+    if (body.dryRun) {
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "table.records.import_previewed",
+        entityType: table.id,
+        entityId: table.id,
+        metadata: {
+          source: "api.tables.import",
+          provider: table.provider,
+          mode,
+          matchKeys,
+          fileName: body.source?.filename,
+          requestedRecordCount: rows.length,
+          counts,
+        },
+      });
+      return { table: tableForUser, decisions, errors: [], summary: { requested: rows.length, ...counts } };
+    }
+
+    const created: any[] = [];
+    const updated: any[] = [];
+    const skipped: TableImportDecision[] = [];
+    for (const decision of decisions) {
+      const index = decision.row - 1;
+      const payload = decision.payload;
+      if (decision.action === "skip" || decision.action === "conflict") {
+        skipped.push(decision);
+        continue;
+      }
+      try {
+        const before = decision.action === "update"
+          ? table.provider === "postgres-table"
+            ? await getPostgresRecord(fastify, tableForUser, decision.recordId!)
+            : await getCmdbRecord(fastify, tableForUser, decision.recordId!)
+          : null;
+        const record = decision.action === "update"
+          ? table.provider === "postgres-table"
+            ? await updatePostgresRecord(fastify, tableForUser, decision.recordId!, payload)
+            : await updateCmdbRecord(fastify, tableForUser, decision.recordId!, payload)
+          : table.provider === "postgres-table"
+            ? await createPostgresRecord(fastify, tableForUser, payload)
+            : await createCmdbRecord(fastify, tableForUser, payload);
+        if (!record) throw new Error("Matched record was not found");
+        if (decision.action === "update") updated.push(record);
+        else created.push(record);
+        await recordAuditEvent(fastify, {
+          actorId: (request.user as any)?.id,
+          action: decision.action === "update" ? "table.record.updated" : "table.record.created",
+          entityType: table.id,
+          entityId: record.id,
+          oldValues: before || undefined,
+          newValues: record,
+          metadata: { source: "api.tables.import", provider: table.provider, row: index + 1, mode, matchKeys, fileName: body.source?.filename },
+        });
+      } catch (err: any) {
+        errors.push({ row: index + 1, error: err.message || "Failed to create record" });
+      }
+    }
+
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "table.records.imported",
+      entityType: table.id,
+      entityId: table.id,
+      newValues: { createdRecordIds: created.map((record) => record.id), updatedRecordIds: updated.map((record) => record.id) },
+      metadata: {
+        source: "api.tables.import",
+        provider: table.provider,
+        mode,
+        matchKeys,
+        tableName: table.tableName,
+        className: table.className,
+        fileName: body.source?.filename,
+        fileType: body.source?.fileType,
+        requestedRecordCount: rows.length,
+        createdRecordCount: created.length,
+        updatedRecordCount: updated.length,
+        skippedRecordCount: skipped.length,
+        errorCount: errors.length,
+      },
+    });
+
+    return {
+      table: tableForUser,
+      created: created.map((record) => redactRecord(record, access)),
+      updated: updated.map((record) => redactRecord(record, access)),
+      skipped,
+      decisions,
+      errors,
+      summary: {
+        requested: rows.length,
+        created: created.length,
+        updated: updated.length,
+        skipped: skipped.length,
+        failed: errors.length,
+      },
+    };
+  });
+
   fastify.post("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const role = await getRole(fastify, request.user as any);
     if (!(await canUseTable(fastify, role, "write"))) {
@@ -1499,36 +1833,16 @@ export async function tableRoutes(fastify: FastifyInstance) {
       return reply.status(201).send({ table: tableForUser, record: redactRecord(record, access) });
     }
 
-    const attrs = splitAttrs(body.attributes);
-    const record = {
-      id: body.id || randomUUID(),
-      name: body.name.trim(),
-      className: table.className,
-      environment: body.environment || null,
-      attributes: JSON.stringify(attrs),
-      props: attrs,
-    };
-    const session = fastify.neo4j.session();
-    try {
-      const result = await session.run(
-        `CREATE (n:ConfigurationItem {id: $id, name: $name, class: $className, environment: $environment, attributes: $attributes})
-         SET n += $props
-         RETURN n`,
-        record
-      );
-      const created = parseNode(result.records[0].get("n"));
-      await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
-        action: "table.record.created",
-        entityType: table.id,
-        entityId: created.id,
-        newValues: created,
-        metadata: { source: "api.tables", provider: table.provider, className: table.className },
-      });
-      return reply.status(201).send({ table: tableForUser, record: redactRecord(created, access) });
-    } finally {
-      await session.close();
-    }
+    const created = await createCmdbRecord(fastify, tableForUser, body);
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "table.record.created",
+      entityType: table.id,
+      entityId: created.id,
+      newValues: created,
+      metadata: { source: "api.tables", provider: table.provider, className: table.className },
+    });
+    return reply.status(201).send({ table: tableForUser, record: redactRecord(created, access) });
   });
 
   fastify.patch("/api/tables/:table/records/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
