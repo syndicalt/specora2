@@ -1,7 +1,7 @@
 # Platform Marking Sheet
 
 **Status:** Assessment rubric and current scorecard
-**Last updated:** 2026-04-26
+**Last updated:** 2026-04-27
 
 This marking sheet evaluates Specora as a platform and evaluates each native application. Scores are intentionally conservative. A high score should mean the feature is not only impressive in demo form, but coherent, tested, secure, documented, and ready to sustain real users.
 
@@ -24,16 +24,16 @@ This marking sheet evaluates Specora as a platform and evaluates each native app
 | Architecture | 10 | 4 | 8.0 | Strong graph/API/app-shell split; app tools still too monolithic |
 | CSDM alignment | 10 | 3.5 | 7.0 | Strong service/infrastructure subset; broader foundation/portfolio needed |
 | Data model quality | 10 | 4 | 8.0 | Neo4j + Postgres split is sound; deterministic demo data added |
-| Security and RBAC | 10 | 3.7 | 7.4 | Server checks, route gates, Access Analyzer, and audit coverage improving; field-level rules pending |
+| Security and RBAC | 10 | 4.3 | 8.6 | Server checks, route gates, Access Analyzer, explain-app/tool/table flows, field-level Tables RBAC, drift detection, and tamper-evident audit integrity |
 | AI/tool orchestration | 10 | 4 | 8.0 | Provara primary, tool calls, app tools, chat panel; more guardrails needed |
 | User experience | 10 | 4 | 8.0 | Strong command-center direction; several apps need stress UX passes |
 | Test coverage | 10 | 4.0 | 8.0 | DB at 100%; API improving with focused audit route coverage; browser E2E covers Tables, Admin/RBAC, Arc provisioning, Discovery, and DCIM write paths |
 | Extensibility | 10 | 3.7 | 7.4 | Arc, ShellAPI, dynamic native imports, server-owned optional package state; iframe bridge, entitlement checks, and tool modularity pending |
-| Operability | 10 | 3.8 | 7.6 | Docker local stack, eventing, queues, deployment docs, backup/restore docs, audit contract, and PostgreSQL migration runner; production health checks and restore rehearsals still needed |
+| Operability | 10 | 4.0 | 8.0 | Docker local stack, eventing, queues, deployment docs, backup/restore docs, audit contract, tamper-evident audit chain, and PostgreSQL migration runner; production health checks and restore rehearsals still needed |
 
-Overall platform mark: **78.0 / 100**.
+Overall platform mark: **79.0 / 100**.
 
-Interpretation: Specora is a strong beta platform with unusually coherent product direction. The biggest gaps are production hardening, tool modularity, restore rehearsal/release automation, complete audit coverage across every native mutation, and deeper CSDM breadth.
+Interpretation: Specora is a strong beta platform with unusually coherent product direction. The biggest gaps are production hardening, tool modularity, restore rehearsal/release automation, Reporting API depth, Discovery RC readiness, and deeper CSDM breadth.
 
 ## Application Rubric
 
@@ -52,9 +52,9 @@ Each application is marked across:
 
 | Application | Purpose | Workflow | Data | AI | UX | Endpoints | Tests | Maturity | Mark |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Admin Console | 4 | 3 | 3 | 1 | 3 | 4 | 3 | 3 | 60 |
+| Admin Console | 5 | 4 | 4 | 2 | 4 | 5 | 4 | 4 | 80 |
 | Asset Command Center | 5 | 4 | 4 | 4 | 4 | 4 | 4 | 4 | 83 |
-| Audit Log | 4 | 3 | 4 | 1 | 3 | 4 | 4 | 3 | 65 |
+| Audit Log | 5 | 4 | 5 | 1 | 4 | 5 | 5 | 4 | 80 |
 | Change Manager | 5 | 4 | 4 | 4 | 4 | 5 | 4 | 4 | 85 |
 | CI Class Manager | 5 | 4 | 4 | 1 | 4 | 4 | 4 | 4 | 75 |
 | CMDB Explorer | 5 | 5 | 5 | 3 | 4 | 4 | 3 | 4 | 83 |
@@ -91,7 +91,7 @@ These apps best express the platform thesis: they combine data, workflow, AI/too
 
 - Hello World: should remain a sample, not be judged as a product app.
 - Settings: useful but intentionally narrow.
-- Audit Log: now has a documented server-side event contract and broader mutation coverage; needs filtering, drilldown, export, and AI summarization.
+- Audit Log: now has a documented event contract, searchable/exportable evidence, signed CSV metadata, and tamper-evident hash-chain verification. It still needs richer drilldown, diff rendering, retention management, and AI summarization.
 - Data Foundations: needs edit flows, stewardship queues, and CSDM validation rules.
 - Discovery Insights: needs clearer killer workflows beyond summary analysis.
 - IT Visibility DCIM: strong demo concept with real floorplan/cabling persistence, object palette, inspector edits, connection maintenance, and initial E2E coverage; needs richer physical inventory, direct canvas resize controls, and deeper rack/connection workflows.
@@ -105,11 +105,11 @@ Before calling the platform production-grade:
 - App tools are split per application.
 - Long-running jobs move to worker/queue.
 - RBAC is covered for every native app route.
-- Field-level and condition-based record ACLs are designed, enforced server-side, and explainable through Access Analyzer.
+- Field-level RBAC remains enforced server-side and explainable through Admin utilities; condition-based record ACLs are designed and implemented where needed.
 - CSDM validation reports are generated by Data Foundations.
 - Deployment, backup, restore, and scaling docs exist and are rehearsed against a restored environment.
 - External app iframe bridge is implemented or explicitly deprecated.
-- Audit log records AI tool execution, package provisioning, admin mutations, automation outcomes, and user identity consistently.
+- Audit log records AI tool execution, package provisioning, admin mutations, automation outcomes, user identity, searchable evidence, export signatures, and chain verification consistently.
 - Premium/package installation uses server-side provisioning jobs with entitlement checks, progress, audit, rollback, and explicit data retention choices.
 
 ## Per-App Promotion Criteria

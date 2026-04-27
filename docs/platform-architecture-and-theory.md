@@ -2,7 +2,7 @@
 
 **Status:** Current platform guide
 **Audience:** Engineers, product owners, implementers, architects, and LLM coding agents
-**Last updated:** 2026-04-26
+**Last updated:** 2026-04-27
 
 Specora is an AI-native ITSM and operations platform built around a graph CMDB, native applications, RBAC-aware automation endpoints, and a conversational control plane. The core architectural thesis is that ITSM should not be a set of disconnected ticket queues. It should be an operating system for service reliability, where data, relationships, automation, and human decision points share the same model.
 
@@ -351,6 +351,9 @@ Security is layered:
 - Permission-filtered `ShellAPI`
 - App tool route checks
 - Access Analyzer traces in the Admin Console for role/resource/action decisions
+- App/tool/table/field explain-access workflows
+- Policy drift detection and bulk grant remediation
+- Append-only, hash-chained audit records with Admin integrity verification
 - Relationship allowlisting
 - Parameterized Cypher and SQL
 
@@ -360,7 +363,9 @@ Current RBAC is role/resource/action based. It is strong enough for app, route, 
 
 Field restriction configuration is intentionally small and auditable. The `security.field_restrictions` system property can list field resources, table/field objects, or global field names that require explicit grants. Sensitive field-name patterns such as password, token, secret, key, credential, salary, and SSN are restricted by default.
 
-Because field-level RBAC can create a large permission catalog, administration should not rely on a flat permission dropdown. The Admin Console exposes registered permission targets as an explainable grant catalog with scope, source, risk, and human-readable descriptions. AI can improve descriptions and operator guidance, but the registry remains the source of truth.
+Because field-level RBAC can create a large permission catalog, administration should not rely on a flat permission dropdown. The Admin Console exposes registered permission targets as an explainable grant catalog with scope, source, risk, and human-readable descriptions. It also supports bulk grants and policy drift detection so admins can compare registered app/tool requirements against actual role grants. AI can improve descriptions and operator guidance, but the registry remains the source of truth.
+
+Audit integrity is a platform primitive. Audit rows are append-only at the database layer and new rows are linked through a serialized SHA-256 hash chain. Admins can verify the chain and export signed CSV evidence. Future compliance hardening should externally anchor the audit head hash outside the primary database.
 
 ### Security Roadmap
 

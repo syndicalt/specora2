@@ -1,7 +1,7 @@
 # Native Application Catalog
 
 **Status:** Current built-in app inventory
-**Last updated:** 2026-04-26
+**Last updated:** 2026-04-27
 
 Specora applications are native platform modules registered through the server app registry and mirrored to the web shell registry. Native apps are installed with the platform and exposed to users through RBAC.
 
@@ -72,12 +72,15 @@ Current capabilities:
 - View CMDB mutation audit trail
 - Track operational changes emitted by server routes
 - Track package provisioning, admin mutations including RBAC and system properties, app tool execution outcomes, generic Tables writes, native app mutation routes, and automation actions across ITSM/ITAM/Discovery/DCIM
+- Search and export audit evidence
+- Verify tamper-evident audit hash-chain integrity
 
 Architecture role:
 
 - Supports accountability and AI/tool-call auditability.
+- Provides defensible security evidence for administrative and automation reviews.
 
-Maturity: alpha/beta.
+Maturity: strong beta.
 
 ### Settings
 

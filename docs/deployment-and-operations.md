@@ -1,7 +1,7 @@
 # Deployment and Operations Guide
 
 **Status:** Production-readiness guide for current implementation
-**Last updated:** 2026-04-26
+**Last updated:** 2026-04-27
 
 This document explains how Specora runs, which services must be healthy, how configuration is expected to work, and what is still development-grade. It is intentionally explicit about current limitations so operators and reviewers can distinguish implemented behavior from roadmap intent.
 
@@ -270,7 +270,9 @@ Application logs currently come from each service process/container. Important o
 - `app_provisioning_jobs`
 - app-specific event tables such as incident, knowledge, prevention, and DCIM events
 
-The canonical audit contract is documented in [Audit Contract](audit-contract.md). Current server-side coverage includes CMDB event-bus mutations, Discovery completion events, generic Tables create/update/delete paths, Arc app install/uninstall provisioning, Admin number sequence, RBAC permission, system property, and state-machine changes, app tool execution/queue/denial/failure outcomes, Incident automation workflows, and native app mutation routes for Change, Knowledge, Asset, Prevention, Discovery, Data Foundations, and IT Visibility DCIM.
+The canonical audit contract is documented in [Audit Contract](audit-contract.md). Current server-side coverage includes CMDB event-bus mutations, Discovery completion events, generic Tables create/update/delete paths, Arc app install/uninstall provisioning, Admin number sequence, RBAC permission, system property, state-machine changes, app tool execution/queue/denial/failure outcomes, Incident automation workflows, and native app mutation routes for Change, Knowledge, Asset, Prevention, Discovery, Data Foundations, and IT Visibility DCIM.
+
+Audit records are append-only in PostgreSQL and include a tamper-evident hash chain for new rows. Admin users can verify the chain through the Admin Console or `GET /api/admin/audit-log/integrity`. Audit CSV exports include integrity hashes and signed digest headers for evidence handling.
 
 Audit is intentionally stored separately from app-specific event tables. Event tables explain workflow history inside an app; `audit_log` explains accountable platform mutations across apps and integration surfaces.
 
@@ -282,6 +284,7 @@ Known gaps before production claims:
 - Worker does not expose a standard health endpoint.
 - Redis is documented and supported by API code but not included in local compose.
 - Package provisioning jobs complete immediately; entitlement checks, rollback, and install progress are roadmap work.
-- Field-level and conditional ACLs are roadmap items.
+- Field-level RBAC is implemented for Tables and explainable through Admin RBAC utilities. Condition-based record ACLs remain a roadmap item.
 - Backup/restore procedures are documented separately but should be rehearsed and automated.
 - Secrets should be supplied by a secret manager, not committed `.env` files or compose defaults.
+- Audit hash-chain external anchoring is not yet implemented. High-compliance deployments should plan immutable external retention or head-hash anchoring.

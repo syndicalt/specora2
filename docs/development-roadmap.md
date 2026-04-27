@@ -1,7 +1,7 @@
 # Development Roadmap
 
 **Status:** Working roadmap for upcoming development sprints
-**Last updated:** 2026-04-26
+**Last updated:** 2026-04-27
 
 Specora is currently a strong beta-quality platform with several high-value native applications, a coherent graph-first architecture, and enough demo depth to tell the product story. The next sprints should shift from broad feature creation toward polish, test depth, operability, and the few platform primitives needed before serious external demos.
 
@@ -14,7 +14,7 @@ What is working well:
 - Customer Portal now provides the core self-service front door with catalog requests, AI intent resolution, and contextual support handoff primitives.
 - Provara is back as the primary LLM router with tool-call support.
 - CSDMv5-aligned seed data provides a connected 5,000-CI CMDB narrative.
-- API route coverage is improving and currently passes at 333 tests.
+- API route coverage is improving and currently passes at 359 tests.
 - Optional premium app primitives exist, with IT Visibility DCIM as the first package-style example.
 - DCIM now has persisted floorplans, racks, facility objects, and React Flow connection edges.
 
@@ -24,9 +24,10 @@ Known gaps:
 - Several apps are demo/beta hybrids and need interaction polish before production claims.
 - DCIM has enough concept depth to demo, but needs a dedicated polish pass for resize, connection editing, object deletion, floorplan controls, and richer physical inventory.
 - Discovery is still an impressive concept but not yet a complete operational ETL system.
-- Admin RBAC now has first-pass server-side field read/write enforcement for Tables, but still lacks condition-based record policy and a polished field-restriction management UI.
+- Admin RBAC now has server-side field read/write enforcement for Tables, field restriction management, app/tool/table access explainers, drift detection, bulk grants, and searchable/exportable audit evidence.
 - Package installation now has an authoritative server-side installation state and completed provisioning job audit trail; production entitlement/payment/rollback depth is still backlog work.
 - The Next build cache/worker issue recurs and should be investigated separately from product work.
+- Reporting is intentionally API-first today. A rich Reporting API surface is still needed before serious enterprise evaluation.
 
 ## Sprint 1: Stabilize the Demo Spine
 
@@ -74,7 +75,7 @@ Implemented:
 - Added typed connection visual semantics for power, network, cooling, and monitoring edges.
 - Added focused DCIM route tests for object and connection create/update/delete paths.
 - Added browser E2E coverage for creating, editing, refreshing, verifying, and cleaning up a DCIM floorplan object.
-- Add RBAC denial tests for new DCIM object and connection mutation routes.
+- Added RBAC denial tests for new DCIM object and connection mutation routes.
 
 Exit criteria:
 
@@ -115,14 +116,17 @@ Exit criteria:
 
 Goal: make platform administration teachable and troubleshootable.
 
-Priority work:
-
-- Expand Access Analyzer to explain app, route, table, record, and planned field decisions.
-- Design and document field-level restriction primitives.
-- Add registry views for apps, tables, record types, number sequences, admin panels, chat tools, and package hooks.
-- Add rollback hooks, entitlement checks, and long-running package validation states when real paid package distribution arrives.
-
 Implemented:
+
+- Added app, tool, generic permission, and table/field access explainers.
+- Added server-side field-level RBAC for Tables with `field:<tableId>.<fieldName>` read/write grants.
+- Added Admin field restriction management for registered table fields.
+- Added scoped grant catalog with descriptions, source, risk, and duplicate detection.
+- Added bulk grant workflows for high-volume permission administration.
+- Added policy drift detection comparing registered app/tool requirements against current grants.
+- Added searchable audit review and signed CSV export from Admin Console.
+
+Earlier implemented:
 
 - Added `app_installations` and `app_provisioning_jobs` as the server-side source of truth for optional package installation state.
 - Updated the server app registry so core native apps remain always installed while optional/package apps require an installed server row.
@@ -131,14 +135,13 @@ Implemented:
 - Added an Admin Console Package Provisioning panel showing recent install/uninstall jobs.
 - Seeded IT Visibility DCIM as an installed optional package so current demos keep working.
 - Added route tests for catalog status, install job creation, and blocking uninstall of core platform apps.
-- Added first-pass column-level RBAC primitives for Tables: `field:<tableId>.<fieldName>` read/write grants, sensitive field restriction configuration, server-side redaction, write rejection, and Admin RBAC target discovery.
-- Replaced the flat Add Permission selector with a scoped RBAC grant builder that searches registered targets and previews description, source, risk, and duplicate grants before saving.
 
 Exit criteria:
 
 - Admins can understand why a user can or cannot access an app/action.
 - Optional packages no longer rely on local-only install state.
-- Roadmap ACL primitives are designed clearly enough to implement.
+- Field-level RBAC is enforced server-side and explainable in Admin Console.
+- Remaining package provisioning work is scoped as entitlement/progress/rollback depth, not app visibility architecture.
 
 ## Sprint 5: Quality, Operability, and Documentation Hardening
 
@@ -169,11 +172,95 @@ Implemented:
 - Added remaining native app mutation audit coverage across Change, Knowledge, Asset, Prevention, Discovery, Data Foundations, and IT Visibility DCIM server routes.
 - Added a PostgreSQL migration runner with `schema_migrations` tracking, checksum enforcement, dry-run/status commands, and one-time baseline support for existing environments.
 - Added root migration scripts so deployment operators can run `pnpm migrate:status`, `pnpm migrate:dry-run`, `pnpm migrate`, and `pnpm migrate:baseline` without knowing package internals.
+- Added audit integrity hardening: append-only audit triggers, SHA-256 hash chaining, serialized audit writes with PostgreSQL advisory locks, chain verification endpoint, Admin Console integrity status, and signed CSV export metadata.
 
 Exit criteria:
 
 - The repo can explain how to run, test, seed, deploy, back up, and operate the platform.
 - External reviewers can distinguish implemented behavior from roadmap intent.
+
+## Sprint 6: Tables Stewardship Cockpit
+
+Goal: make Tables the universal operational stewardship surface, not a raw database browser.
+
+Priority work:
+
+- Add saved table views with named filters, sort, selected columns, density, and sharing scope.
+- Add comprehensive buildable filters: text, enum, date, numeric, null/not-null, relationship-aware filters, and saved filter chips.
+- Add configurable column sets with per-table defaults and user-specific overrides.
+- Add inline edit for safe scalar fields with server-side validation, RBAC enforcement, and audit diffs.
+- Add bulk actions for low-risk record maintenance: assign owner, update status, tag, export, and queue cleanup review.
+- Add audit diff panels on record detail and row history.
+- Add validation state badges sourced from table metadata and Data Foundations rules.
+- Add export/import primitives with clear limits and audit events.
+- Add AI-assisted cleanup suggestions that explain evidence, confidence, and required approval.
+
+Exit criteria:
+
+- Tables feels like a serious admin/operator cockpit for stewardship at scale.
+- A user can create a saved view, filter records, adjust columns, edit a field, inspect the audit diff, and export the result.
+- Every write remains RBAC-aware, field-aware, audited, and test-covered.
+
+## Sprint 7: Reporting API Surface
+
+Goal: provide enterprise-grade reporting data surfaces without building a weak clone of PowerBI/Tableau/Grafana.
+
+Priority work:
+
+- Define canonical reporting domains: Incident, Change, Request, Knowledge, CMDB health, Discovery, Asset, Audit, RBAC, and Operational Readiness.
+- Add RBAC-aware reporting endpoints with stable JSON contracts and CSV export where appropriate.
+- Add time-window, grouping, filter, and pagination conventions shared across reports.
+- Add operational KPI endpoints for SLA risk, incident deflection, change collision risk, knowledge freshness, request backlog, CMDB completeness, and audit/security posture.
+- Add metadata endpoints so external BI tools can discover dimensions, measures, filters, and refresh expectations.
+- Add reporting API tests against seeded enterprise data.
+- Document Grafana/PowerBI/Tableau integration patterns and recommended dashboards.
+
+Exit criteria:
+
+- Specora can answer core enterprise reporting questions through APIs.
+- External BI tools have stable surfaces to consume without scraping app UIs.
+- Reporting remains governed by RBAC and does not bypass field/table restrictions.
+
+## Sprint 8: Discovery RC Push
+
+Goal: graduate Discovery from impressive beta/demo to a credible RC candidate.
+
+Priority work:
+
+- Add rollback records and rollback UI for committed discovery jobs.
+- Add saved mapping profiles independent from individual pipelines.
+- Add credential vault integration or a documented credential-provider abstraction.
+- Add richer AI mapping explanations with per-field rationale, confidence, and deterministic fallback.
+- Move heavier connector execution to worker-backed jobs as real connectors arrive.
+- Add better reconciliation previews: create/update/skip, relationship orphan handling, ambiguous match handling, and dependency impact.
+- Integrate the `specora-edge` source/relay architecture as a first-class Discovery source path when the edge repo matures.
+
+Exit criteria:
+
+- A user can configure a source, map data, preview, stage, approve, commit, and rollback with coherent audit history.
+- Discovery errors are actionable and tied to source, transform, credential, or reconciliation stage.
+- Discovery can be described as RC-ready for controlled environments, with edge/agent work clearly bounded if still external.
+
+## Sprint 9: Operability And Scale Hardening
+
+Goal: make the platform credible under external technical review and production-readiness discussion.
+
+Priority work:
+
+- Rehearse full backup and restore with Postgres, Neo4j, uploads, migrations, and validation commands.
+- Add production health checks for worker and deeper API dependency health.
+- Define Redis-backed multi-instance behavior for event subscriptions, RBAC/field restriction cache invalidation, websocket state, and rate-limit state.
+- Add JWT expiration and refresh flow.
+- Investigate and resolve or permanently document the recurring Next `.next` build artifact issue.
+- Add release checklist automation: migrate status, seed validation, demo readiness, E2E smoke, and artifact cleanup.
+- Document HA/DR topology options and minimum production deployment patterns.
+- Add audit-head external anchoring design for high-compliance deployments.
+
+Exit criteria:
+
+- A fresh environment can be migrated, restored, validated, and smoke-tested from docs.
+- The multi-instance path is clear enough to implement without architectural rework.
+- Production-readiness gaps are specific, testable, and visible to operators.
 
 ## Backlog Themes
 
@@ -181,6 +268,7 @@ Important but not next-sprint critical:
 
 - Review form-heavy surfaces against the north-star philosophy. Tables, Admin, Discovery, and DCIM should keep precise structured editors, but the primary ITSM flows should favor evidence-created records, AI-drafted proposals, review queues, and stewardship tables over blank-form creation. The current baseline is captured in [Form Surface Review](form-surface-review.md).
 - Evolve the Tables application into the universal stewardship cockpit: saved views, advanced filters, column sets, inline edit, bulk actions, audit diffs, validation state, export/import, relationship-aware filtering, and AI-assisted explanation or cleanup.
+- Add condition-based record access policies when there is a concrete use case and a testable explain-access model.
 - Expand Customer Portal into Specora Engage: multiple portals, audience targeting, per-portal branding/navigation, analytics, campaigns, AI optimization, and advanced support/call-routing adapters.
 - Upgrade `reactflow` v11 to current `@xyflow/react` and standardize graph components across Service Map, Discovery, Impact Graph, and DCIM.
 - Replace the DCIM floorplan prototype with a dedicated spatial canvas engine when DCIM becomes an active sprint again; React Flow should remain for topology/relationship diagrams, not CAD-like floorplan editing.

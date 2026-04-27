@@ -61,10 +61,11 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 
 ## Next Up
 
+- **Tables stewardship cockpit** — Saved views, advanced filters, column sets, inline edit, audit diffs, validation state, bulk actions, export/import, and AI-assisted cleanup.
+- **Reporting API surface** — RBAC-aware operational KPI endpoints and metadata contracts for Grafana, PowerBI, Tableau, and warehouse integration.
+- **Discovery RC push** — Rollback records/UI, saved mapping profiles, credential-provider abstraction, richer AI mapping rationale, and edge/collector source integration.
+- **Operability and scale hardening** — Restore rehearsal, worker health checks, JWT refresh, build reliability, Redis-backed multi-instance state, and audit-head external anchoring design.
 - **Real-time events** — WebSocket pub/sub for event bus and SSE chat streaming.
-- **NL CI Search standalone UI** — Global search bar with LLM-to-Cypher translation.
-- **Auto-remediation** — Suggest fixes for anomalies, such as missing relationships.
-- **Multi-instance API scale path** — Shared backplane for event subscriptions, RBAC cache invalidation, websocket state, and rate-limit state.
 
 ## Technical Debt
 
@@ -74,6 +75,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - Keep Provara and OpenAI fallback routing covered by tests as the chat/tool-call path evolves.
 - Replace websocket app-layer JSON ping with protocol-level `ping()` / `pong`.
 - Add JWT expiration and refresh flow.
+- Document and automate audit hash-chain external anchoring for high-compliance deployments.
 
 ## Decisions Log
 
@@ -85,3 +87,4 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - **Chat as right-side panel** — Keeps assistant context available beside the main workspace.
 - **Tailwind arbitrary values avoided** — Prefer standard utilities to reduce JIT generation misses.
 - **CMDB Explorer is built in** — Core platform capability, not an optional marketplace add-on.
+- **Audit integrity is a platform primitive** — Audit records are append-only and hash-chained; future compliance work should anchor the chain head outside the primary database.

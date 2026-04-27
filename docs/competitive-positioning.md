@@ -1,6 +1,7 @@
 # Competitive Positioning
 
 **Status:** Working product assessment
+**Last updated:** 2026-04-27
 
 This document grades Specora against peer ITSM rivals and enterprise service-management leaders. It is intentionally conservative. Specora has a strong product thesis and several differentiated workflows, but enterprise buyers judge platforms on reliability, governance, integrations, reporting, security, migration paths, and operational proof as much as feature creativity.
 
@@ -153,7 +154,7 @@ Specora's product idea can compete with enterprise leaders. Specora's operationa
 | Discovery | C+ | Promising builder-linker concept. Not ready for RC until schedules, sources, transforms, agent/edge story, and reconciliation mature. |
 | Customer Portal / Engage | B | Strong potential. Needs complete chat, classification, deflection, support handoff, and agent workspace loops. |
 | DCIM | C | Good conceptual demo. Not ready to compete with dedicated DCIM tools such as Sunbird. Keep it as an IT Visibility package item, not a core readiness blocker. |
-| Admin Console / RBAC | B- | Improving. Permission volume requires better descriptions, search, guided grants, explain-access, and troubleshooting flows. |
+| Admin Console / RBAC | A- | Strong differentiator after app/tool/table explainers, field restrictions, drift detection, bulk grants, searchable audit evidence, and tamper-evident audit integrity. Condition-based policies remain future work. |
 
 ## Recommended Product Posture
 
@@ -183,19 +184,26 @@ The strongest narrative is:
 
 ### 1. Harden The Platform Spine
 
-- Finish mutation audit coverage across native apps.
 - Expand E2E coverage for core user journeys.
-- Add better runtime diagnostics for app tools, RBAC, chat routing, and failed automations.
+- Add better runtime diagnostics for app tools, chat routing, failed automations, and scheduled jobs.
 - Rehearse backup and restore.
 - Document HA/DR and deployment topologies.
+- Design external audit-head anchoring for high-compliance deployments.
 
-### 2. Make Reporting Real
+### 2. Make Tables The Stewardship Cockpit
 
-- Add operational dashboards for incidents, changes, requests, knowledge, discovery, asset, and CMDB health.
-- Add executive views for SLA risk, deflection, change risk, incident prevention, and data quality.
-- Add data-quality reports for CSDMv5 readiness.
+- Add saved views, advanced filters, column sets, inline edit, audit diffs, validation state, bulk actions, export/import, and AI-assisted cleanup.
+- Keep Tables as the governed stewardship fallback for all platform records.
+- Ensure Tables never bypasses table, field, or future condition-based RBAC.
 
-### 3. Finish Discovery Enough For RC
+### 3. Make Reporting Real
+
+- Build a rich Reporting API surface before investing in a full in-platform report builder.
+- Add operational KPI endpoints for incidents, changes, requests, knowledge, discovery, asset, audit/security posture, and CMDB health.
+- Add executive API views for SLA risk, deflection, change risk, incident prevention, and data quality.
+- Add metadata contracts so Grafana, PowerBI, Tableau, and data warehouses can consume governed reporting data.
+
+### 4. Finish Discovery Enough For RC
 
 - Clarify source creation and editing.
 - Mature schedules and run history.
@@ -203,15 +211,15 @@ The strongest narrative is:
 - Document edge collector architecture and package boundary.
 - Treat `specora-edge` as a source/relay feeding the same discovery pipeline.
 
-### 4. Make Admin Best-In-Class
+### 5. Complete Operability Hardening
 
-- Add permission descriptions and AI-assisted explanations.
-- Build an access troubleshooting workflow.
-- Add guided grant creation.
-- Add registry views for apps, tables, record types, number sequences, and automation endpoints.
-- Add condition-based access to the roadmap and design docs.
+- Rehearse backup/restore.
+- Add worker health checks and deeper dependency health.
+- Define Redis-backed multi-instance behavior for eventing, RBAC cache invalidation, websocket state, and rate limits.
+- Add JWT expiration and refresh.
+- Resolve or permanently document production build artifact issues.
 
-### 5. Prove AI Reliability
+### 6. Prove AI Reliability
 
 - Persist AI decisions and classifier inputs/outputs.
 - Show confidence, alternatives, missing fields, and rationale.
@@ -243,4 +251,3 @@ These sources represent market positioning and feature direction used for compar
 - Ivanti Neurons for ITSM: https://www.ivanti.com/products/ivanti-neurons-itsm
 - Ivanti service management and AI packaging: https://www.ivanti.com/products/service-management
 - ManageEngine ServiceDesk Plus AI positioning: https://www.manageengine.com/products/service-desk/ai/
-
