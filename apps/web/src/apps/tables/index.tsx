@@ -37,6 +37,7 @@ type AttributeDef = {
 type TableDef = {
   id: string;
   label: string;
+  provider?: "cmdb-class" | "postgres-table";
   className: string;
   category: string;
   hasNumber?: boolean;
@@ -112,12 +113,21 @@ type ValidationIssue = {
   field: string;
   label: string;
   severity: "error" | "warn";
+  message?: string;
+  reason?: string;
 };
 
 const PAGE_SIZE = 100;
 const TABLES_LAUNCH_KEY = "specora_tables_launch";
 const SELECT_CLASS = "appearance-none rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500";
 const INLINE_SELECT_CLASS = "w-full min-w-32 appearance-none rounded border border-indigo-500 bg-gray-950 px-2 py-1 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-50";
+const RELATIONSHIP_TYPES = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"];
+const RELATIONSHIP_FILTERS: ColumnDef[] = [
+  { key: "__relationshipState", label: "Relationship State", core: false, attrType: "relationship-state" },
+  { key: "__relationshipType", label: "Relationship Type", core: false, attrType: "relationship-type" },
+  { key: "__relatedCiId", label: "Related CI ID", core: false, attrType: "string" },
+];
+const RELATIONSHIP_FILTER_KEYS = new Set(RELATIONSHIP_FILTERS.map((filter) => filter.key));
 
 const OPERATORS: Array<{ value: FilterOperator; label: string; needsValue: boolean }> = [
   { value: "contains", label: "contains", needsValue: true },
@@ -219,6 +229,10 @@ function validationIssuesForForm(table: TableDef, form: Record<string, string>):
   return issues;
 }
 
+function isRelationshipFilter(key: string) {
+  return RELATIONSHIP_FILTER_KEYS.has(key);
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -272,6 +286,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [bulkField, setBulkField] = useState("environment");
   const [bulkValue, setBulkValue] = useState("");
   const [issuePopover, setIssuePopover] = useState<string | null>(null);
+  const [serverValidationIssues, setServerValidationIssues] = useState<ValidationIssue[] | null>(null);
   const handledLaunchRef = useRef<string | null>(null);
 
   const availableColumns = useMemo<ColumnDef[]>(() => {
@@ -294,6 +309,11 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     const defaultAttrKeys = (keyAttrs.length > 0 ? keyAttrs.slice(0, 5) : attrs.slice(0, 5)).map((attr) => attr.name);
     return availableColumns.filter((column) => column.core || defaultAttrKeys.includes(column.key));
   }, [availableColumns, selected, selectedColumns]);
+
+  const filterColumns = useMemo(() => {
+    const readable = availableColumns.filter((column) => canReadColumn(column.key));
+    return selected?.provider === "cmdb-class" ? [...readable, ...RELATIONSHIP_FILTERS] : readable;
+  }, [availableColumns, selected]);
 
   const filterPayload = useMemo(() => {
     return filters
@@ -340,6 +360,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setInlineEdit(null);
     setSelectedRows({});
     setBulkEditorOpen(false);
+    setServerValidationIssues(null);
   }
 
   function toggleColumn(key: string) {
@@ -479,6 +500,20 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function loadValidation(table: TableDef, recordId: string) {
+    try {
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(table.id)}/records/${encodeURIComponent(recordId)}/validation`);
+      if (!res.ok) {
+        setServerValidationIssues(null);
+        return;
+      }
+      const data = await res.json();
+      setServerValidationIssues(data.issues || []);
+    } catch {
+      setServerValidationIssues(null);
+    }
+  }
+
   function cellValue(record: TableRecord, key: string) {
     if (key === "name") return record.name;
     if (key === "number") return record.number || "-";
@@ -499,12 +534,20 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   }
 
   function addFilter() {
-    setFilters((prev) => [...prev, { id: crypto.randomUUID(), field: "name", operator: "contains", value: "" }]);
+    setFilters((prev) => [...prev, { id: crypto.randomUUID(), field: filterColumns[0]?.key || "name", operator: "contains", value: "" }]);
     setFiltersOpen(true);
   }
 
   function updateFilter(id: string, patch: Partial<TableFilter>) {
-    setFilters((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
+    setFilters((prev) => prev.map((item) => {
+      if (item.id !== id) return item;
+      const next = { ...item, ...patch };
+      if (patch.field && isRelationshipFilter(patch.field)) {
+        next.operator = "equals";
+        next.value = patch.field === "__relationshipState" ? "orphaned" : "";
+      }
+      return next;
+    }));
   }
 
   function removeFilter(id: string) {
@@ -531,13 +574,16 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
 
   function openCreate() {
     if (!selected) return;
+    setServerValidationIssues(null);
     setEditor({ mode: "create", form: initialForm(selected) });
   }
 
   function openEdit(record: TableRecord) {
     if (!selected) return;
+    setServerValidationIssues(null);
     setEditor({ mode: "edit", record, form: initialForm(selected, record) });
     loadAudit(selected, record.id);
+    loadValidation(selected, record.id);
   }
 
   async function openRecordEditor(table: TableDef, recordId: string) {
@@ -551,8 +597,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       const data = await res.json();
       const record = data.record as TableRecord;
       setSelected(table);
+      setServerValidationIssues(null);
       setEditor({ mode: "edit", record, form: initialForm(table, record) });
       await loadAudit(table, record.id);
+      await loadValidation(table, record.id);
     } catch (err: any) {
       shell.notify(err.message || "Failed to open record editor", "error");
     } finally {
@@ -572,6 +620,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setPendingTableAction(null);
     if (action.mode === "create") {
       selectTable(table);
+      setServerValidationIssues(null);
       setEditor({ mode: "create", form: initialForm(table) });
     } else if (action.type === "OPEN_TABLE_RECORD" && recordId) {
       openRecordEditor(table, recordId);
@@ -829,6 +878,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     if (!table) return;
     if (pendingTableAction.mode === "create") {
       selectTable(table);
+      setServerValidationIssues(null);
       setEditor({ mode: "create", form: initialForm(table) });
     } else if (pendingTableAction.recordId) {
       openRecordEditor(table, pendingTableAction.recordId);
@@ -991,9 +1041,9 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               {filters.map((filter) => (
                 <div key={filter.id} className="grid grid-cols-[220px_160px_1fr_36px] gap-2">
                   <select value={filter.field} onChange={(event) => updateFilter(filter.id, { field: event.target.value })} className={SELECT_CLASS}>
-                  {availableColumns.filter((column) => canReadColumn(column.key)).map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
+                    {filterColumns.map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
                   </select>
-                  <select value={filter.operator} onChange={(event) => updateFilter(filter.id, { operator: event.target.value as FilterOperator })} className={SELECT_CLASS}>
+                  <select value={filter.operator} onChange={(event) => updateFilter(filter.id, { operator: event.target.value as FilterOperator })} className={SELECT_CLASS} disabled={isRelationshipFilter(filter.field)}>
                     {OPERATORS.map((operator) => <option key={operator.value} value={operator.value}>{operator.label}</option>)}
                   </select>
                   {isValueOperator(filter.operator) ? (
@@ -1168,8 +1218,9 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
           editor={editor}
           saving={saving}
           auditEntries={auditEntries}
+          serverValidationIssues={serverValidationIssues}
           onChange={updateForm}
-          onClose={() => setEditor(null)}
+          onClose={() => { setEditor(null); setServerValidationIssues(null); }}
           onSave={saveRecord}
         />
       )}
@@ -1178,6 +1229,22 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
 }
 
 function FilterValueInput({ filter, attr, onChange }: { filter: TableFilter; attr?: AttributeDef; onChange: (value: string) => void }) {
+  if (filter.field === "__relationshipState") {
+    return (
+      <select value={filter.value || "orphaned"} onChange={(event) => onChange(event.target.value)} className={SELECT_CLASS}>
+        <option value="orphaned">Orphaned</option>
+        <option value="connected">Connected</option>
+      </select>
+    );
+  }
+  if (filter.field === "__relationshipType") {
+    return (
+      <select value={filter.value} onChange={(event) => onChange(event.target.value)} className={SELECT_CLASS}>
+        <option value="">Select relationship</option>
+        {RELATIONSHIP_TYPES.map((value) => <option key={value} value={value}>{value}</option>)}
+      </select>
+    );
+  }
   if (attr?.attrType === "boolean") {
     return (
       <select value={filter.value || "true"} onChange={(event) => onChange(event.target.value)} className={SELECT_CLASS}>
@@ -1280,26 +1347,27 @@ function ValidationBadge({ issues, open, onToggle }: { issues: ValidationIssue[]
   );
 }
 
-function ValidationIssuePanel({ issues }: { issues: ValidationIssue[] }) {
+function ValidationIssuePanel({ issues, title = "Stewardship validation" }: { issues: ValidationIssue[]; title?: string }) {
   if (!issues.length) {
     return (
       <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">
-        Required stewardship fields are populated.
+        {title}: required stewardship checks passed.
       </div>
     );
   }
   const required = issues.filter((issue) => issue.severity === "error").length;
   return (
     <div className={`rounded-lg border px-3 py-3 ${required ? "border-red-500/20 bg-red-500/10" : "border-amber-500/20 bg-amber-500/10"}`}>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">{title}</div>
       <div className={`text-sm font-medium ${required ? "text-red-100" : "text-amber-100"}`}>
         {issues.length} stewardship issue{issues.length === 1 ? "" : "s"} to resolve
       </div>
       <div className="mt-2 space-y-1">
         {issues.map((issue) => (
           <div key={`${issue.field}:${issue.severity}`} className="flex items-center justify-between gap-3 rounded border border-gray-800/70 bg-gray-950/60 px-2 py-1.5 text-xs">
-            <span className="truncate text-gray-200">{issue.label}</span>
+            <span className="truncate text-gray-200">{issue.message || issue.label}</span>
             <span className={issue.severity === "error" ? "text-red-300" : "text-amber-300"}>
-              {issue.severity === "error" ? "Required" : "Health field"}
+              {issue.severity === "error" ? "Required" : issue.reason === "missing_relationship" ? "Relationship" : "Health field"}
             </span>
           </div>
         ))}
@@ -1374,6 +1442,7 @@ function RecordEditor({
   editor,
   saving,
   auditEntries,
+  serverValidationIssues,
   onChange,
   onClose,
   onSave,
@@ -1382,6 +1451,7 @@ function RecordEditor({
   editor: { mode: EditorMode; record?: TableRecord; form: Record<string, string> };
   saving: boolean;
   auditEntries: AuditEntry[];
+  serverValidationIssues: ValidationIssue[] | null;
   onChange: (key: string, value: string) => void;
   onClose: () => void;
   onSave: () => void;
@@ -1403,7 +1473,10 @@ function RecordEditor({
       </div>
 
       <div className="scrollbar-thin min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 pb-28">
-        <ValidationIssuePanel issues={editorIssues} />
+        <ValidationIssuePanel issues={editorIssues} title="Live form stewardship" />
+        {editor.mode === "edit" && serverValidationIssues && (
+          <ValidationIssuePanel issues={serverValidationIssues} title="Server validation snapshot" />
+        )}
         {editor.mode === "create" && (
           <Field label="ID" hint="Generated automatically when the record is saved.">
             <input value="Auto-generated" readOnly disabled className="w-full cursor-not-allowed rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm text-gray-500 outline-none" />

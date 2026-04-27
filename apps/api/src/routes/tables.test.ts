@@ -128,6 +128,49 @@ describe("tableRoutes", () => {
     expect(params.filter_0).toBe("Austin");
   });
 
+  it("applies relationship-aware filters to CMDB tables", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", attributes: "{\"city\":\"Austin\"}" }) })],
+      [makeRecord({ total: { toNumber: () => 1 } })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+    const filters = encodeURIComponent(JSON.stringify([
+      { field: "__relationshipState", operator: "equals", value: "orphaned" },
+      { field: "__relationshipType", operator: "equals", value: "LOCATED_AT" },
+      { field: "__relatedCiId", operator: "equals", value: "ci-1" },
+    ]));
+
+    const res = await app.inject({ method: "GET", url: `/api/tables/cmdb.Location/records?filters=${filters}` });
+
+    expect(res.statusCode).toBe(200);
+    const [cypher, params] = neo4j.run.mock.calls[0];
+    expect(cypher).toContain("NOT EXISTS { MATCH (n)-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT]-() }");
+    expect(cypher).toContain("type(r) = $relationship_filter_1");
+    expect(cypher).toContain("related:ConfigurationItem {id: $relationship_filter_2}");
+    expect(params.relationship_filter_1).toBe("LOCATED_AT");
+    expect(params.relationship_filter_2).toBe("ci-1");
+  });
+
+  it("returns authoritative table validation issues", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({
+        n: makeNode({ id: "loc-1", name: "HQ", class: "Location", attributes: "{}" }),
+        relationshipCount: { toNumber: () => 0 },
+      })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({ method: "GET", url: "/api/tables/cmdb.Location/records/loc-1/validation" });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.summary).toMatchObject({ issueCount: 2, errors: 1, warnings: 1, relationshipCount: 0 });
+    expect(body.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "city", severity: "error", reason: "missing_required" }),
+      expect.objectContaining({ field: "relationships", severity: "warn", reason: "missing_relationship" }),
+    ]));
+  });
+
   it("saves and deletes table stewardship views", async () => {
     const pgHandler = (sql: string, params?: any[]) => {
       if (sql.includes("INSERT INTO table_saved_views")) {

@@ -188,8 +188,7 @@ Goal: make Tables the universal operational stewardship surface, not a raw datab
 Priority work:
 
 - Add sharing scope for saved table views once team-level stewardship workflows are needed.
-- Add relationship-aware filters and saved filter chips.
-- Add stronger server-side validation beyond current type coercion and field-level RBAC.
+- Add saved filter chips.
 - Add richer bulk actions for assign owner, tag, and queue cleanup review.
 - Add import primitives with clear limits and audit events.
 - Add AI-assisted cleanup suggestions that explain evidence, confidence, and required approval.
@@ -200,6 +199,8 @@ Implemented:
 - Added RBAC-aware server-side sorting for CMDB-backed and Postgres-backed table records.
 - Added sortable table headers, saved sort state, and paginated record navigation.
 - Added loaded-record stewardship posture metrics and per-row validation badges for missing required/health-required data.
+- Added authoritative server-side record validation snapshots, including missing required fields, health-required fields, and orphaned CMDB records.
+- Added relationship-aware CMDB filters for connected/orphaned records, relationship type, and related CI ID.
 - Added low-risk bulk update from selected rows, still routed through existing field-aware, audited record update endpoints.
 - Preserved existing saved filters, column sets, density, inline edit, export, delete, and audit diff behavior.
 

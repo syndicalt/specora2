@@ -126,6 +126,17 @@ const POSTGRES_TABLES: PostgresTableRegistration[] = [
 ];
 
 const AUDIT_COLUMNS = new Set(["created_at", "updated_at"]);
+const TABLE_RELATIONSHIP_TYPES = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"] as const;
+const TABLE_RELATIONSHIP_PATTERN = TABLE_RELATIONSHIP_TYPES.join("|");
+const RELATIONSHIP_FILTER_FIELDS = new Set(["__relationshipState", "__relationshipType", "__relatedCiId"]);
+
+type TableValidationIssue = {
+  field: string;
+  label: string;
+  severity: "error" | "warn";
+  reason: "missing_required" | "missing_health_required" | "missing_relationship";
+  message: string;
+};
 
 function parseAttributes(value: unknown): Record<string, unknown> {
   if (!value) return {};
@@ -508,6 +519,44 @@ function buildFilterWhere(table: TableDefinition, filters: TableFilter[], params
   return clauses;
 }
 
+function hasRelationshipFilters(filters: TableFilter[]) {
+  return filters.some((filter) => RELATIONSHIP_FILTER_FIELDS.has(filter.field));
+}
+
+function buildRelationshipFilterWhere(filters: TableFilter[], params: Record<string, unknown>): string[] {
+  const clauses: string[] = [];
+  filters.forEach((filter, index) => {
+    if (!RELATIONSHIP_FILTER_FIELDS.has(filter.field) || filter.operator !== "equals") return;
+    const value = String(filter.value ?? "").trim();
+    if (!value) return;
+
+    if (filter.field === "__relationshipState") {
+      if (value === "connected") {
+        clauses.push(`EXISTS { MATCH (n)-[:${TABLE_RELATIONSHIP_PATTERN}]-() }`);
+      } else if (value === "orphaned") {
+        clauses.push(`NOT EXISTS { MATCH (n)-[:${TABLE_RELATIONSHIP_PATTERN}]-() }`);
+      }
+      return;
+    }
+
+    if (filter.field === "__relationshipType") {
+      const relationshipType = value.toUpperCase();
+      if (!TABLE_RELATIONSHIP_TYPES.includes(relationshipType as typeof TABLE_RELATIONSHIP_TYPES[number])) return;
+      const paramName = `relationship_filter_${index}`;
+      params[paramName] = relationshipType;
+      clauses.push(`EXISTS { MATCH (n)-[r]-() WHERE type(r) = $${paramName} }`);
+      return;
+    }
+
+    if (filter.field === "__relatedCiId") {
+      const paramName = `relationship_filter_${index}`;
+      params[paramName] = value;
+      clauses.push(`EXISTS { MATCH (n)--(related:ConfigurationItem {id: $${paramName}}) }`);
+    }
+  });
+  return clauses;
+}
+
 function postgresColumnForField(table: TableDefinition, field: string): string | null {
   if (field === "id") return "id";
   if (field === "name") return table.nameField || "id";
@@ -639,12 +688,61 @@ async function tableWithFieldAccess(
 
 function assertReadableFilters(filters: TableFilter[], access: Map<string, FieldAccess>) {
   for (const filter of filters) {
+    if (RELATIONSHIP_FILTER_FIELDS.has(filter.field)) continue;
     const field = access.get(filter.field);
     if (field && !field.read) {
       return filter.field;
     }
   }
   return null;
+}
+
+function isMissing(value: unknown) {
+  return value === undefined || value === null || value === "";
+}
+
+function validationIssuesForRecord(table: TableDefinition, record: any, access: Map<string, FieldAccess>, relationshipCount?: number): TableValidationIssue[] {
+  const issues: TableValidationIssue[] = [];
+  if (access.get("name")?.read !== false && isMissing(record.name)) {
+    issues.push({
+      field: "name",
+      label: "Name",
+      severity: "error",
+      reason: "missing_required",
+      message: "Name is required.",
+    });
+  }
+  for (const attr of table.attributes) {
+    if (access.get(attr.name)?.read === false) continue;
+    const value = (record.attributes || {})[attr.name] ?? record[attr.name];
+    if (attr.isMandatory && isMissing(value)) {
+      issues.push({
+        field: attr.name,
+        label: attr.displayName || attr.name,
+        severity: "error",
+        reason: "missing_required",
+        message: `${attr.displayName || attr.name} is required.`,
+      });
+    } else if (attr.isHealthRequired && isMissing(value)) {
+      issues.push({
+        field: attr.name,
+        label: attr.displayName || attr.name,
+        severity: "warn",
+        reason: "missing_health_required",
+        message: `${attr.displayName || attr.name} is missing.`,
+      });
+    }
+  }
+  if (table.provider === "cmdb-class" && relationshipCount === 0) {
+    issues.push({
+      field: "relationships",
+      label: "Relationships",
+      severity: "warn",
+      reason: "missing_relationship",
+      message: "No CMDB relationships are linked to this record.",
+    });
+  }
+  return issues;
 }
 
 function redactRecord(record: any, access: Map<string, FieldAccess>) {
@@ -829,6 +927,9 @@ export async function tableRoutes(fastify: FastifyInstance) {
     if (!table) return reply.status(404).send({ error: "Table not found" });
     const { access } = await tableWithFieldAccess(fastify, role!, table);
     const filters = parseFilters(body.filters);
+    if (hasRelationshipFilters(filters) && table.provider !== "cmdb-class") {
+      return reply.status(400).send({ error: "Relationship filters only apply to CMDB tables" });
+    }
     const unreadableFilter = assertReadableFilters(filters, access);
     if (unreadableFilter) return reply.status(403).send({ error: `Forbidden: cannot save filter on ${unreadableFilter}` });
     const columns = sanitizeColumns(table, body.columns);
@@ -931,6 +1032,9 @@ export async function tableRoutes(fastify: FastifyInstance) {
     if (!table) return reply.status(404).send({ error: "Table not found" });
     const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
     const filters = parseFilters(query.filters);
+    if (hasRelationshipFilters(filters) && table.provider !== "cmdb-class") {
+      return reply.status(400).send({ error: "Relationship filters only apply to CMDB tables" });
+    }
     const unreadableFilter = assertReadableFilters(filters, access);
     if (unreadableFilter) {
       return reply.status(403).send({ error: `Forbidden: cannot filter on ${unreadableFilter}` });
@@ -954,6 +1058,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       params.q = query.q.trim();
     }
     whereParts.push(...buildFilterWhere(tableForUser, filters, params));
+    whereParts.push(...buildRelationshipFilterWhere(filters, params));
     const where = whereParts.join(" AND ");
     const sortField = sanitizeSortField(tableForUser, query.sortField, access);
     const sortExpression = propertyExpression(sortField);
@@ -1015,6 +1120,55 @@ export async function tableRoutes(fastify: FastifyInstance) {
     } finally {
       await session.close();
     }
+  });
+
+  fastify.get("/api/tables/:table/records/:id/validation", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const { table: tableId, id } = request.params as { table: string; id: string };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    let record: any | null = null;
+    let relationshipCount: number | undefined;
+
+    if (table.provider === "postgres-table") {
+      record = await getPostgresRecord(fastify, tableForUser, id, access);
+      if (!record) return reply.status(404).send({ error: "Record not found" });
+    } else {
+      const session = fastify.neo4j.session();
+      try {
+        const result = await session.run(
+          `MATCH (n:ConfigurationItem {id: $id})
+           WHERE n.class = $className
+           OPTIONAL MATCH (n)-[r:${TABLE_RELATIONSHIP_PATTERN}]-()
+           RETURN n, count(r) AS relationshipCount`,
+          { id, className: table.className }
+        );
+        const row = result.records[0];
+        const node = row?.get("n");
+        if (!node) return reply.status(404).send({ error: "Record not found" });
+        record = redactRecord(parseNode(node), access);
+        relationshipCount = row.get("relationshipCount")?.toNumber?.() ?? Number(row.get("relationshipCount") ?? 0);
+      } finally {
+        await session.close();
+      }
+    }
+
+    const issues = validationIssuesForRecord(tableForUser, record, access, relationshipCount);
+    return {
+      table: tableForUser,
+      recordId: id,
+      issues,
+      summary: {
+        issueCount: issues.length,
+        errors: issues.filter((issue) => issue.severity === "error").length,
+        warnings: issues.filter((issue) => issue.severity === "warn").length,
+        relationshipCount,
+      },
+    };
   });
 
   fastify.get("/api/tables/:table/records/:id/audit", { onRequest: [fastify.authenticate] }, async (request, reply) => {

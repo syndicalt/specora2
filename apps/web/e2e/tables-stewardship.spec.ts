@@ -55,6 +55,8 @@ test.describe("Tables stewardship cockpit", () => {
       await page.getByRole("button", { name: `Edit ${name}` }).click();
       const editor = page.getByTestId("tables-record-editor");
       await expect(editor.getByText(/stewardship issues? to resolve/)).toBeVisible();
+      await expect(editor.getByText("Server validation snapshot")).toBeVisible();
+      await expect(editor.getByText("No CMDB relationships are linked to this record.")).toBeVisible();
       await expect(editor.getByText("City").first()).toBeVisible();
       await expect(editor.getByText("Health field").first()).toBeVisible();
 
