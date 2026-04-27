@@ -128,6 +128,98 @@ describe("tableRoutes", () => {
     expect(params.filter_0).toBe("Austin");
   });
 
+  it("saves and deletes table stewardship views", async () => {
+    const pgHandler = (sql: string, params?: any[]) => {
+      if (sql.includes("INSERT INTO table_saved_views")) {
+        return {
+          rows: [{
+            id: "view-1",
+            user_id: params?.[0],
+            table_id: params?.[1],
+            name: params?.[2],
+            search_query: params?.[3],
+            filters: JSON.parse(String(params?.[4] || "[]")),
+            columns: JSON.parse(String(params?.[5] || "[]")),
+            density: params?.[6],
+            created_at: "2026-04-27T00:00:00.000Z",
+            updated_at: "2026-04-27T00:00:00.000Z",
+          }],
+        };
+      }
+      if (sql.includes("DELETE FROM table_saved_views")) {
+        return {
+          rows: [{
+            id: params?.[0],
+            table_id: "cmdb.Location",
+            name: "Locations",
+            search_query: "HQ",
+            filters: [],
+            columns: ["name", "city"],
+            density: "compact",
+            created_at: "2026-04-27T00:00:00.000Z",
+            updated_at: "2026-04-27T00:00:00.000Z",
+          }],
+        };
+      }
+      if (sql.includes("FROM table_saved_views")) {
+        return { rows: [], rowCount: 0 };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "admin" }, makeNeo4j(), pgHandler);
+
+    const saved = await app.inject({
+      method: "POST",
+      url: "/api/tables/views",
+      payload: {
+        tableId: "cmdb.Location",
+        name: "Locations",
+        searchQuery: "HQ",
+        filters: [{ field: "city", operator: "equals", value: "Austin" }],
+        columns: ["name", "city", "not_a_field"],
+        density: "compact",
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    const body = JSON.parse(saved.body);
+    expect(body.view).toMatchObject({ tableId: "cmdb.Location", name: "Locations", columns: ["name", "city"] });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.view.saved", "TableSavedView", "view-1"]));
+
+    const deleted = await app.inject({ method: "DELETE", url: "/api/tables/views/view-1" });
+    expect(deleted.statusCode).toBe(200);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.view.deleted", "TableSavedView", "view-1"]));
+  });
+
+  it("returns table record audit history", async () => {
+    const pgHandler = (sql: string, params?: any[]) => {
+      if (sql.includes("FROM audit_log")) {
+        return {
+          rows: [{
+            id: "audit-1",
+            actor_id: "00000000-0000-4000-8000-000000000001",
+            action: "table.record.updated",
+            entity_type: params?.[0],
+            entity_id: params?.[1],
+            old_values: { name: "Old" },
+            new_values: { name: "New" },
+            metadata: { source: "api.tables" },
+            previous_hash: "prev",
+            entry_hash: "hash",
+            integrity_version: 1,
+            created_at: "2026-04-27T00:00:00.000Z",
+          }],
+        };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "admin" }, makeNeo4j(), pgHandler);
+
+    const res = await app.inject({ method: "GET", url: "/api/tables/cmdb.Location/records/loc-1/audit" });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).entries[0]).toMatchObject({ action: "table.record.updated", entryHash: "hash" });
+  });
+
   it("creates, updates, reads, and deletes a table record", async () => {
     const neo4j = makeNeo4j([
       [makeRecord({ n: makeNode({ id: "loc-2", name: "Remote", class: "Location", attributes: "{\"city\":\"Denver\"}" }) })],

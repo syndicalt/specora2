@@ -26,6 +26,15 @@ type TableFilter = {
   value?: unknown;
 };
 
+type TableSavedViewInput = {
+  tableId?: string;
+  name?: string;
+  searchQuery?: string;
+  filters?: TableFilter[];
+  columns?: string[];
+  density?: string;
+};
+
 type TableDefinition = {
   id: string;
   name: string;
@@ -325,17 +334,53 @@ function propertyExpression(field: string): string {
 }
 
 function parseFilters(value: unknown): TableFilter[] {
-  if (!value || typeof value !== "string") return [];
+  if (!value) return [];
+  if (Array.isArray(value)) return sanitizeFilters(value);
+  if (typeof value !== "string") return [];
   try {
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item) => item && typeof item === "object")
-      .map((item) => item as TableFilter)
-      .filter((item) => typeof item.field === "string" && typeof item.operator === "string");
+    return sanitizeFilters(parsed);
   } catch {
     return [];
   }
+}
+
+function sanitizeFilters(value: unknown[]): TableFilter[] {
+  const operators = new Set<FilterOperator>(["contains", "equals", "notEquals", "startsWith", "endsWith", "empty", "notEmpty", "gt", "gte", "lt", "lte"]);
+  return value
+    .filter((item) => item && typeof item === "object")
+    .map((item) => item as TableFilter)
+    .filter((item) => typeof item.field === "string" && operators.has(item.operator))
+    .slice(0, 25);
+}
+
+function sanitizeColumns(table: TableDefinition, columns: unknown): string[] {
+  if (!Array.isArray(columns)) return [];
+  const allowed = new Set(tableFieldNames(table));
+  return Array.from(new Set(columns.filter((column): column is string => typeof column === "string" && allowed.has(column)))).slice(0, 50);
+}
+
+function normalizeDensity(value: unknown) {
+  return value === "compact" || value === "spacious" ? value : "comfortable";
+}
+
+function tableViewRow(row: any) {
+  return {
+    id: row.id,
+    tableId: row.table_id,
+    name: row.name,
+    searchQuery: row.search_query || "",
+    filters: Array.isArray(row.filters) ? row.filters : JSON.parse(row.filters || "[]"),
+    columns: Array.isArray(row.columns) ? row.columns : JSON.parse(row.columns || "[]"),
+    density: row.density || "comfortable",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function actorKey(user: any) {
+  return user?.id || user?.email || user?.role || "anonymous";
 }
 
 function coerceFilterValue(value: unknown, attrType?: string): unknown {
@@ -684,6 +729,104 @@ async function updatePostgresRecord(
 }
 
 export async function tableRoutes(fastify: FastifyInstance) {
+  fastify.get("/api/tables/views", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const query = request.query as { tableId?: string };
+    const userId = actorKey(request.user);
+    const params: unknown[] = [userId];
+    let where = "user_id = $1";
+    if (query.tableId) {
+      params.push(query.tableId);
+      where += ` AND table_id = $${params.length}`;
+    }
+    const result = await fastify.pg.query(
+      `SELECT id, user_id, table_id, name, search_query, filters, columns, density, created_at, updated_at
+       FROM table_saved_views
+       WHERE ${where}
+       ORDER BY updated_at DESC, name`,
+      params
+    );
+    return { views: result.rows.map(tableViewRow) };
+  });
+
+  fastify.post("/api/tables/views", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot write table views" });
+    }
+    const body = request.body as TableSavedViewInput;
+    if (!body.tableId || !body.name?.trim()) {
+      return reply.status(400).send({ error: "tableId and name required" });
+    }
+    const table = await resolveTable(fastify, body.tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { access } = await tableWithFieldAccess(fastify, role!, table);
+    const filters = parseFilters(body.filters);
+    const unreadableFilter = assertReadableFilters(filters, access);
+    if (unreadableFilter) return reply.status(403).send({ error: `Forbidden: cannot save filter on ${unreadableFilter}` });
+    const columns = sanitizeColumns(table, body.columns);
+    try {
+      const result = await fastify.pg.query(
+        `INSERT INTO table_saved_views (user_id, table_id, name, search_query, filters, columns, density)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (user_id, table_id, name)
+         DO UPDATE SET search_query = EXCLUDED.search_query,
+                       filters = EXCLUDED.filters,
+                       columns = EXCLUDED.columns,
+                       density = EXCLUDED.density,
+                       updated_at = NOW()
+         RETURNING id, user_id, table_id, name, search_query, filters, columns, density, created_at, updated_at`,
+        [
+          actorKey(request.user),
+          table.id,
+          body.name.trim().slice(0, 120),
+          body.searchQuery?.trim() || "",
+          JSON.stringify(filters),
+          JSON.stringify(columns),
+          normalizeDensity(body.density),
+        ]
+      );
+      await recordAuditEvent(fastify, {
+        actorId: (request.user as any)?.id,
+        action: "table.view.saved",
+        entityType: "TableSavedView",
+        entityId: result.rows[0].id,
+        newValues: tableViewRow(result.rows[0]),
+        metadata: { source: "api.tables", tableId: table.id },
+      });
+      return { view: tableViewRow(result.rows[0]) };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to save table view" });
+    }
+  });
+
+  fastify.delete("/api/tables/views/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot delete table views" });
+    }
+    const { id } = request.params as { id: string };
+    const result = await fastify.pg.query(
+      `DELETE FROM table_saved_views WHERE id = $1 AND user_id = $2
+       RETURNING id, table_id, name, search_query, filters, columns, density, created_at, updated_at`,
+      [id, actorKey(request.user)]
+    );
+    if (!result.rows.length) return reply.status(404).send({ error: "View not found" });
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "table.view.deleted",
+      entityType: "TableSavedView",
+      entityId: id,
+      oldValues: tableViewRow(result.rows[0]),
+      metadata: { source: "api.tables", tableId: result.rows[0].table_id },
+    });
+    return { ok: true };
+  });
+
   fastify.get("/api/tables", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     const role = await getRole(fastify, request.user as any);
     if (!(await canUseTable(fastify, role, "read"))) {
@@ -799,6 +942,40 @@ export async function tableRoutes(fastify: FastifyInstance) {
     } finally {
       await session.close();
     }
+  });
+
+  fastify.get("/api/tables/:table/records/:id/audit", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const { table: tableId, id } = request.params as { table: string; id: string };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    const result = await fastify.pg.query(
+      `SELECT id, actor_id, action, entity_type, entity_id, old_values, new_values, metadata, previous_hash, entry_hash, integrity_version, created_at
+       FROM audit_log
+       WHERE entity_type = $1 AND entity_id = $2
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [table.id, id]
+    );
+    return {
+      entries: result.rows.map((row: any) => ({
+        id: row.id,
+        actorId: row.actor_id,
+        action: row.action,
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        oldValues: row.old_values,
+        newValues: row.new_values,
+        metadata: row.metadata,
+        previousHash: row.previous_hash,
+        entryHash: row.entry_hash,
+        integrityVersion: row.integrity_version,
+        createdAt: row.created_at,
+      })),
+    };
   });
 
   fastify.post("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {

@@ -9,6 +9,7 @@ import {
   Database,
   Edit3,
   Filter,
+  History,
   Plus,
   RefreshCw,
   Save,
@@ -69,6 +70,25 @@ type PendingTableAction = {
   tableId: string;
   recordId?: string;
   mode?: "create" | "edit";
+};
+
+type SavedTableView = {
+  id: string;
+  tableId: string;
+  name: string;
+  searchQuery: string;
+  filters: Array<{ field: string; operator: FilterOperator; value?: unknown }>;
+  columns: string[];
+  density: "compact" | "comfortable" | "spacious";
+};
+
+type AuditEntry = {
+  id: string;
+  action: string;
+  oldValues?: Record<string, unknown> | null;
+  newValues?: Record<string, unknown> | null;
+  entryHash?: string | null;
+  createdAt: string;
 };
 
 const PAGE_SIZE = 100;
@@ -141,6 +161,9 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [selectedColumns, setSelectedColumns] = useState<Record<string, string[]>>({});
+  const [savedViews, setSavedViews] = useState<SavedTableView[]>([]);
+  const [density, setDensity] = useState<"compact" | "comfortable" | "spacious">("comfortable");
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [pendingTableAction, setPendingTableAction] = useState<PendingTableAction | null>(null);
   const [editor, setEditor] = useState<{ mode: EditorMode; record?: TableRecord; form: Record<string, string> } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -186,6 +209,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setSelected(table);
     setQuery("");
     setFilters([]);
+    setAuditEntries([]);
     setPickerOpen(false);
     setEditor(null);
   }
@@ -239,6 +263,88 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function loadSavedViews(table = selected) {
+    if (!table) return;
+    try {
+      const res = await shell.fetch(`/api/tables/views?tableId=${encodeURIComponent(table.id)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setSavedViews(data.views || []);
+    } catch {
+      setSavedViews([]);
+    }
+  }
+
+  async function saveCurrentView() {
+    if (!selected) return;
+    const name = window.prompt("View name", `${selected.label} view`);
+    if (!name?.trim()) return;
+    try {
+      const columns = (selectedColumns[selected.id] || visibleColumns.map((column) => column.key)).filter(Boolean);
+      const res = await shell.fetch("/api/tables/views", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tableId: selected.id,
+          name: name.trim(),
+          searchQuery: query,
+          filters: filterPayload,
+          columns,
+          density,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to save view");
+      }
+      shell.notify("View saved", "success");
+      await loadSavedViews(selected);
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to save view", "error");
+    }
+  }
+
+  function applySavedView(view: SavedTableView) {
+    if (!selected) return;
+    setQuery(view.searchQuery || "");
+    setFilters((view.filters || []).map((filter) => ({
+      id: crypto.randomUUID(),
+      field: filter.field,
+      operator: filter.operator,
+      value: filter.value === undefined || filter.value === null ? "" : String(filter.value),
+    })));
+    setSelectedColumns((current) => ({ ...current, [selected.id]: view.columns || [] }));
+    setDensity(view.density || "comfortable");
+  }
+
+  async function deleteSavedView(view: SavedTableView) {
+    try {
+      const res = await shell.fetch(`/api/tables/views/${encodeURIComponent(view.id)}`, { method: "DELETE" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to delete view");
+      }
+      setSavedViews((current) => current.filter((item) => item.id !== view.id));
+      shell.notify("View deleted", "success");
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to delete view", "error");
+    }
+  }
+
+  async function loadAudit(table: TableDef, recordId: string) {
+    try {
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(table.id)}/records/${encodeURIComponent(recordId)}/audit`);
+      if (!res.ok) {
+        setAuditEntries([]);
+        return;
+      }
+      const data = await res.json();
+      setAuditEntries(data.entries || []);
+    } catch {
+      setAuditEntries([]);
+    }
+  }
+
   function cellValue(record: TableRecord, key: string) {
     if (key === "name") return record.name;
     if (key === "number") return record.number || "-";
@@ -270,6 +376,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   function openEdit(record: TableRecord) {
     if (!selected) return;
     setEditor({ mode: "edit", record, form: initialForm(selected, record) });
+    loadAudit(selected, record.id);
   }
 
   async function openRecordEditor(table: TableDef, recordId: string) {
@@ -284,6 +391,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       const record = data.record as TableRecord;
       setSelected(table);
       setEditor({ mode: "edit", record, form: initialForm(table, record) });
+      await loadAudit(table, record.id);
     } catch (err: any) {
       shell.notify(err.message || "Failed to open record editor", "error");
     } finally {
@@ -376,7 +484,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   }, []);
 
   useEffect(() => {
-    if (selected) loadRecords(selected);
+    if (selected) {
+      loadRecords(selected);
+      loadSavedViews(selected);
+    }
   }, [selected?.id]);
 
   useEffect(() => {
@@ -455,6 +566,30 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             </button>
           ))}
         </div>
+        {selected && (
+          <div className="border-t border-gray-800 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-xs font-semibold uppercase tracking-wider text-gray-600">Views</div>
+              <button onClick={saveCurrentView} className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900 hover:text-white">
+                Save
+              </button>
+            </div>
+            <div className="scrollbar-thin max-h-44 space-y-1 overflow-y-auto">
+              {savedViews.map((view) => (
+                <div key={view.id} className="group flex items-center gap-1 rounded-lg border border-gray-900 bg-gray-950 px-2 py-1.5 hover:border-gray-800">
+                  <button onClick={() => applySavedView(view)} className="min-w-0 flex-1 text-left">
+                    <div className="truncate text-xs font-medium text-gray-300">{view.name}</div>
+                    <div className="truncate text-[10px] text-gray-600">{view.columns.length || "default"} columns / {view.filters.length} filters</div>
+                  </button>
+                  <button onClick={() => deleteSavedView(view)} className="rounded p-1 text-gray-600 opacity-0 hover:text-red-300 group-hover:opacity-100" title="Delete view">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+              {!savedViews.length && <div className="rounded-lg border border-dashed border-gray-800 px-2 py-3 text-xs text-gray-600">No saved views.</div>}
+            </div>
+          </div>
+        )}
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -479,6 +614,11 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             <button onClick={() => loadRecords()} className="rounded-lg border border-gray-700 bg-gray-900 p-2 text-gray-300 hover:text-white" title="Refresh">
               <RefreshCw className={`h-4 w-4 ${recordLoading ? "animate-spin" : ""}`} />
             </button>
+            <select value={density} onChange={(event) => setDensity(event.target.value as typeof density)} className="rounded-lg border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-300 outline-none focus:border-indigo-500" title="Density">
+              <option value="compact">Compact</option>
+              <option value="comfortable">Comfortable</option>
+              <option value="spacious">Spacious</option>
+            </select>
             <div className="relative">
               <button onClick={() => setPickerOpen((open) => !open)} className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white">
                 <Columns3 className="h-4 w-4" />
@@ -570,11 +710,11 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               {records.map((record) => (
                 <tr key={record.id} data-testid={`tables-record-${record.id}`} className="border-b border-gray-900 hover:bg-gray-900/60">
                   {visibleColumns.map((column) => (
-                    <td key={column.key} className={`max-w-[260px] truncate px-4 py-3 ${column.key === "id" ? "font-mono text-xs text-gray-500" : column.key === "name" ? "font-medium text-gray-200" : "text-gray-300"}`}>
+                    <td key={column.key} className={`max-w-[260px] truncate px-4 ${density === "compact" ? "py-2" : density === "spacious" ? "py-4" : "py-3"} ${column.key === "id" ? "font-mono text-xs text-gray-500" : column.key === "name" ? "font-medium text-gray-200" : "text-gray-300"}`}>
                       {String(cellValue(record, column.key))}
                     </td>
                   ))}
-                  <td className="px-4 py-3">
+                  <td className={`px-4 ${density === "compact" ? "py-2" : density === "spacious" ? "py-4" : "py-3"}`}>
                     <div className="flex justify-end gap-1">
                       <button onClick={() => openEdit(record)} className="rounded p-1.5 text-gray-500 hover:bg-gray-800 hover:text-white" title="Edit" aria-label={`Edit ${record.name}`}>
                         <Edit3 className="h-4 w-4" />
@@ -610,6 +750,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
           table={selected}
           editor={editor}
           saving={saving}
+          auditEntries={auditEntries}
           onChange={updateForm}
           onClose={() => setEditor(null)}
           onSave={saveRecord}
@@ -651,6 +792,7 @@ function RecordEditor({
   table,
   editor,
   saving,
+  auditEntries,
   onChange,
   onClose,
   onSave,
@@ -658,6 +800,7 @@ function RecordEditor({
   table: TableDef;
   editor: { mode: EditorMode; record?: TableRecord; form: Record<string, string> };
   saving: boolean;
+  auditEntries: AuditEntry[];
   onChange: (key: string, value: string) => void;
   onClose: () => void;
   onSave: () => void;
@@ -698,6 +841,31 @@ function RecordEditor({
             ))}
           </div>
         </div>
+
+        {editor.mode === "edit" && (
+          <div className="border-t border-gray-800 pt-4">
+            <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+              <History className="h-3.5 w-3.5" />
+              Audit History
+            </div>
+            <div className="space-y-2">
+              {auditEntries.map((entry) => (
+                <div key={entry.id} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-mono text-xs text-gray-300">{entry.action}</div>
+                    <div className="text-[10px] text-gray-600">{new Date(entry.createdAt).toLocaleString()}</div>
+                  </div>
+                  <div className="mt-2 grid gap-2 text-xs text-gray-500">
+                    <DiffSummary label="Before" value={entry.oldValues} />
+                    <DiffSummary label="After" value={entry.newValues} />
+                  </div>
+                  {entry.entryHash && <div className="mt-2 truncate font-mono text-[10px] text-gray-700">hash {entry.entryHash}</div>}
+                </div>
+              ))}
+              {!auditEntries.length && <div className="rounded-lg border border-dashed border-gray-800 px-3 py-4 text-sm text-gray-600">No audit history for this record.</div>}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex shrink-0 justify-end gap-2 border-t border-gray-800 px-4 py-3">
@@ -708,6 +876,18 @@ function RecordEditor({
         </button>
       </div>
     </aside>
+  );
+}
+
+function DiffSummary({ label, value }: { label: string; value?: Record<string, unknown> | null }) {
+  const text = value ? JSON.stringify(value) : "-";
+  return (
+    <div>
+      <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">{label}</div>
+      <div className="max-h-20 overflow-hidden rounded border border-gray-800 bg-gray-950 px-2 py-1 font-mono text-[11px] leading-5 text-gray-400">
+        {text}
+      </div>
+    </div>
   );
 }
 
