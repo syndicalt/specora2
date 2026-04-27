@@ -164,6 +164,74 @@ test.describe("demo spine smoke coverage", () => {
     await expect(page.getByPlaceholder("Ask about an outage, service, runbook, policy, or known error")).toBeVisible();
   });
 
+  test("Knowledge Core can capture a gap, draft, publish, and record feedback", async ({ page, request }) => {
+    const headers = await authHeaders(page);
+    const suffix = Date.now().toString().slice(-5);
+    const query = `How do we recover the synthetic zebra queue ${suffix}?`;
+    const draftTitle = `Draft: ${query}`;
+    let knowledgeId = "";
+    let gapId = "";
+
+    try {
+      await openApp(page, "knowledge-core", "knowledge");
+      await page.getByPlaceholder("Ask about an outage, service, runbook, policy, or known error").fill(query);
+      await page.getByRole("button", { name: "Ask" }).click();
+      await expect(page.getByText(`No governed knowledge matched "${query}"`)).toBeVisible();
+      await expect(page.getByText("Create or draft knowledge from the next solved interaction.")).toBeVisible();
+      for (let index = 0; index < 20; index += 1) {
+        await request.post("http://localhost:4000/api/apps/knowledge-core/tools/answer", { headers, data: { query } });
+      }
+
+      await page.getByRole("button", { name: "Stewardship" }).click();
+      await expect(page.getByText(query)).toBeVisible();
+      const gapText = page.getByText(query);
+      await gapText.scrollIntoViewIfNeeded();
+      await gapText.locator("xpath=following::button[1]").click();
+      await expect(page.getByText("Draft created from knowledge gap")).toBeVisible();
+      await expect(page.getByRole("heading", { name: draftTitle })).toBeVisible();
+      await expect(page.getByText("gap").first()).toBeVisible();
+
+      const detailPane = page.getByRole("complementary");
+      await detailPane.getByRole("button", { name: "Publish", exact: true }).click();
+      await expect(page.getByText("Knowledge published")).toBeVisible();
+      await expect(page.getByText("published").first()).toBeVisible();
+
+      await detailPane.getByRole("button", { name: "Solved", exact: true }).click();
+      await expect(page.getByText("Feedback recorded").first()).toBeVisible();
+      await expect(page.getByText("solved").first()).toBeVisible();
+    } finally {
+      const items = await request.get("http://localhost:4000/api/apps/knowledge-core/tools/list_knowledge", { headers });
+      if (items.ok()) {
+        const item = (await items.json()).find((candidate: { id: string; title: string }) => candidate.title === draftTitle);
+        knowledgeId = item?.id || "";
+      }
+      const queue = await request.get("http://localhost:4000/api/apps/knowledge-core/tools/stewardship_queue", { headers });
+      if (queue.ok()) {
+        const gap = (await queue.json()).gaps?.find((candidate: { id: string; query: string }) => candidate.query === query);
+        gapId = gap?.id || "";
+      }
+      if (knowledgeId) {
+        const details = await request.get(`http://localhost:4000/api/apps/knowledge-core/tools/get_knowledge_details?knowledgeId=${encodeURIComponent(knowledgeId)}`, { headers });
+        if (details.ok()) {
+          const data = await details.json();
+          for (const item of data.feedback || []) {
+            await request.delete(`http://localhost:4000/api/tables/pg.knowledge_feedback/records/${item.id}`, { headers });
+          }
+          for (const item of data.events || []) {
+            await request.delete(`http://localhost:4000/api/tables/pg.knowledge_events/records/${item.id}`, { headers });
+          }
+          for (const item of data.links || []) {
+            await request.delete(`http://localhost:4000/api/tables/pg.knowledge_links/records/${item.id}`, { headers });
+          }
+        }
+        await request.delete(`http://localhost:4000/api/tables/pg.knowledge_items/records/${knowledgeId}`, { headers });
+      }
+      if (gapId) {
+        await request.delete(`http://localhost:4000/api/tables/pg.knowledge_gaps/records/${gapId}`, { headers });
+      }
+    }
+  });
+
   test("Admin Access Analyzer explains an RBAC decision", async ({ page }) => {
     await openApp(page, "admin-console", "admin");
 

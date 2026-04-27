@@ -86,6 +86,8 @@ Exit criteria:
 
 Goal: make Discovery operationally useful instead of mostly a demo page.
 
+RC boundary: Discovery remains beta/demo until this sprint's exit criteria are met. It should be shown as a promising builder-linker workflow, not represented as release-candidate operational discovery.
+
 Priority work:
 
 - Add rollback records and rollback UI for committed discovery jobs.

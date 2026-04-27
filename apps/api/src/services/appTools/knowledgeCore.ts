@@ -73,7 +73,7 @@ registerTool<FastifyInstance>("knowledge-core", {
   const trustScore = status === "published" ? 0.72 : 0.48;
   const result = await fastify.pg.query(
     `INSERT INTO knowledge_items (title, content, summary, type, status, audience, source, source_ref, service, ci_id, tags, owner_id, trust_score, ai_confidence, last_validated_at, published_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, CASE WHEN $5 = 'published' THEN NOW() ELSE NULL END, CASE WHEN $5 = 'published' THEN NOW() ELSE NULL END)
+     VALUES ($1, $2, $3, $4, $5::text, $6, $7, $8, $9, $10, $11, $12, $13, $14, CASE WHEN $5::text = 'published' THEN NOW() ELSE NULL END, CASE WHEN $5::text = 'published' THEN NOW() ELSE NULL END)
      RETURNING *`,
     [title, content, summary || null, type, status, audience, source, sourceRef || null, service || null, ciId || null, tags, _userId || null, trustScore, source === "ai" ? 0.68 : 0]
   );
@@ -294,11 +294,11 @@ registerTool<FastifyInstance>("knowledge-core", {
 }, async (args, fastify) => {
   const { knowledgeId, status, note, _userId } = args as any;
   const result = await fastify.pg.query(
-    `UPDATE knowledge_items SET status = $1,
-       trust_score = CASE WHEN $1 = 'published' THEN GREATEST(trust_score, 0.78) ELSE trust_score END,
-       last_validated_at = CASE WHEN $1 = 'published' THEN NOW() ELSE last_validated_at END,
-       published_at = CASE WHEN $1 = 'published' AND published_at IS NULL THEN NOW() ELSE published_at END,
-       retired_at = CASE WHEN $1 = 'retired' THEN NOW() ELSE retired_at END,
+    `UPDATE knowledge_items SET status = $1::text,
+       trust_score = CASE WHEN $1::text = 'published' THEN GREATEST(trust_score, 0.78) ELSE trust_score END,
+       last_validated_at = CASE WHEN $1::text = 'published' THEN NOW() ELSE last_validated_at END,
+       published_at = CASE WHEN $1::text = 'published' AND published_at IS NULL THEN NOW() ELSE published_at END,
+       retired_at = CASE WHEN $1::text = 'retired' THEN NOW() ELSE retired_at END,
        updated_at = NOW()
      WHERE id = $2 RETURNING *`,
     [status, knowledgeId]
