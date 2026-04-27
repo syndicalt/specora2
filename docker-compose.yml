@@ -110,7 +110,7 @@ services:
       - .:/app
       - /app/node_modules
       - /app/apps/web/.next
-    command: pnpm --filter @specora/web dev
+    command: sh -c 'NEXT_BIN=$$(ls -d /app/node_modules/.pnpm/next@14.2.0*/node_modules/next/dist/bin/next | head -n 1); NEXT_DIR=$$(dirname $$(dirname $$(dirname "$$NEXT_BIN"))); export NODE_PATH=$$(dirname "$$NEXT_DIR"); cd /app/apps/web && node "$$NEXT_BIN" dev'
 
   worker:
     build:

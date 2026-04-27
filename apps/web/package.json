@@ -3,8 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "dev": "node ./node_modules/next/dist/bin/next dev",
-    "dev:https": "NEXT_PUBLIC_API_URL=https://localhost:4443/graphql NEXT_PUBLIC_WEB_URL=https://localhost:3443 node ./node_modules/next/dist/bin/next dev -p 3443 --experimental-https --experimental-https-key ../../certs/localhost-key.pem --experimental-https-cert ../../certs/localhost-cert.pem",
+    "dev": "next dev",
+    "dev:https": "NEXT_PUBLIC_API_URL=https://localhost:4443/graphql NEXT_PUBLIC_WEB_URL=https://localhost:3443 next dev -p 3443 --experimental-https --experimental-https-key ../../certs/localhost-key.pem --experimental-https-cert ../../certs/localhost-cert.pem",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

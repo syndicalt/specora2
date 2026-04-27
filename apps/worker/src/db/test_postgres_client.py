@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 
 @pytest.fixture
@@ -71,6 +72,48 @@ async def test_get_pending_jobs(client):
 
 
 @pytest.mark.asyncio
+async def test_get_pending_jobs_converts_uuid_values(client):
+    conn = AsyncMock()
+    job_id = UUID("11111111-1111-1111-1111-111111111111")
+    discovery_job_id = UUID("22222222-2222-2222-2222-222222222222")
+    row = MagicMock()
+    row.items.return_value = [
+        ("id", job_id),
+        ("type", "discovery"),
+        ("payload", {"discoveryJobId": discovery_job_id}),
+    ]
+    conn.fetch = AsyncMock(return_value=[row])
+    client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
+
+    jobs = await client.get_pending_jobs(limit=5)
+
+    assert jobs == [
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "type": "discovery",
+            "payload": {"discoveryJobId": "22222222-2222-2222-2222-222222222222"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_pending_jobs_decodes_string_payloads(client):
+    conn = AsyncMock()
+    row = MagicMock()
+    row.items.return_value = [
+        ("id", "job-1"),
+        ("type", "discovery_pipeline"),
+        ("payload", '{"pipelineId":"pipe-1","preview":{"stagedRecords":2}}'),
+    ]
+    conn.fetch = AsyncMock(return_value=[row])
+    client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
+
+    jobs = await client.get_pending_jobs(limit=5)
+
+    assert jobs[0]["payload"] == {"pipelineId": "pipe-1", "preview": {"stagedRecords": 2}}
+
+
+@pytest.mark.asyncio
 async def test_mark_job_status(client):
     conn = AsyncMock()
     client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
@@ -113,6 +156,25 @@ async def test_mark_discovery_job_status(client):
 
     await client.mark_discovery_job_status("dj-1", "completed", {"created": 5})
     conn.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mark_discovery_job_status_encodes_uuid_stats(client):
+    conn = AsyncMock()
+    client.pool.acquire = MagicMock(return_value=make_acquire_mock(conn))
+
+    await client.mark_discovery_job_status(
+        "dj-1",
+        "completed",
+        {"recordId": UUID("33333333-3333-3333-3333-333333333333")},
+    )
+
+    conn.execute.assert_awaited_once_with(
+        "UPDATE discovery_jobs SET status = $1, stats = $2::jsonb, updated_at = NOW() WHERE id = $3",
+        "completed",
+        '{"recordId": "33333333-3333-3333-3333-333333333333"}',
+        "dj-1",
+    )
 
 
 @pytest.mark.asyncio

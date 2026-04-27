@@ -86,6 +86,37 @@ describe("reportingRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["report.exported", "ReportDataset", "incidents"]));
   });
 
+  it("returns target-specific integration contracts for visible datasets", async () => {
+    const app = await buildApp({ id: "u1", role: "admin" });
+
+    const res = await app.inject({ method: "GET", url: "/api/reports/contracts/powerbi" });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.contract).toMatchObject({
+      target: "powerbi",
+      authentication: { type: "bearer", header: "Authorization" },
+      client: { mode: "web-connector", preferredFormat: "csv" },
+    });
+    expect(body.contract.datasets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "incidents",
+        endpoints: expect.objectContaining({ query: "/api/reports/datasets/incidents/query" }),
+        filters: expect.arrayContaining([expect.objectContaining({ field: "status", operators: expect.arrayContaining(["equals", "contains"]) })]),
+      }),
+    ]));
+    expect(body.contract.datasets[0].columns[0]).toHaveProperty("source");
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["report.contract.read", "ReportContract", "powerbi"]));
+  });
+
+  it("rejects unknown report contract targets", async () => {
+    const app = await buildApp({ id: "u1", role: "admin" });
+
+    const res = await app.inject({ method: "GET", url: "/api/reports/contracts/looker" });
+
+    expect(res.statusCode).toBe(404);
+  });
+
   it("saves and deletes report definitions", async () => {
     const pgHandler = (sql: string, params?: any[]) => {
       if (sql.includes("INSERT INTO report_saved_definitions")) {

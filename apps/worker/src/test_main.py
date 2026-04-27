@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncio
 import os
 
-from src.main import process_jobs, process_discovery_jobs, serve
+from src.main import process_jobs, process_discovery_jobs, serve, start_trace, end_trace
 
 
 @pytest.fixture
@@ -244,6 +244,36 @@ async def test_process_jobs_with_pathlight_failure(mock_postgres, mock_handle_in
         await task
     except asyncio.CancelledError:
         pass
+    trace_mock.end.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_trace_times_out(monkeypatch):
+    monkeypatch.setattr("src.main.TRACE_TIMEOUT", 0.01)
+
+    async def slow_trace(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    pathlight_mock = MagicMock()
+    pathlight_mock.trace = AsyncMock(side_effect=slow_trace)
+
+    trace = await start_trace(pathlight_mock, "process-job", {"job_id": "job-1"})
+
+    assert trace is None
+
+
+@pytest.mark.asyncio
+async def test_end_trace_times_out(monkeypatch):
+    monkeypatch.setattr("src.main.TRACE_TIMEOUT", 0.01)
+
+    async def slow_end(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    trace_mock = MagicMock()
+    trace_mock.end = AsyncMock(side_effect=slow_end)
+
+    await end_trace(trace_mock, {"status": "completed"})
+
     trace_mock.end.assert_awaited_once()
 
 

@@ -32,6 +32,8 @@ type ReportFilter = {
   value?: unknown;
 };
 
+type ReportContractTarget = "grafana" | "powerbi" | "tableau" | "warehouse";
+
 type ReportQueryInput = {
   from?: unknown;
   to?: unknown;
@@ -184,6 +186,7 @@ const DATASETS: ReportDataset[] = [
 
 const DATASET_BY_ID = new Map(DATASETS.map((dataset) => [dataset.id, dataset]));
 const OPERATORS = new Set<ReportFilterOperator>(["equals", "notEquals", "contains", "startsWith", "endsWith", "empty", "notEmpty", "gt", "gte", "lt", "lte"]);
+const CONTRACT_TARGETS = new Set<ReportContractTarget>(["grafana", "powerbi", "tableau", "warehouse"]);
 
 function actorKey(user: any) {
   return user?.id || user?.email || user?.role || "anonymous";
@@ -255,6 +258,111 @@ function datasetDescriptor(dataset: ReportDataset) {
     defaultGroupBy: dataset.defaultGroupBy,
     timeColumn: dataset.timeColumn,
     columns: dataset.columns.map(({ key, label, type, filterable, groupable }) => ({ key, label, type, filterable: !!filterable, groupable: !!groupable })),
+  };
+}
+
+function contractColumn(dataset: ReportDataset, column: ReportColumn) {
+  return {
+    key: column.key,
+    label: column.label,
+    type: column.type,
+    filterable: !!column.filterable,
+    groupable: !!column.groupable,
+    source: {
+      datasetId: dataset.id,
+      table: dataset.table,
+      column: column.expr,
+    },
+  };
+}
+
+function datasetContract(dataset: ReportDataset) {
+  const filterable = dataset.columns.filter((column) => column.filterable);
+  const groupable = dataset.columns.filter((column) => column.groupable);
+  return {
+    id: dataset.id,
+    label: dataset.label,
+    description: dataset.description,
+    timeColumn: dataset.timeColumn,
+    defaultGroupBy: dataset.defaultGroupBy,
+    columns: dataset.columns.map((column) => contractColumn(dataset, column)),
+    filters: filterable.map((column) => ({
+      field: column.key,
+      type: column.type,
+      operators: operatorsForType(column.type),
+    })),
+    groupBy: groupable.map((column) => column.key),
+    endpoints: {
+      metadata: `/api/reports/datasets/${dataset.id}`,
+      query: `/api/reports/datasets/${dataset.id}/query`,
+      csv: `/api/reports/datasets/${dataset.id}/query?format=csv`,
+    },
+  };
+}
+
+function operatorsForType(type: ReportColumnType): ReportFilterOperator[] {
+  if (type === "number" || type === "datetime") return ["equals", "notEquals", "empty", "notEmpty", "gt", "gte", "lt", "lte"];
+  if (type === "boolean") return ["equals", "notEquals", "empty", "notEmpty"];
+  if (type === "json") return ["empty", "notEmpty", "contains"];
+  return ["equals", "notEquals", "contains", "startsWith", "endsWith", "empty", "notEmpty"];
+}
+
+function contractTarget(value: unknown): ReportContractTarget | null {
+  return typeof value === "string" && CONTRACT_TARGETS.has(value as ReportContractTarget) ? value as ReportContractTarget : null;
+}
+
+function integrationContract(target: ReportContractTarget, datasets: ReportDataset[]) {
+  const base = {
+    target,
+    version: "2026-04-27",
+    authentication: {
+      type: "bearer",
+      header: "Authorization",
+      scheme: "Bearer <token>",
+    },
+    datasets: datasets.map(datasetContract),
+  };
+
+  if (target === "grafana") {
+    return {
+      ...base,
+      client: {
+        mode: "json-api",
+        preferredFormat: "json",
+        timeRange: { fromParam: "from", toParam: "to", format: "ISO-8601" },
+        grouping: { param: "groupBy", separator: "," },
+      },
+    };
+  }
+  if (target === "powerbi") {
+    return {
+      ...base,
+      client: {
+        mode: "web-connector",
+        preferredFormat: "csv",
+        exportHeader: "x-specora-export-digest",
+        incrementalRefresh: { fromParam: "from", toParam: "to", format: "ISO-8601" },
+      },
+    };
+  }
+  if (target === "tableau") {
+    return {
+      ...base,
+      client: {
+        mode: "web-data-connector",
+        preferredFormat: "csv",
+        pagination: { limitParam: "limit", offsetParam: "offset", maxLimit: 1000 },
+      },
+    };
+  }
+  return {
+    ...base,
+    client: {
+      mode: "warehouse-extract",
+      preferredFormat: "json",
+      pagination: { limitParam: "limit", offsetParam: "offset", maxLimit: 1000 },
+      watermark: { defaultColumn: "timeColumn", fromParam: "from", toParam: "to" },
+    },
   };
 }
 
@@ -439,6 +547,30 @@ export async function reportingRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ error: "Forbidden: cannot read report dataset" });
     }
     return { dataset: datasetDescriptor(dataset) };
+  });
+
+  fastify.get("/api/reports/contracts/:target", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user);
+    if (!(await canUseReporting(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read report contracts" });
+    }
+    const { target: rawTarget } = request.params as { target: string };
+    const target = contractTarget(rawTarget);
+    if (!target) return reply.status(404).send({ error: "Report contract target not found" });
+
+    const visible = [];
+    for (const dataset of DATASETS) {
+      if (await canReadDataset(fastify, role, dataset)) visible.push(dataset);
+    }
+    const contract = integrationContract(target, visible);
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "report.contract.read",
+      entityType: "ReportContract",
+      entityId: target,
+      metadata: { source: "api.reports", target, datasetCount: visible.length },
+    });
+    return { contract };
   });
 
   fastify.get("/api/reports/datasets/:id/query", { onRequest: [fastify.authenticate] }, async (request, reply) => {

@@ -51,6 +51,8 @@ type TableImportDecision = {
   reason?: string;
   payload: TableImportRow;
 };
+type TableExportFormat = "csv" | "json";
+type BulkAction = "update" | "delete";
 
 type TableDefinition = {
   id: string;
@@ -154,6 +156,23 @@ type TableValidationIssue = {
   reason: "missing_required" | "missing_health_required" | "missing_relationship";
   message: string;
 };
+
+function validationSummary(issues: TableValidationIssue[]) {
+  return {
+    state: issues.some((issue) => issue.severity === "error") ? "invalid" : issues.length ? "warning" : "valid",
+    issueCount: issues.length,
+    errors: issues.filter((issue) => issue.severity === "error").length,
+    warnings: issues.filter((issue) => issue.severity === "warn").length,
+  };
+}
+
+function attachValidationState(table: TableDefinition, record: any, access: Map<string, FieldAccess>) {
+  const issues = validationIssuesForRecord(table, record, access);
+  return {
+    ...record,
+    _validation: validationSummary(issues),
+  };
+}
 
 function parseAttributes(value: unknown): Record<string, unknown> {
   if (!value) return {};
@@ -417,6 +436,41 @@ function recordsToCsv(records: any[], columns: string[]): string {
     rows.push(columns.map((column) => csvCell(recordValueForColumn(record, column))).join(","));
   }
   return `${rows.join("\n")}\n`;
+}
+
+function recordsToJson(records: any[], columns: string[]) {
+  return JSON.stringify({
+    records: records.map((record) => Object.fromEntries(columns.map((column) => [column, recordValueForColumn(record, column)]))),
+  }, null, 2);
+}
+
+function normalizeExportFormat(value: unknown): TableExportFormat {
+  return value === "json" ? "json" : "csv";
+}
+
+function cleanupSuggestionForIssue(issue: TableValidationIssue) {
+  if (issue.reason === "missing_relationship") {
+    return {
+      field: issue.field,
+      severity: "medium",
+      title: "Link relationship evidence",
+      recommendation: "Review the CI topology and add the expected upstream, downstream, ownership, or location relationship.",
+    };
+  }
+  if (issue.reason === "missing_health_required") {
+    return {
+      field: issue.field,
+      severity: "medium",
+      title: `Populate ${issue.label}`,
+      recommendation: `${issue.label} is a health field. Confirm the authoritative value with the service or data owner and update the record.`,
+    };
+  }
+  return {
+    field: issue.field,
+    severity: "high",
+    title: `Fix required ${issue.label}`,
+    recommendation: `${issue.label} is required before this record can be treated as stewarded.`,
+  };
 }
 
 function normalizeDensity(value: unknown) {
@@ -863,7 +917,7 @@ async function listPostgresRecords(
   ]);
   return {
     table,
-    records: rows.rows.map((row: any) => redactRecord(postgresRecord(table, row), access)),
+    records: rows.rows.map((row: any) => attachValidationState(table, redactRecord(postgresRecord(table, row), access), access)),
     total: count.rows[0]?.total || 0,
   };
 }
@@ -1415,7 +1469,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       );
       return {
         table: tableForUser,
-        records: result.records.map((record) => redactRecord(parseNode(record.get("n")), access)),
+        records: result.records.map((record) => attachValidationState(tableForUser, redactRecord(parseNode(record.get("n")), access), access)),
         total: countResult.records[0]?.get("total")?.toNumber?.() ?? Number(countResult.records[0]?.get("total") ?? 0),
       };
     } finally {
@@ -1543,7 +1597,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
     const { table: tableId } = request.params as { table: string };
-    const body = request.body as { recordIds?: unknown; columns?: unknown };
+    const body = request.body as { recordIds?: unknown; columns?: unknown; format?: unknown };
     const table = await resolveTable(fastify, tableId);
     if (!table) return reply.status(404).send({ error: "Table not found" });
     const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
@@ -1552,6 +1606,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       : [];
     if (!recordIds.length) return reply.status(400).send({ error: "recordIds required" });
     const columns = exportColumns(tableForUser, body.columns, access);
+    const format = normalizeExportFormat(body.format);
     if (!columns.length) return reply.status(403).send({ error: "Forbidden: no readable export columns" });
 
     let records: any[] = [];
@@ -1585,13 +1640,184 @@ export async function tableRoutes(fastify: FastifyInstance) {
         recordCount: records.length,
         requestedRecordCount: recordIds.length,
         columns,
+        format,
       },
     });
+
+    if (format === "json") {
+      return reply
+        .type("application/json; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${table.id.replace(/[^a-zA-Z0-9_.-]/g, "_")}-records.json"`)
+        .send(recordsToJson(records, columns));
+    }
 
     return reply
       .type("text/csv; charset=utf-8")
       .header("Content-Disposition", `attachment; filename="${table.id.replace(/[^a-zA-Z0-9_.-]/g, "_")}-records.csv"`)
       .send(recordsToCsv(records, columns));
+  });
+
+  fastify.post("/api/tables/:table/bulk", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "write"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot write tables" });
+    }
+    const { table: tableId } = request.params as { table: string };
+    const body = request.body as {
+      action?: BulkAction;
+      recordIds?: unknown;
+      patch?: { name?: string; environment?: string; attributes?: Record<string, unknown> };
+    };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    const recordIds = Array.isArray(body.recordIds)
+      ? Array.from(new Set(body.recordIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0).map((id) => id.trim()))).slice(0, 1000)
+      : [];
+    if (!recordIds.length) return reply.status(400).send({ error: "recordIds required" });
+    const action = body.action === "delete" ? "delete" : body.action === "update" ? "update" : null;
+    if (!action) return reply.status(400).send({ error: "Unsupported bulk action" });
+
+    const updated: any[] = [];
+    const deleted: string[] = [];
+    const errors: Array<{ recordId: string; error: string }> = [];
+
+    if (action === "update") {
+      const patch = body.patch || {};
+      const blockedField = assertWritablePayload(patch, access);
+      if (blockedField) return reply.status(403).send({ error: `Forbidden: cannot write ${blockedField}` });
+      for (const id of recordIds) {
+        try {
+          const before = table.provider === "postgres-table"
+            ? await getPostgresRecord(fastify, tableForUser, id)
+            : await getCmdbRecord(fastify, tableForUser, id);
+          const record = table.provider === "postgres-table"
+            ? await updatePostgresRecord(fastify, tableForUser, id, patch)
+            : await updateCmdbRecord(fastify, tableForUser, id, patch);
+          if (!record) {
+            errors.push({ recordId: id, error: "Record not found" });
+            continue;
+          }
+          updated.push(record);
+          await recordAuditEvent(fastify, {
+            actorId: (request.user as any)?.id,
+            action: "table.record.updated",
+            entityType: table.id,
+            entityId: id,
+            oldValues: before || undefined,
+            newValues: record,
+            metadata: { source: "api.tables.bulk", provider: table.provider },
+          });
+        } catch (err: any) {
+          errors.push({ recordId: id, error: err.message || "Bulk update failed" });
+        }
+      }
+    } else {
+      for (const id of recordIds) {
+        try {
+          const before = table.provider === "postgres-table"
+            ? await getPostgresRecord(fastify, tableForUser, id)
+            : await getCmdbRecord(fastify, tableForUser, id);
+          if (table.provider === "postgres-table") {
+            await fastify.pg.query(`DELETE FROM ${quoteIdentifier(table.tableName!)} WHERE id = $1`, [id]);
+          } else {
+            const session = fastify.neo4j.session();
+            try {
+              await session.run(
+                `MATCH (n:ConfigurationItem {id: $id})
+                 WHERE n.class = $className
+                 DETACH DELETE n`,
+                { id, className: table.className }
+              );
+            } finally {
+              await session.close();
+            }
+          }
+          deleted.push(id);
+          await recordAuditEvent(fastify, {
+            actorId: (request.user as any)?.id,
+            action: "table.record.deleted",
+            entityType: table.id,
+            entityId: id,
+            oldValues: before || { id },
+            metadata: { source: "api.tables.bulk", provider: table.provider },
+          });
+        } catch (err: any) {
+          errors.push({ recordId: id, error: err.message || "Bulk delete failed" });
+        }
+      }
+    }
+
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: action === "update" ? "table.records.bulk_updated" : "table.records.bulk_deleted",
+      entityType: table.id,
+      entityId: table.id,
+      metadata: {
+        source: "api.tables.bulk",
+        provider: table.provider,
+        requestedRecordCount: recordIds.length,
+        updatedRecordCount: updated.length,
+        deletedRecordCount: deleted.length,
+        errorCount: errors.length,
+      },
+    });
+
+    return {
+      table: tableForUser,
+      updated: updated.map((record) => redactRecord(record, access)),
+      deleted,
+      errors,
+      summary: {
+        requested: recordIds.length,
+        updated: updated.length,
+        deleted: deleted.length,
+        failed: errors.length,
+      },
+    };
+  });
+
+  fastify.post("/api/tables/:table/cleanup-assist", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    const role = await getRole(fastify, request.user as any);
+    if (!(await canUseTable(fastify, role, "read"))) {
+      return reply.status(403).send({ error: "Forbidden: cannot read tables" });
+    }
+    const { table: tableId } = request.params as { table: string };
+    const body = request.body as { recordIds?: unknown };
+    const table = await resolveTable(fastify, tableId);
+    if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    const recordIds = Array.isArray(body.recordIds)
+      ? Array.from(new Set(body.recordIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0).map((id) => id.trim()))).slice(0, 100)
+      : [];
+    if (!recordIds.length) return reply.status(400).send({ error: "recordIds required" });
+
+    const records = await getRecordsByIdForCleanup(fastify, tableForUser, recordIds, access);
+    const suggestions = records.map((record) => {
+      const issues = validationIssuesForRecord(tableForUser, record, access);
+      const recommendations = issues.map(cleanupSuggestionForIssue);
+      const severity = recommendations.some((item) => item.severity === "high") ? "high" : recommendations.some((item) => item.severity === "medium") ? "medium" : "low";
+      return {
+        recordId: record.id,
+        recordLabel: record.name || record.number || record.id,
+        validation: validationSummary(issues),
+        severity,
+        reviewReason: recommendations.length
+          ? recommendations.map((item) => item.recommendation).join(" ")
+          : "No cleanup issues detected by the stewardship assistant.",
+        recommendations,
+      };
+    });
+
+    await recordAuditEvent(fastify, {
+      actorId: (request.user as any)?.id,
+      action: "table.cleanup_assist.generated",
+      entityType: table.id,
+      entityId: table.id,
+      metadata: { source: "api.tables.cleanup-assist", provider: table.provider, recordCount: suggestions.length },
+    });
+
+    return { table: tableForUser, suggestions };
   });
 
   fastify.post("/api/tables/:table/cleanup-reviews", { onRequest: [fastify.authenticate] }, async (request, reply) => {

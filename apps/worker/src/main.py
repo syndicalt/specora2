@@ -9,6 +9,30 @@ from src.handlers.discover_file import handle_discover_file
 
 GRPC_PORT = os.getenv("GRPC_PORT", "50051")
 POLL_INTERVAL = float(os.getenv("JOB_POLL_INTERVAL", "5"))
+TRACE_TIMEOUT = float(os.getenv("PATHLIGHT_TRACE_TIMEOUT", "2"))
+
+
+async def start_trace(pathlight, name, input_data):
+    if not pathlight:
+        return None
+    try:
+        return await asyncio.wait_for(
+            pathlight.trace(name, input=input_data),
+            timeout=TRACE_TIMEOUT,
+        )
+    except Exception as e:
+        print(f"Pathlight trace start skipped: {e}")
+        return None
+
+
+async def end_trace(trace, output):
+    if not trace:
+        return
+    try:
+        await asyncio.wait_for(trace.end(output=output), timeout=TRACE_TIMEOUT)
+    except Exception as e:
+        print(f"Pathlight trace end skipped: {e}")
+
 
 async def process_jobs(pathlight=None):
     print("Job processor started")
@@ -20,9 +44,7 @@ async def process_jobs(pathlight=None):
                 job_type = job["type"]
                 payload = job["payload"]
                 print(f"Processing job {job_id} ({job_type})")
-                trace = None
-                if pathlight:
-                    trace = await pathlight.trace("process-job", input={"job_id": job_id, "type": job_type})
+                trace = await start_trace(pathlight, "process-job", {"job_id": job_id, "type": job_type})
                 try:
                     if job_type == "ingest_cmdb":
                         status = await handle_ingest_cmdb(payload)
@@ -47,16 +69,15 @@ async def process_jobs(pathlight=None):
                         print(f"Unknown job type: {job_type}")
                         status = "failed"
                     await postgres_client.mark_job_status(job_id, status)
-                    if trace:
-                        await trace.end(output={"status": status})
+                    await end_trace(trace, {"status": status})
                 except Exception as e:
                     print(f"Job {job_id} failed: {e}")
-                    if trace:
-                        await trace.end(output={"status": "failed", "error": str(e)})
+                    await end_trace(trace, {"status": "failed", "error": str(e)})
                     await postgres_client.mark_job_status(job_id, "failed")
         except Exception as e:
             print(f"Job poll error: {e}")
         await asyncio.sleep(POLL_INTERVAL)
+
 
 async def process_discovery_jobs(pathlight=None):
     print("Discovery job processor started")
@@ -67,18 +88,14 @@ async def process_discovery_jobs(pathlight=None):
                 job_id = job["id"]
                 file_path = job["file_path"]
                 print(f"Processing discovery job {job_id}")
-                trace = None
-                if pathlight:
-                    trace = await pathlight.trace("discover-file", input={"job_id": job_id, "file_path": file_path})
+                trace = await start_trace(pathlight, "discover-file", {"job_id": job_id, "file_path": file_path})
                 try:
                     stats = await handle_discover_file(job_id, file_path)
                     await postgres_client.mark_discovery_job_status(job_id, "completed", stats)
-                    if trace:
-                        await trace.end(output={"stats": stats})
+                    await end_trace(trace, {"stats": stats})
                 except Exception as e:
                     print(f"Discovery job {job_id} failed: {e}")
-                    if trace:
-                        await trace.end(output={"status": "failed", "error": str(e)})
+                    await end_trace(trace, {"status": "failed", "error": str(e)})
                     await postgres_client.mark_discovery_job_status(job_id, "failed", {"error": str(e)})
         except Exception as e:
             print(f"Discovery job poll error: {e}")

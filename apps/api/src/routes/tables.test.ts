@@ -109,6 +109,7 @@ describe("tableRoutes", () => {
     expect(params.offset.toNumber()).toBe(0);
     const body = JSON.parse(res.body);
     expect(body.records[0].attributes.city).toBe("Austin");
+    expect(body.records[0]._validation).toMatchObject({ state: "valid", issueCount: 0 });
     expect(body.total).toBe(1);
   });
 
@@ -300,6 +301,64 @@ describe("tableRoutes", () => {
     expect(res.body).toContain("name,city,environment");
     expect(res.body).toContain("HQ,Austin,Production");
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.exported", "cmdb.Location", "cmdb.Location"]));
+  });
+
+  it("exports selected table records as audited JSON", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", environment: "Production", attributes: "{\"city\":\"Austin\"}" }) })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/export",
+      payload: { recordIds: ["loc-1"], columns: ["name", "city"], format: "json" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(JSON.parse(res.body).records[0]).toEqual({ name: "HQ", city: "Austin" });
+  });
+
+  it("updates selected records through the server-side bulk endpoint", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", environment: "Production", attributes: "{\"city\":\"Austin\"}" }) })],
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", environment: "Production", attributes: "{\"city\":\"Austin\"}" }) })],
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", environment: "QA", attributes: "{\"city\":\"Austin\"}" }) })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/bulk",
+      payload: { action: "update", recordIds: ["loc-1"], patch: { environment: "QA" } },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).summary).toMatchObject({ requested: 1, updated: 1, failed: 0 });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.bulk_updated", "cmdb.Location", "cmdb.Location"]));
+  });
+
+  it("generates cleanup assistant suggestions from validation issues", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", attributes: "{\"city\":\"\"}" }) })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/cleanup-assist",
+      payload: { recordIds: ["loc-1"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.suggestions[0]).toMatchObject({
+      recordId: "loc-1",
+      severity: "high",
+      validation: { state: "invalid", errors: 1 },
+    });
+    expect(body.suggestions[0].recommendations[0].title).toContain("City");
   });
 
   it("imports mapped table rows through the audited create path", async () => {

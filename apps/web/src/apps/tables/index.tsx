@@ -53,6 +53,12 @@ type TableRecord = {
   class: string;
   environment?: string | null;
   attributes?: Record<string, unknown>;
+  _validation?: {
+    state: "valid" | "warning" | "invalid";
+    issueCount: number;
+    errors: number;
+    warnings: number;
+  };
   [key: string]: unknown;
 };
 
@@ -134,6 +140,13 @@ type ValidationIssue = {
   severity: "error" | "warn";
   message?: string;
   reason?: string;
+};
+type CleanupSuggestion = {
+  recordId: string;
+  recordLabel: string;
+  severity: "low" | "medium" | "high" | "critical";
+  reviewReason: string;
+  recommendations: Array<{ title: string; recommendation: string; field: string; severity: string }>;
 };
 
 type ImportRow = Record<string, string>;
@@ -465,6 +478,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [recordLoading, setRecordLoading] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(true);
+  const [exportMenuOpen, setExportMenuOpen] = useState<"loaded" | "selected" | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<Record<string, string[]>>({});
   const [savedViews, setSavedViews] = useState<SavedTableView[]>([]);
   const [density, setDensity] = useState<"compact" | "comfortable" | "spacious">("comfortable");
@@ -485,6 +499,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupReason, setCleanupReason] = useState("Missing required stewardship data");
   const [cleanupSeverity, setCleanupSeverity] = useState<"low" | "medium" | "high" | "critical">("medium");
+  const [cleanupSuggestions, setCleanupSuggestions] = useState<CleanupSuggestion[]>([]);
   const [cleanupReviews, setCleanupReviews] = useState<CleanupReview[]>([]);
   const [cleanupStatus, setCleanupStatus] = useState<"open" | "in_progress" | "resolved" | "dismissed" | "all">("open");
   const [cleanupLoading, setCleanupLoading] = useState(false);
@@ -537,7 +552,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const allLoadedSelected = records.length > 0 && selectedRecordIds.length === records.length;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const stewardshipStats = useMemo(() => {
-    const issueCounts = records.map((record) => validationIssues(selected, record).length);
+    const issueCounts = records.map((record) => record._validation?.issueCount ?? validationIssues(selected, record).length);
     const needsReview = issueCounts.filter((count) => count > 0).length;
     const requiredAttrs = selected?.attributes.filter((attr) => attr.isMandatory || attr.isHealthRequired).length || 0;
     return { needsReview, clean: records.length - needsReview, requiredAttrs };
@@ -582,11 +597,13 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setPage(0);
     setAuditEntries([]);
     setPickerOpen(false);
+    setExportMenuOpen(null);
     setEditor(null);
     setInlineEdit(null);
     setSelectedRows({});
     setBulkEditorOpen(false);
     setCleanupOpen(false);
+    setCleanupSuggestions([]);
     setImportOpen(false);
     resetImport();
     setServerValidationIssues(null);
@@ -983,22 +1000,22 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     setSelectedRows(Object.fromEntries(records.map((record) => [record.id, true])));
   }
 
-  async function exportRows(recordIds = selectedRecordIds.length ? selectedRecordIds : records.map((record) => record.id)) {
+  async function exportRows(recordIds = selectedRecordIds.length ? selectedRecordIds : records.map((record) => record.id), format: "csv" | "json" = "csv") {
     if (!selected || !recordIds.length) return;
     setBulkBusy(true);
     try {
       const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordIds, columns: visibleColumns.map((column) => column.key) }),
+        body: JSON.stringify({ recordIds, columns: visibleColumns.map((column) => column.key), format }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || "Failed to export records");
       }
       const blob = await res.blob();
-      downloadBlob(blob, `${selected.id.replace(/[^a-zA-Z0-9_.-]/g, "_")}-records.csv`);
-      shell.notify(`Exported ${recordIds.length} records`, "success");
+      downloadBlob(blob, `${selected.id.replace(/[^a-zA-Z0-9_.-]/g, "_")}-records.${format}`);
+      shell.notify(`Exported ${recordIds.length} records as ${format.toUpperCase()}`, "success");
     } catch (err: any) {
       shell.notify(err.message || "Failed to export records", "error");
     } finally {
@@ -1134,14 +1151,18 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     if (!confirm(`Delete ${selectedRecordIds.length} selected records? This cannot be undone.`)) return;
     setBulkBusy(true);
     try {
-      for (const id of selectedRecordIds) {
-        const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/records/${encodeURIComponent(id)}`, { method: "DELETE" });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `Failed to delete ${id}`);
-        }
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", recordIds: selectedRecordIds }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Failed to delete selected records");
+      if (body.summary?.failed) {
+        shell.notify(`Deleted ${body.summary.deleted || 0}, ${body.summary.failed} failed`, "info");
+      } else {
+        shell.notify(`Deleted ${body.summary?.deleted || selectedRecordIds.length} records`, "success");
       }
-      shell.notify(`Deleted ${selectedRecordIds.length} records`, "success");
       await loadRecords();
     } catch (err: any) {
       shell.notify(err.message || "Failed to delete selected records", "error");
@@ -1162,18 +1183,18 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       : { attributes: { [bulkField]: coerceValue(bulkValue, attr) } };
     setBulkBusy(true);
     try {
-      for (const id of selectedRecordIds) {
-        const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/records/${encodeURIComponent(id)}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `Failed to update ${id}`);
-        }
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "update", recordIds: selectedRecordIds, patch: payload }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Failed to bulk update records");
+      if (body.summary?.failed) {
+        shell.notify(`Updated ${body.summary.updated || 0}, ${body.summary.failed} failed`, "info");
+      } else {
+        shell.notify(`Updated ${body.summary?.updated || selectedRecordIds.length} records`, "success");
       }
-      shell.notify(`Updated ${selectedRecordIds.length} records`, "success");
       setBulkEditorOpen(false);
       setBulkValue("");
       await loadRecords();
@@ -1208,6 +1229,33 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
       if (mode === "stewardship") await loadCleanupReviews();
     } catch (err: any) {
       shell.notify(err.message || "Failed to queue cleanup review", "error");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function suggestCleanupReview() {
+    if (!selected || !selectedRecordIds.length) return;
+    setBulkBusy(true);
+    try {
+      const res = await shell.fetch(`/api/tables/${encodeURIComponent(selected.id)}/cleanup-assist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recordIds: selectedRecordIds }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to generate cleanup suggestions");
+      const suggestions = data.suggestions || [];
+      setCleanupSuggestions(suggestions);
+      const first = suggestions.find((item: CleanupSuggestion) => item.recommendations?.length) || suggestions[0];
+      if (first) {
+        setCleanupReason(first.reviewReason);
+        setCleanupSeverity(first.severity);
+        setCleanupOpen(true);
+      }
+      shell.notify(`Generated ${suggestions.length} cleanup suggestion${suggestions.length === 1 ? "" : "s"}`, "success");
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to generate cleanup suggestions", "error");
     } finally {
       setBulkBusy(false);
     }
@@ -1442,10 +1490,18 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             </div>
           )}
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => exportRows(records.map((record) => record.id))} disabled={!selected || records.length === 0 || bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-40">
-              <Download className="h-4 w-4" />
-              Export
-            </button>
+            <div className="relative">
+              <button onClick={() => setExportMenuOpen((open) => open === "loaded" ? null : "loaded")} disabled={!selected || records.length === 0 || bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-40">
+                <Download className="h-4 w-4" />
+                Export
+              </button>
+              {exportMenuOpen === "loaded" && (
+                <ExportMenu
+                  onCsv={() => { setExportMenuOpen(null); exportRows(records.map((record) => record.id), "csv"); }}
+                  onJson={() => { setExportMenuOpen(null); exportRows(records.map((record) => record.id), "json"); }}
+                />
+              )}
+            </div>
             <button onClick={() => setImportOpen((open) => !open)} disabled={!selected || importBusy} className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/15 disabled:opacity-40">
               <Upload className="h-4 w-4" />
               Import
@@ -1600,10 +1656,19 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
           <section className="shrink-0 border-b border-cyan-500/20 bg-cyan-950/20 px-5 py-2 text-sm">
             <div className="flex items-center gap-3">
               <div className="font-medium text-cyan-100">{selectedRecordIds.length} selected</div>
-              <button onClick={() => exportRows()} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-1.5 text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
-                <Download className="h-4 w-4" />
-                Export selected
-              </button>
+              <div className="relative">
+                <button onClick={() => setExportMenuOpen((open) => open === "selected" ? null : "selected")} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-1.5 text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
+                  <Download className="h-4 w-4" />
+                  Export selected
+                </button>
+                {exportMenuOpen === "selected" && (
+                  <ExportMenu
+                    align="left"
+                    onCsv={() => { setExportMenuOpen(null); exportRows(selectedRecordIds, "csv"); }}
+                    onJson={() => { setExportMenuOpen(null); exportRows(selectedRecordIds, "json"); }}
+                  />
+                )}
+              </div>
               <button onClick={() => setBulkEditorOpen((open) => !open)} disabled={bulkBusy || !writableBulkColumns.length} className="inline-flex items-center gap-2 rounded-lg border border-indigo-500/30 px-3 py-1.5 text-indigo-100 hover:bg-indigo-500/10 disabled:opacity-50">
                 <Edit3 className="h-4 w-4" />
                 Bulk update
@@ -1611,6 +1676,10 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               <button onClick={() => setCleanupOpen((open) => !open)} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 px-3 py-1.5 text-amber-100 hover:bg-amber-500/10 disabled:opacity-50">
                 <AlertTriangle className="h-4 w-4" />
                 Queue cleanup
+              </button>
+              <button onClick={suggestCleanupReview} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/30 px-3 py-1.5 text-emerald-100 hover:bg-emerald-500/10 disabled:opacity-50">
+                <Check className="h-4 w-4" />
+                Suggest cleanup
               </button>
               <button onClick={deleteSelectedRows} disabled={bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 px-3 py-1.5 text-red-200 hover:bg-red-500/10 disabled:opacity-50">
                 <Trash2 className="h-4 w-4" />
@@ -1649,16 +1718,43 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                 <button onClick={queueCleanupReview} disabled={bulkBusy || !cleanupReason.trim()} className="rounded-lg bg-amber-500 px-3 py-2 font-medium text-gray-950 hover:bg-amber-400 disabled:opacity-50">
                   Queue review
                 </button>
+                {cleanupSuggestions.length > 0 && (
+                  <div className="col-span-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-100">
+                    {cleanupSuggestions.slice(0, 3).map((suggestion) => (
+                      <div key={suggestion.recordId} className="truncate">
+                        {suggestion.recordLabel}: {suggestion.recommendations[0]?.title || "No cleanup issue detected"}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </section>
         )}
 
-        <div className="scrollbar-thin flex-1 overflow-auto pb-32">
+        <div className="scrollbar-thin min-h-0 flex-1 overflow-auto">
           <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-gray-950">
+            <thead className="bg-gray-950">
+              {selected && records.length > 0 && (
+                <tr className="border-b border-gray-800 bg-gray-950/95">
+                  <th colSpan={Math.max(visibleColumns.length + 2, 1)} className="sticky top-0 z-20 bg-gray-950 px-4 py-2">
+                    <div className="flex items-center justify-end gap-2 text-sm font-normal normal-case tracking-normal text-gray-500">
+                      <span className="mr-auto">
+                        Showing {page * PAGE_SIZE + 1}-{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
+                      </span>
+                      <button onClick={() => setPage((current) => Math.max(0, current - 1))} disabled={page === 0 || recordLoading} className="rounded-lg border border-gray-700 px-2.5 py-1.5 hover:text-white disabled:opacity-40">
+                        Previous
+                      </button>
+                      <span className="font-mono text-xs text-gray-600">Page {page + 1}/{totalPages}</span>
+                      <button onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))} disabled={page >= totalPages - 1 || recordLoading} className="rounded-lg border border-gray-700 px-2.5 py-1.5 hover:text-white disabled:opacity-40">
+                        Next
+                      </button>
+                    </div>
+                  </th>
+                </tr>
+              )}
               <tr className="border-b border-gray-800 text-left text-xs uppercase tracking-wider text-gray-500">
-                <th className="w-10 px-4 py-3">
+                <th className="sticky z-20 w-10 bg-gray-950 px-4 py-3" style={{ top: selected && records.length > 0 ? 41 : 0 }}>
                   <input
                     type="checkbox"
                     checked={allLoadedSelected}
@@ -1668,14 +1764,14 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
                   />
                 </th>
                 {visibleColumns.map((column) => (
-                  <th key={column.key} className="whitespace-nowrap px-4 py-3">
+                  <th key={column.key} className="sticky z-20 whitespace-nowrap bg-gray-950 px-4 py-3" style={{ top: selected && records.length > 0 ? 41 : 0 }}>
                     <button onClick={() => toggleSort(column.key)} className="inline-flex items-center gap-1 text-left hover:text-gray-200">
                       {column.label}
                       {sortField === column.key && <span className="text-[10px] text-indigo-300">{sortDirection === "asc" ? "ASC" : "DESC"}</span>}
                     </button>
                   </th>
                 ))}
-                <th className="w-24 px-4 py-3 text-right">Actions</th>
+                <th className="sticky z-20 w-24 bg-gray-950 px-4 py-3 text-right" style={{ top: selected && records.length > 0 ? 41 : 0 }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1748,22 +1844,6 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               )}
             </tbody>
           </table>
-          {selected && records.length > 0 && (
-            <div className="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-5 py-3 text-sm text-gray-400 backdrop-blur">
-              <div>
-                Showing {page * PAGE_SIZE + 1}-{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => setPage((current) => Math.max(0, current - 1))} disabled={page === 0 || recordLoading} className="rounded-lg border border-gray-700 px-3 py-1.5 hover:text-white disabled:opacity-40">
-                  Previous
-                </button>
-                <span className="font-mono text-xs text-gray-500">Page {page + 1} / {totalPages}</span>
-                <button onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))} disabled={page >= totalPages - 1 || recordLoading} className="rounded-lg border border-gray-700 px-3 py-1.5 hover:text-white disabled:opacity-40">
-                  Next
-                </button>
-              </div>
-            </div>
-          )}
         </div>
         </>
         )}
@@ -1963,6 +2043,21 @@ function ImportWorkbench({
         </div>
       </div>
     </section>
+  );
+}
+
+function ExportMenu({ onCsv, onJson, align = "right" }: { onCsv: () => void; onJson: () => void; align?: "left" | "right" }) {
+  return (
+    <div className={`absolute z-30 mt-2 w-44 rounded-lg border border-gray-700 bg-gray-900 p-1 shadow-2xl ${align === "right" ? "right-0" : "left-0"}`}>
+      <button onClick={onCsv} className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-800">
+        <span>CSV</span>
+        <span className="text-xs text-gray-500">Spreadsheet</span>
+      </button>
+      <button onClick={onJson} className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-800">
+        <span>JSON</span>
+        <span className="text-xs text-gray-500">API</span>
+      </button>
+    </div>
   );
 }
 
