@@ -25,11 +25,16 @@ describe("buildDeterministicProposal", () => {
       sourceField: "hostname",
       targetField: "name",
       transform: "trim_lowercase",
+      rationale: expect.stringContaining("name"),
+      evidence: expect.arrayContaining(["APP01"]),
     }));
+    expect(proposal.fieldMappings.find((mapping) => mapping.sourceField === "hostname")?.alternatives?.length).toBeGreaterThan(0);
     expect(proposal.reconciliationRules[0].matchKeys).toContain("name");
     expect(proposal.relationshipRules).toContainEqual(expect.objectContaining({
       toClass: "Group",
       type: "OWNED_BY",
+      rationale: expect.stringContaining("Owner"),
+      evidence: expect.any(Array),
     }));
   });
 

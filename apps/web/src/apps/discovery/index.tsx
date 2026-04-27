@@ -89,8 +89,8 @@ type TransformProposal = {
   summary: string;
   confidence: number;
   classRoutes: Array<{ sourcePattern: string; targetClass: string; confidence: number; rationale: string }>;
-  fieldMappings: Array<{ sourceField: string; targetClass: string; targetField: string; transform: string; confidence: number }>;
-  relationshipRules: Array<{ fromClass: string; toClass: string; type: string; sourceField: string; confidence: number }>;
+  fieldMappings: Array<{ sourceField: string; targetClass: string; targetField: string; transform: string; confidence: number; rationale?: string; evidence?: string[]; alternatives?: string[] }>;
+  relationshipRules: Array<{ fromClass: string; toClass: string; type: string; sourceField: string; confidence: number; rationale?: string; evidence?: string[] }>;
   reconciliationRules: Array<{ targetClass: string; matchKeys: string[]; strategy: string }>;
   assumptions: string[];
   risks: string[];
@@ -2014,7 +2014,12 @@ function MappingEditor({
           {["trim", "trim_lowercase", "normalize_environment"].map((transform) => <option key={transform} value={transform}>{transform}</option>)}
         </select>
       </div>
-      <div className="mt-1 text-right text-xs text-gray-500">{pct(mapping.confidence)}</div>
+      <RationalePanel
+        confidence={mapping.confidence}
+        rationale={mapping.rationale}
+        evidence={mapping.evidence}
+        alternatives={mapping.alternatives}
+      />
     </div>
   );
 }
@@ -2047,7 +2052,35 @@ function RelationshipEditor({
       <select value={rule.sourceField} onChange={(event) => onChange({ sourceField: event.target.value })} className="mt-2 w-full rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs">
         {Array.from(new Set([...columns, rule.sourceField])).map((column) => <option key={column} value={column}>{column}</option>)}
       </select>
-      <div className="mt-1 text-right text-xs text-gray-500">{pct(rule.confidence)}</div>
+      <RationalePanel confidence={rule.confidence} rationale={rule.rationale} evidence={rule.evidence} />
+    </div>
+  );
+}
+
+function RationalePanel({ confidence, rationale, evidence, alternatives }: { confidence: number; rationale?: string; evidence?: string[]; alternatives?: string[] }) {
+  const cleanEvidence = (evidence || []).filter(Boolean).slice(0, 3);
+  const cleanAlternatives = (alternatives || []).filter(Boolean).slice(0, 3);
+  return (
+    <div className="mt-2 rounded border border-gray-800 bg-gray-900/70 px-2 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-gray-600">Rationale</span>
+        <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-[11px] text-cyan-300">{pct(confidence)}</span>
+      </div>
+      <p className="mt-1 text-xs leading-5 text-gray-400">{rationale || "No detailed rationale was supplied for this saved mapping."}</p>
+      {cleanEvidence.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {cleanEvidence.map((item, index) => (
+            <span key={`${item}-${index}`} className="max-w-full truncate rounded bg-gray-950 px-2 py-1 font-mono text-[11px] text-gray-500">
+              {item}
+            </span>
+          ))}
+        </div>
+      )}
+      {cleanAlternatives.length > 0 && (
+        <div className="mt-2 text-[11px] text-gray-600">
+          Alternatives: <span className="text-gray-500">{cleanAlternatives.join(", ")}</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -18,8 +18,8 @@ export type TransformProposal = {
   confidence: number;
   sourceProfile: SourceProfile;
   classRoutes: Array<{ sourcePattern: string; targetClass: string; confidence: number; rationale: string }>;
-  fieldMappings: Array<{ sourceField: string; targetClass: string; targetField: string; transform: string; confidence: number }>;
-  relationshipRules: Array<{ fromClass: string; toClass: string; type: string; sourceField: string; confidence: number }>;
+  fieldMappings: Array<{ sourceField: string; targetClass: string; targetField: string; transform: string; confidence: number; rationale?: string; evidence?: string[]; alternatives?: string[] }>;
+  relationshipRules: Array<{ fromClass: string; toClass: string; type: string; sourceField: string; confidence: number; rationale?: string; evidence?: string[] }>;
   reconciliationRules: Array<{ targetClass: string; matchKeys: string[]; strategy: "update" | "create_or_update" | "review" }>;
   assumptions: string[];
   risks: string[];
@@ -122,6 +122,25 @@ function transformFor(sourceField: string, targetField: string): string {
   if (targetField === "ipAddress") return "trim";
   if (source.includes("host") || targetField === "name") return "trim_lowercase";
   return "trim";
+}
+
+function sampleEvidence(profile: SourceProfile, sourceField: string): string[] {
+  const values = profile.sampleRows
+    .map((row) => row[sourceField])
+    .filter((value) => value !== null && value !== undefined && String(value).trim())
+    .slice(0, 3)
+    .map((value) => String(value).trim());
+  return values.length ? values : ["No non-empty sample values were present."];
+}
+
+function fieldRationale(sourceField: string, targetField: string, transform: string) {
+  const normalized = normalize(sourceField);
+  const aliasMatch = Object.entries(CANDIDATE_FIELDS).find(([target, aliases]) =>
+    target === targetField && aliases.some((alias) => normalized === alias || normalized.includes(alias))
+  );
+  if (aliasMatch) return `Mapped by ${targetField} alias match and ${transform} normalization.`;
+  if (targetField === fallbackTargetField(sourceField)) return "Preserved source column as a custom attribute because no standard CSDM alias matched.";
+  return `Mapped by source column similarity to ${targetField}.`;
 }
 
 function applyTransform(value: unknown, transform: string): unknown {
@@ -241,19 +260,24 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
       targetField,
       transform: transformFor(sourceField, targetField),
       confidence: targetField === normalize(sourceField) ? 0.58 : 0.82,
+      rationale: fieldRationale(sourceField, targetField, transformFor(sourceField, targetField)),
+      evidence: sampleEvidence(profile, sourceField),
+      alternatives: Array.from(new Set([fallbackTargetField(sourceField), normalize(sourceField), "name", "environment"].filter((field) => field && field !== targetField))).slice(0, 3),
     };
   });
 
   const relationshipRules = [];
   const normalizedColumns = columns.map(normalize);
   if (routes.some((r) => r.name === "ApplicationService") && routes.some((r) => r.name === "Server")) {
-    relationshipRules.push({ fromClass: "ApplicationService", toClass: "Server", type: "HOSTED_ON", sourceField: "hostname", confidence: 0.72 });
+    relationshipRules.push({ fromClass: "ApplicationService", toClass: "Server", type: "HOSTED_ON", sourceField: "hostname", confidence: 0.72, rationale: "Application and host/server column signatures suggest a hosted-on dependency.", evidence: sampleEvidence(profile, "hostname") });
   }
   if (normalizedColumns.some((c) => c.includes("db"))) {
-    relationshipRules.push({ fromClass: primaryClass, toClass: "Database", type: "DEPENDS_ON", sourceField: columns.find((c) => normalize(c).includes("db")) || "db_host", confidence: 0.66 });
+    const sourceField = columns.find((c) => normalize(c).includes("db")) || "db_host";
+    relationshipRules.push({ fromClass: primaryClass, toClass: "Database", type: "DEPENDS_ON", sourceField, confidence: 0.66, rationale: "Database-like source field implies a dependency target that should be reconciled before commit.", evidence: sampleEvidence(profile, sourceField) });
   }
   if (normalizedColumns.some((c) => c.includes("owner") || c.includes("group"))) {
-    relationshipRules.push({ fromClass: primaryClass, toClass: "Group", type: "OWNED_BY", sourceField: columns.find((c) => normalize(c).includes("owner") || normalize(c).includes("group")) || "owner", confidence: 0.62 });
+    const sourceField = columns.find((c) => normalize(c).includes("owner") || normalize(c).includes("group")) || "owner";
+    relationshipRules.push({ fromClass: primaryClass, toClass: "Group", type: "OWNED_BY", sourceField, confidence: 0.62, rationale: "Owner or support-group field suggests an ownership relationship.", evidence: sampleEvidence(profile, sourceField) });
   }
 
   const matchKeys = ["serialNumber", "name", "ipAddress"].filter((field) => fieldMappings.some((m) => m.targetField === field));
