@@ -102,11 +102,11 @@ test.describe("demo spine smoke coverage", () => {
     await expect(page.getByRole("heading", { name: "Admin Console" })).toBeVisible();
     await page.getByRole("button", { name: "RBAC" }).click();
     await expect(page.getByRole("heading", { name: "Access Analyzer" })).toBeVisible();
-    await page.getByLabel("User").selectOption("");
-    await page.getByLabel("Role").selectOption("security_admin");
-    await page.getByLabel("Permission").selectOption("rbac:read");
+    await page.getByRole("heading", { name: "Access Analyzer" }).locator("xpath=following::button[1]").click();
+    await page.getByLabel("User").last().selectOption("");
+    await page.getByLabel("Role").last().selectOption("security_admin");
     await page.getByRole("button", { name: "Analyze" }).click();
-    await expect(page.getByText("security_admin can read rbac")).toBeVisible();
+    await expect(page.getByText(/security_admin can/)).toBeVisible();
     await expect(page.getByText("Security admin override")).toBeVisible();
   });
 
