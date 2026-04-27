@@ -18,7 +18,13 @@ describe("healthRoutes", () => {
     const app = Fastify();
     app.decorate("authenticate", async () => {});
     app.decorate("pg", {
-      query: vi.fn().mockResolvedValue({ rows: [{ ok: 1 }] }),
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("FROM jobs") && sql.includes("GROUP BY status")) return { rows: [{ status: "pending", count: 1 }] };
+        if (sql.includes("status = 'running'")) return { rows: [{ count: 0 }] };
+        if (sql.includes("status = 'failed'")) return { rows: [{ count: 0 }] };
+        if (sql.includes("FROM discovery_jobs")) return { rows: [] };
+        return { rows: [{ ok: 1 }] };
+      }),
     });
     app.decorate("neo4j", {
       session: vi.fn().mockReturnValue({
@@ -62,6 +68,21 @@ describe("healthRoutes", () => {
     expect(body.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "JWT_SECRET_STRENGTH" }),
     ]));
+  });
+
+  it("reports worker and queue posture", async () => {
+    const previous = process.env.WORKER_GRPC_HOST;
+    delete process.env.WORKER_GRPC_HOST;
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/health/worker" });
+    if (previous) process.env.WORKER_GRPC_HOST = previous;
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body).toMatchObject({
+      status: "warn",
+      grpc: { name: "worker.grpc", status: "warn" },
+      signals: { deadLetter: 0, staleRunning: 0, failedDiscovery: 0 },
+    });
   });
 
   it("runs hardcoded rules", async () => {

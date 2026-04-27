@@ -157,7 +157,7 @@ curl http://localhost:4000/ready
 curl http://localhost:4000/api/health/ready
 ```
 
-Expected response is HTTP 200 when required runtime dependencies are available. The readiness payload reports PostgreSQL, Neo4j, Redis, worker configuration, and LLM configuration. PostgreSQL or Neo4j failure returns HTTP 503. Redis, worker, or LLM gaps are reported as degraded/warn conditions because the API can still serve non-dependent requests.
+Expected response is HTTP 200 when required runtime dependencies are available. The readiness payload reports PostgreSQL, Neo4j, Redis, worker reachability and queue posture, and LLM configuration. PostgreSQL or Neo4j failure returns HTTP 503. Redis, worker, or LLM gaps are reported as degraded/warn conditions because the API can still serve non-dependent requests.
 
 Configuration audit:
 
@@ -187,7 +187,11 @@ docker compose exec neo4j cypher-shell -u neo4j -p specora123 "RETURN 1"
 
 Worker:
 
-The worker currently exposes gRPC, not an HTTP health endpoint. For production, add a gRPC health service or sidecar health check. Until then, operational checks should verify the process is running and that API-to-worker calls succeed.
+```bash
+curl http://localhost:4000/api/health/worker
+```
+
+This authenticated route checks worker gRPC reachability through the existing maintenance RPC, reports generic job queue counts, stale running jobs, dead-letter jobs, and Discovery job status counts from the last 24 hours. Worker failures are readiness warnings rather than API hard failures because non-worker API traffic can continue.
 
 ## Job Queue Operations
 
@@ -378,7 +382,7 @@ Audit is intentionally stored separately from app-specific event tables. Event t
 Known gaps before production claims:
 
 - PostgreSQL has a migration runner, runtime readiness, and queue indexes, but restore drills and release automation still need rehearsal in a production-like environment.
-- Worker does not expose a standard health endpoint.
+- Worker health is exposed through the API, but the worker process still does not expose its own standard HTTP or gRPC health service for infrastructure-level probes.
 - Redis is documented and supported by API code but not included in local compose.
 - Package provisioning jobs complete immediately; entitlement checks, rollback, and install progress are roadmap work.
 - Field-level RBAC and identity-group permission inheritance are implemented and explainable through Admin RBAC utilities. Condition-based record ACLs remain a roadmap item.

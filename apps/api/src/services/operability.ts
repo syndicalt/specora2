@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { getRedis, isRedisAvailable } from "./redis";
+import { workerClient } from "../grpc/client";
+import { getJobQueueSummary } from "./jobQueue";
 
 type CheckStatus = "ok" | "warn" | "fail";
 
@@ -14,6 +16,11 @@ type ConfigCheck = {
   key: string;
   status: CheckStatus;
   message: string;
+};
+
+type WorkerHealthOptions = {
+  ping?: () => Promise<{ status: string }>;
+  env?: NodeJS.ProcessEnv;
 };
 
 const REQUIRED_ENV = ["DATABASE_URL", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "JWT_SECRET"];
@@ -75,6 +82,52 @@ export function buildConfigAudit(env: NodeJS.ProcessEnv = process.env) {
   };
 }
 
+export async function buildWorkerHealth(fastify: FastifyInstance, options: WorkerHealthOptions = {}) {
+  const env = options.env || process.env;
+  const target = env.WORKER_GRPC_HOST || "";
+  const ping = options.ping || (() => workerClient.runGraphMaintenance({ task: "health_check" }));
+  const checkedAt = new Date().toISOString();
+
+  const queue = await getJobQueueSummary(fastify, 30);
+  const discovery = await fastify.pg.query(
+    `SELECT status, COUNT(*)::int AS count
+     FROM discovery_jobs
+     WHERE created_at >= NOW() - INTERVAL '24 hours'
+     GROUP BY status`
+  );
+  const discoveryJobs24h = Object.fromEntries(discovery.rows.map((row: any) => [row.status || "unknown", Number(row.count || 0)]));
+
+  let grpc: RuntimeCheck;
+  if (!target) {
+    grpc = { name: "worker.grpc", status: "warn", message: "WORKER_GRPC_HOST not configured" };
+  } else {
+    grpc = await timed("worker.grpc", async () => {
+      await withTimeout(ping(), 1_500, "Worker gRPC health check");
+    });
+    if (grpc.status === "ok") grpc.message = `Reachable at ${target}`;
+  }
+
+  const deadLetter = Number((queue as any).deadLetter || 0);
+  const staleRunning = Number((queue as any).staleRunning || 0);
+  const failedDiscovery = Number(discoveryJobs24h.failed || 0);
+  const status: CheckStatus = grpc.status === "fail" || deadLetter > 0 || staleRunning > 0 || failedDiscovery > 0
+    ? "warn"
+    : grpc.status;
+
+  return {
+    status,
+    checkedAt,
+    grpc,
+    queue,
+    discoveryJobs24h,
+    signals: {
+      deadLetter,
+      staleRunning,
+      failedDiscovery,
+    },
+  };
+}
+
 export async function buildReadiness(fastify: FastifyInstance) {
   const checks: RuntimeCheck[] = [];
   checks.push(await timed("postgres", async () => {
@@ -101,10 +154,12 @@ export async function buildReadiness(fastify: FastifyInstance) {
     checks.push({ name: "redis", status: "warn", message: "Redis client could not be initialized" });
   }
 
+  const worker = await buildWorkerHealth(fastify);
   checks.push({
     name: "worker",
-    status: process.env.WORKER_GRPC_HOST ? "ok" : "warn",
-    message: process.env.WORKER_GRPC_HOST ? `Configured at ${process.env.WORKER_GRPC_HOST}` : "WORKER_GRPC_HOST not configured",
+    status: worker.status,
+    latencyMs: worker.grpc.latencyMs,
+    message: worker.grpc.message || (worker.status === "ok" ? "Worker reachable and queues healthy" : "Worker or queue posture needs attention"),
   });
   checks.push({
     name: "llm",

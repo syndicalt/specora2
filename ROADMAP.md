@@ -63,7 +63,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 
 - **Reporting API depth** — Completed: CAB evidence datasets and brief coverage metrics, knowledge feedback/gap datasets, knowledge trust/reuse metrics, operational readiness scoring, and CMDB data-quality readiness checks.
 - **Discovery RC push** — Completed: rollback records/UI, saved mapping profiles, richer AI mapping rationale, Admin-managed credential references with encrypted managed secrets, and edge/collector source registration with source binding.
-- **Operability and scale hardening** — Restore rehearsal, worker health checks, full SSO validation, build reliability, Redis-backed multi-instance state, and audit-head external anchoring design.
+- **Operability and scale hardening** — Sprint 1 completed: API worker health checks with gRPC reachability, queue posture, stale/dead-letter counts, and Discovery job health. Next sprints: restore rehearsal, build reliability, full SSO validation, Redis-backed multi-instance state, and audit-head external anchoring.
 - **Real-time events** — WebSocket pub/sub for event bus and SSE chat streaming.
 
 ## Technical Debt
