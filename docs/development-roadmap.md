@@ -11,6 +11,7 @@ What is working well:
 
 - Native app ecosystem is established across API registry, web shell, permissions, and app loading.
 - Core ITSM suite is represented: Change, Incident, Knowledge, Prevention, Asset, Tables, Health, CMDB Explorer, Service Map, Discovery, and Admin Console.
+- Customer Portal now provides the core self-service front door with catalog requests, AI intent resolution, and contextual support handoff primitives.
 - Provara is back as the primary LLM router with tool-call support.
 - CSDMv5-aligned seed data provides a connected 5,000-CI CMDB narrative.
 - API route coverage is improving and currently passes at 333 tests.
@@ -23,7 +24,7 @@ Known gaps:
 - Several apps are demo/beta hybrids and need interaction polish before production claims.
 - DCIM has enough concept depth to demo, but needs a dedicated polish pass for resize, connection editing, object deletion, floorplan controls, and richer physical inventory.
 - Discovery is still an impressive concept but not yet a complete operational ETL system.
-- Admin RBAC is improving but lacks field-level and conditional policy enforcement.
+- Admin RBAC now has first-pass server-side field read/write enforcement for Tables, but still lacks condition-based record policy and a polished field-restriction management UI.
 - Package installation now has an authoritative server-side installation state and completed provisioning job audit trail; production entitlement/payment/rollback depth is still backlog work.
 - The Next build cache/worker issue recurs and should be investigated separately from product work.
 
@@ -128,6 +129,8 @@ Implemented:
 - Added an Admin Console Package Provisioning panel showing recent install/uninstall jobs.
 - Seeded IT Visibility DCIM as an installed optional package so current demos keep working.
 - Added route tests for catalog status, install job creation, and blocking uninstall of core platform apps.
+- Added first-pass column-level RBAC primitives for Tables: `field:<tableId>.<fieldName>` read/write grants, sensitive field restriction configuration, server-side redaction, write rejection, and Admin RBAC target discovery.
+- Replaced the flat Add Permission selector with a scoped RBAC grant builder that searches registered targets and previews description, source, risk, and duplicate grants before saving.
 
 Exit criteria:
 
@@ -176,6 +179,7 @@ Important but not next-sprint critical:
 
 - Review form-heavy surfaces against the north-star philosophy. Tables, Admin, Discovery, and DCIM should keep precise structured editors, but the primary ITSM flows should favor evidence-created records, AI-drafted proposals, review queues, and stewardship tables over blank-form creation. The current baseline is captured in [Form Surface Review](form-surface-review.md).
 - Evolve the Tables application into the universal stewardship cockpit: saved views, advanced filters, column sets, inline edit, bulk actions, audit diffs, validation state, export/import, relationship-aware filtering, and AI-assisted explanation or cleanup.
+- Expand Customer Portal into Specora Engage: multiple portals, audience targeting, per-portal branding/navigation, analytics, campaigns, AI optimization, and advanced support/call-routing adapters.
 - Upgrade `reactflow` v11 to current `@xyflow/react` and standardize graph components across Service Map, Discovery, Impact Graph, and DCIM.
 - Replace the DCIM floorplan prototype with a dedicated spatial canvas engine when DCIM becomes an active sprint again; React Flow should remain for topology/relationship diagrams, not CAD-like floorplan editing.
 - Add iframe bridge or explicitly deprecate iframe fallback for external apps.

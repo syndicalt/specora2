@@ -150,6 +150,19 @@ Provara is the primary model router. Direct OpenAI access is retained as a fallb
 
 The LLM is not a database and not an authorization boundary. It can suggest, summarize, transform, and call registered tools. The API decides whether the tool is allowed and what it can change.
 
+### Customer Experience
+
+Specora separates the customer experience into a core native app and a premium expansion boundary:
+
+- **Customer Portal** is the core self-service front door. It provides AI intent resolution, knowledge deflection, catalog request submission, request status, approvals-ready request history, and contextual support handoffs.
+- **Specora Engage** is the premium expansion for multiple portals, audience targeting, portal-specific branding, campaigns, analytics, advanced experience governance, and deeper fulfillment orchestration.
+
+The catalog/request foundation is platform core because ITAM, incident intake, access requests, hardware requests, knowledge requests, and future onboarding/offboarding workflows all need a shared request primitive.
+
+Customer Portal introduces the **Intent Resolution Card** pattern. A user describes an outcome, and the platform classifies the need as answer, request, incident intake, approval, or support handoff before creating work. The card carries intent, confidence, catalog match, knowledge candidates, missing fields, priority, and available support channels. This gives portal UI, chat, and external API integrations the same operating model.
+
+Support handoffs are first-class records, not links hidden in portal content. The platform stores support channels and handoffs so adapters for Cisco UCM, contact centers, callback systems, live chat, or external routing platforms can receive the user context packet: user, request or incident, transcript summary, attempted self-service, urgency, affected service, and recommended next action.
+
 ## Architectural Theories
 
 ### Graph-First CMDB
@@ -343,7 +356,11 @@ Security is layered:
 
 The browser is not trusted to enforce policy. Client filtering improves UX; server filtering enforces access.
 
-Current RBAC is role/resource/action based. It is strong enough for app, route, table, and automation access, but it is not yet a ServiceNow-style ACL model. Field-level and condition-based record restrictions are roadmap items, and must be implemented server-side before they are treated as a security boundary.
+Current RBAC is role/resource/action based. It is strong enough for app, route, table, automation, and first-pass field access. Field-level RBAC is enforced server-side in the Tables API through `field:<tableId>.<fieldName>` resources with `read` and `write` actions. Normal fields inherit table access; configured sensitive fields require explicit field grants. Condition-based record restrictions are still a roadmap item.
+
+Field restriction configuration is intentionally small and auditable. The `security.field_restrictions` system property can list field resources, table/field objects, or global field names that require explicit grants. Sensitive field-name patterns such as password, token, secret, key, credential, salary, and SSN are restricted by default.
+
+Because field-level RBAC can create a large permission catalog, administration should not rely on a flat permission dropdown. The Admin Console exposes registered permission targets as an explainable grant catalog with scope, source, risk, and human-readable descriptions. AI can improve descriptions and operator guidance, but the registry remains the source of truth.
 
 ### Security Roadmap
 
@@ -351,7 +368,7 @@ Planned access-control expansion:
 
 - Table-level CRUD policies that are separate from app visibility.
 - Record-level rules based on ownership, assignment, state, service, CI, or tenant context.
-- Field-level read/write policies for sensitive or workflow-controlled attributes.
+- Broader field-level administration UX for sensitive or workflow-controlled attributes.
 - Masking modes for sensitive fields such as hidden, masked, read-only, or privileged-only.
 - Policy simulation in the Admin Console before grants are saved.
 - Access Analyzer traces that explain app, table, record, and field decisions in one chain.

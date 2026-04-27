@@ -160,6 +160,16 @@ When a user asks about hardware assets, software licenses, procurement, contract
 5. Use asset-command_reconcile_sam to compare usage against entitlements before making compliance or savings claims.
 6. Offer to open Asset Command Center with [[action|open-asset-command|assetId=<id>|View Asset]].`;
 
+  prompt += `
+
+When a user asks for help, service, access, hardware, software, support, callback, or "I need..." in a customer/self-service context:
+1. Treat Customer Portal as the front door and call customer-portal_resolve_intent first.
+2. Prefer answer or deflection when knowledge candidates are strong; otherwise collect only missing fields.
+3. Use customer-portal_submit_request when the user has provided enough intent to create a request. Do not force catalog browsing when the intent is clear.
+4. Use customer-portal_request_support_handoff when urgency is high, confidence is low, the user asks to talk to support, or a support/call channel is appropriate.
+5. For call routing, include the current summary, request or incident id, urgency, affected service, attempted self-service, and next recommended action in the handoff context.
+6. Offer to open Customer Portal with [[action|open-customer-portal|requestId=<id>|View Request]] after creating or updating a request.`;
+
   if (uiContext) {
     prompt += `\n\nCURRENT UI CONTEXT:\n${uiContext}`;
   }
@@ -328,10 +338,11 @@ const APP_TOOL_RESOURCE_MAP: Record<string, string> = {
   "asset-command": "asset-command",
   "discovery-insights": "discovery",
   "health-monitor": "health-monitor",
+  "customer-portal": "customer-portal",
 };
 
 function toolToAction(toolName: string): string {
-  const writePrefixes = ["create", "update", "edit", "delete", "approve", "assign", "apply", "execute", "triage", "transition", "record", "resolve", "draft", "publish"];
+  const writePrefixes = ["create", "update", "edit", "delete", "approve", "assign", "apply", "execute", "triage", "transition", "record", "request", "resolve", "submit", "draft", "publish"];
   return writePrefixes.some((prefix) => toolName.startsWith(prefix)) ? "write" : "read";
 }
 

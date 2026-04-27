@@ -111,7 +111,7 @@ function useShellHistory(
   }, [ready, rawDispatch, state.instances, registry]);
 }
 
-export function AppShell() {
+export function AppShell({ initialAppId = "service-map" }: { initialAppId?: string } = {}) {
   const [state, dispatch] = useReducer(shellReducer, initialShellState);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
   const [ready, setReady] = useState(false);
@@ -166,18 +166,18 @@ export function AppShell() {
   // Auto-open default canvas app once on first load — only if nothing is pinned
   useEffect(() => {
     if (!ready || initialOpenDone.current) return;
-    const serviceMap = registry.find((a) => a.id === "service-map");
-    if (serviceMap && state.instances.length === 0 && state.dockedIds.length === 0) {
+    const initialApp = registry.find((a) => a.id === initialAppId) || registry.find((a) => a.id === "service-map");
+    if (initialApp && state.instances.length === 0 && state.dockedIds.length === 0) {
       initialOpenDone.current = true;
       dispatch({
         type: "OPEN_APP",
-        id: serviceMap.id,
-        installKey: serviceMap.installKey,
-        mode: serviceMap.defaultMode,
-        permissions: serviceMap.permissions,
+        id: initialApp.id,
+        installKey: initialApp.installKey,
+        mode: initialApp.defaultMode,
+        permissions: initialApp.permissions,
       });
     }
-  }, [ready, registry, state.instances.length, state.dockedIds.length]);
+  }, [initialAppId, ready, registry, state.instances.length, state.dockedIds.length]);
 
   // Debounced sync dock order to server
   useEffect(() => {

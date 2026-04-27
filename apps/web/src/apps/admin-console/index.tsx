@@ -77,6 +77,10 @@ interface RbacTarget {
   resource: string;
   action: string;
   risk: "low" | "medium" | "high" | "critical";
+  label?: string;
+  description?: string;
+  category?: string;
+  source?: string;
 }
 
 interface AccessAnalysis {
@@ -124,6 +128,24 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   ShieldCheck,
 };
 
+const PERMISSION_VALUE_SEPARATOR = "\u0000";
+
+function encodePermissionValue(resource: string, action: string) {
+  return `${resource}${PERMISSION_VALUE_SEPARATOR}${action}`;
+}
+
+function decodePermissionValue(value: string) {
+  const [resource, action] = value.split(PERMISSION_VALUE_SEPARATOR);
+  return [resource || "", action || ""] as const;
+}
+
+function riskClass(risk?: string) {
+  if (risk === "critical") return "border-red-400/40 bg-red-500/10 text-red-200";
+  if (risk === "high") return "border-orange-400/40 bg-orange-500/10 text-orange-200";
+  if (risk === "medium") return "border-amber-400/40 bg-amber-500/10 text-amber-100";
+  return "border-emerald-400/30 bg-emerald-500/10 text-emerald-200";
+}
+
 export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [activeTab, setActiveTab] = useState<string>("overview");
   const [panels, setPanels] = useState<AdminPanel[]>([]);
@@ -144,6 +166,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [newRole, setNewRole] = useState("");
   const [newResource, setNewResource] = useState("");
   const [newAction, setNewAction] = useState("");
+  const [grantScope, setGrantScope] = useState("All");
+  const [grantSearch, setGrantSearch] = useState("");
   const [newPropKey, setNewPropKey] = useState("");
   const [newPropValue, setNewPropValue] = useState("");
   const [newSequence, setNewSequence] = useState({ appId: "", tableName: "", recordType: "", prefix: "", nextValue: "1", padding: "6" });
@@ -200,7 +224,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
         return {
           userId: firstUser?.id || "",
           role: firstUser?.role || "",
-          target: firstTarget ? `${firstTarget.resource}:${firstTarget.action}` : "",
+          target: firstTarget ? encodePermissionValue(firstTarget.resource, firstTarget.action) : "",
         };
       });
     } catch (err: any) {
@@ -251,7 +275,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
 
   async function analyzeAccess(e?: React.FormEvent) {
     e?.preventDefault();
-    const [resource, action] = accessProbe.target.split(":");
+    const [resource, action] = decodePermissionValue(accessProbe.target);
     if ((!accessProbe.userId && !accessProbe.role) || !resource || !action) return;
     setSaving(true);
     setError(null);
@@ -407,6 +431,18 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
 
   const roles = Array.from(new Set(permissions.map((p) => p.role)));
   const allRoles = Array.from(new Set([...roles, ...rbacUsers.map((user) => user.role)])).filter(Boolean).sort();
+  const selectedPermissionTarget = newResource && newAction ? encodePermissionValue(newResource, newAction) : "";
+  const selectedGrantTarget = rbacTargets.find((target) => target.resource === newResource && target.action === newAction) || null;
+  const grantScopes = ["All", ...Array.from(new Set(rbacTargets.map((target) => target.category || "Application"))).sort()];
+  const filteredGrantTargets = rbacTargets.filter((target) => {
+    const scopeMatch = grantScope === "All" || (target.category || "Application") === grantScope;
+    const needle = grantSearch.trim().toLowerCase();
+    const text = `${target.label || ""} ${target.resource} ${target.action} ${target.description || ""} ${target.source || ""}`.toLowerCase();
+    return scopeMatch && (!needle || text.includes(needle));
+  }).slice(0, 80);
+  const existingGrant = selectedGrantTarget && newRole
+    ? permissions.find((permission) => permission.role === newRole && permission.resource === selectedGrantTarget.resource && permission.action === selectedGrantTarget.action)
+    : null;
   const registeredSequenceKeys = new Set(numberSequences.map((sequence) => `${sequence.app_id || ""}:${sequence.table_name}:${sequence.record_type}`));
   const availableSequenceOptions = numberSequenceOptions.filter((option) => !registeredSequenceKeys.has(`${option.appId}:${option.tableName}:${option.recordType}`));
   const appOptions = Array.from(new Map(numberSequenceOptions.map((option) => [option.appId, option.appName])).entries());
@@ -595,8 +631,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                 value={accessProbe.target}
                 onChange={(value) => setAccessProbe((current) => ({ ...current, target: value }))}
                 options={rbacTargets.map((target) => ({
-                  value: `${target.resource}:${target.action}`,
-                  label: `${target.resource}:${target.action} (${target.risk})`,
+                  value: encodePermissionValue(target.resource, target.action),
+                  label: `${target.label || target.resource} - ${target.action} (${target.risk})`,
                 }))}
               />
               <button
@@ -664,30 +700,139 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
             )}
           </div>
 
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <h2 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
-              <Plus className="w-4 h-4" /> Add Permission
-            </h2>
-            <form onSubmit={addPermission} className="flex items-end gap-3">
-              <div className="flex-1">
-                <label className="block text-xs text-gray-500 mb-1">Role</label>
-                <input type="text" value={newRole} onChange={(e) => setNewRole(e.target.value)} placeholder="e.g. operator"
-                  className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
+          <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                  <Plus className="h-4 w-4 text-indigo-300" /> Grant Builder
+                </h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Search the registered permission catalog, preview impact, then grant the exact role/resource/action.
+                </p>
               </div>
-              <div className="flex-1">
-                <label className="block text-xs text-gray-500 mb-1">Resource</label>
-                <input type="text" value={newResource} onChange={(e) => setNewResource(e.target.value)} placeholder="e.g. cmdb"
-                  className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
+              <div className="rounded-full border border-gray-700 bg-gray-950 px-3 py-1 text-xs text-gray-400">
+                {rbacTargets.length} registered targets
               </div>
-              <div className="flex-1">
-                <label className="block text-xs text-gray-500 mb-1">Action</label>
-                <input type="text" value={newAction} onChange={(e) => setNewAction(e.target.value)} placeholder="e.g. write"
-                  className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
+            </div>
+
+            <form onSubmit={addPermission} className="mt-4 grid gap-4 xl:grid-cols-[300px_1fr_360px]">
+              <div className="space-y-3">
+                <FieldSelect
+                  label="Role"
+                  value={newRole}
+                  onChange={setNewRole}
+                  options={[{ value: "", label: "Select role" }, ...allRoles.map((role) => ({ value: role, label: role }))]}
+                />
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">Scope</label>
+                  <div className="scrollbar-thin flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-2">
+                    {grantScopes.map((scope) => (
+                      <button
+                        key={scope}
+                        type="button"
+                        onClick={() => setGrantScope(scope)}
+                        className={`rounded-md px-2.5 py-1.5 text-xs ${grantScope === scope ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400 hover:text-gray-100"}`}
+                      >
+                        {scope}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">Search</label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+                    <input
+                      value={grantSearch}
+                      onChange={(event) => setGrantSearch(event.target.value)}
+                      placeholder="Find app, table, field, action..."
+                      className="w-full rounded-lg border border-gray-700 bg-gray-800 py-2 pl-9 pr-3 text-sm text-gray-200 outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
               </div>
-              <button type="submit" disabled={saving || !newRole || !newResource || !newAction}
-                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Add
-              </button>
+
+              <div className="min-h-[320px] rounded-lg border border-gray-800 bg-gray-950">
+                <div className="border-b border-gray-800 px-3 py-2 text-xs uppercase tracking-wide text-gray-500">
+                  Permission Catalog
+                </div>
+                <div className="scrollbar-thin max-h-[430px] overflow-y-auto p-2">
+                  {filteredGrantTargets.map((target) => {
+                    const selected = selectedPermissionTarget === encodePermissionValue(target.resource, target.action);
+                    return (
+                      <button
+                        key={`${target.resource}:${target.action}`}
+                        type="button"
+                        onClick={() => {
+                          setNewResource(target.resource);
+                          setNewAction(target.action);
+                        }}
+                        className={`mb-2 w-full rounded-lg border px-3 py-3 text-left transition-colors ${
+                          selected ? "border-indigo-400 bg-indigo-500/15" : "border-gray-800 bg-gray-900 hover:border-gray-700"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-gray-100">{target.label || target.resource}</div>
+                            <div className="mt-1 truncate font-mono text-xs text-gray-500">{target.resource}:{target.action}</div>
+                          </div>
+                          <span className={`shrink-0 rounded border px-2 py-0.5 text-[11px] ${riskClass(target.risk)}`}>{target.risk}</span>
+                        </div>
+                        <div className="mt-2 text-sm leading-5 text-gray-500">{target.description}</div>
+                        <div className="mt-2 text-xs text-gray-600">{target.source || target.category}</div>
+                      </button>
+                    );
+                  })}
+                  {!filteredGrantTargets.length && (
+                    <div className="px-3 py-10 text-center text-sm text-gray-500">No permissions match this filter.</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+                <div className="text-xs uppercase tracking-wide text-gray-500">Grant Preview</div>
+                {selectedGrantTarget ? (
+                  <div className="mt-4 space-y-4">
+                    <div>
+                      <div className="text-sm font-medium text-gray-100">{selectedGrantTarget.label || selectedGrantTarget.resource}</div>
+                      <div className="mt-1 font-mono text-xs text-gray-500">{selectedGrantTarget.resource}:{selectedGrantTarget.action}</div>
+                    </div>
+                    <div className="rounded-lg border border-gray-800 bg-gray-900 p-3 text-sm leading-6 text-gray-400">
+                      {selectedGrantTarget.description}
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-600">Scope</div>
+                        <div className="mt-1 text-gray-300">{selectedGrantTarget.category || "Application"}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-600">Risk</div>
+                        <div className={`mt-1 inline-flex rounded border px-2 py-0.5 text-xs ${riskClass(selectedGrantTarget.risk)}`}>{selectedGrantTarget.risk}</div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-gray-800 bg-gray-900 p-3 text-sm text-gray-500">
+                      {newRole ? (
+                        existingGrant ? (
+                          <span className="text-amber-200">Role {newRole} already has this grant.</span>
+                        ) : (
+                          <span>Role <span className="text-gray-200">{newRole}</span> will receive this exact permission.</span>
+                        )
+                      ) : "Select a role to preview who receives this grant."}
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={saving || !newRole || !newResource || !newAction || Boolean(existingGrant)}
+                      className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+                    >
+                      {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Grant Permission
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-10 text-center text-sm leading-6 text-gray-500">
+                    Select a permission target to see description, risk, and grant impact.
+                  </div>
+                )}
+              </div>
             </form>
           </div>
           {roles.map((role) => (

@@ -13,6 +13,15 @@ import { SessionTrace } from "../services/pathlightSession";
 
 const BUILTIN_CHAT_CAPABILITIES = [
   {
+    appId: "customer-portal",
+    appName: "Customer Portal",
+    capabilities: [
+      { id: "customer-portal.ask", label: "Ask for help", description: "Resolve intent, answer, request, route, or escalate", prompt: "I need help with something", icon: "MessageSquare" },
+      { id: "customer-portal.catalog", label: "Browse catalog", description: "Find requestable services and submit governed catalog requests", prompt: "Show me the service catalog", icon: "ShoppingCart" },
+      { id: "customer-portal.support", label: "Contact support", description: "Create a contextual support handoff or callback", prompt: "I need to talk to support", icon: "PhoneCall" },
+    ],
+  },
+  {
     appId: "change-manager",
     appName: "Change Manager",
     capabilities: [

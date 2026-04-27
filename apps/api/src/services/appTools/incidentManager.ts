@@ -150,7 +150,7 @@ registerTool<FastifyInstance>("incident-manager", {
   params.push(Math.min(Number(limit) || 75, 200));
   query += ` ORDER BY i.priority ASC, i.created_at DESC LIMIT $${params.length}`;
   const result = await fastify.pg.query(query, params);
-  return result.rows;
+  return Promise.all(result.rows.map((row: any) => assignRecordNumberToRow(fastify, "incidents", row)));
 });
 
 registerTool<FastifyInstance>("incident-manager", {
@@ -167,6 +167,7 @@ registerTool<FastifyInstance>("incident-manager", {
   const { incidentId } = args as any;
   const incidentResult = await fastify.pg.query(`SELECT * FROM incidents WHERE id = $1`, [incidentId]);
   if (!incidentResult.rows.length) return { error: "Incident not found" };
+  const incident = await assignRecordNumberToRow(fastify, "incidents", incidentResult.rows[0]);
   const ciResult = await fastify.pg.query(`SELECT ci_id, role, distance FROM incident_cis WHERE incident_id = $1`, [incidentId]);
   const ciIds = ciResult.rows.map((r: any) => r.ci_id);
   const [events, actions, roles, postmortems, changes] = await Promise.all([
@@ -176,11 +177,16 @@ registerTool<FastifyInstance>("incident-manager", {
     fastify.pg.query(`SELECT * FROM incident_postmortems WHERE incident_id = $1 ORDER BY created_at DESC`, [incidentId]),
     ciIds.length
       ? fastify.pg.query(
-          `SELECT DISTINCT cr.id, cr.title, cr.status, cr.priority, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at
-           FROM change_requests cr
-           LEFT JOIN change_request_cis crc ON crc.change_request_id = cr.id
-           WHERE cr.ci_id = ANY($1) OR crc.ci_id = ANY($1)
-           ORDER BY COALESCE(cr.planned_start_at, cr.scheduled_at, cr.created_at) DESC
+          `SELECT id, title, status, priority, planned_start_at
+           FROM (
+             SELECT DISTINCT cr.id, cr.title, cr.status, cr.priority,
+                    COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at,
+                    COALESCE(cr.planned_start_at, cr.scheduled_at, cr.created_at) as sort_at
+             FROM change_requests cr
+             LEFT JOIN change_request_cis crc ON crc.change_request_id = cr.id
+             WHERE cr.ci_id = ANY($1) OR crc.ci_id = ANY($1)
+           ) related_changes
+           ORDER BY sort_at DESC
            LIMIT 10`,
           [ciIds]
         )
@@ -188,7 +194,7 @@ registerTool<FastifyInstance>("incident-manager", {
   ]);
   const ciContext = await lookupCiContext(fastify, ciIds);
   return {
-    ...incidentResult.rows[0],
+    ...incident,
     affectedCis: ciResult.rows.map((r: any) => ({ ...r, ...(ciContext.names[r.ci_id] || { id: r.ci_id, name: r.ci_id }) })),
     ciHealth: ciContext.health,
     edges: ciContext.relationships,
@@ -364,16 +370,16 @@ registerTool<FastifyInstance>("incident-manager", {
 }, async (args, fastify) => {
   const { incidentId, status, note, _userId } = args as any;
   const result = await fastify.pg.query(
-    `UPDATE incidents SET status = $1,
-       acknowledged_at = CASE WHEN $1 IN ('investigating', 'major', 'remediating') AND acknowledged_at IS NULL THEN NOW() ELSE acknowledged_at END,
-       resolved_at = CASE WHEN $1 IN ('resolved', 'closed') THEN NOW() ELSE resolved_at END,
+    `UPDATE incidents SET status = $1::text,
+       acknowledged_at = CASE WHEN $1::text IN ('investigating', 'major', 'remediating') AND acknowledged_at IS NULL THEN NOW() ELSE acknowledged_at END,
+       resolved_at = CASE WHEN $1::text IN ('resolved', 'closed') THEN NOW() ELSE resolved_at END,
        updated_at = NOW()
-     WHERE id = $2 RETURNING *`,
+     WHERE id = $2::uuid RETURNING *`,
     [status, incidentId]
   );
   if (!result.rows.length) return { error: "Incident not found" };
   await fastify.pg.query(
-    `INSERT INTO incident_events (incident_id, type, message, actor_id) VALUES ($1, 'status.changed', $2, $3)`,
+    `INSERT INTO incident_events (incident_id, type, message, actor_id) VALUES ($1::uuid, 'status.changed', $2::text, $3::uuid)`,
     [incidentId, note || `Status changed to ${status}`, _userId || null]
   );
   emit("incident.status_changed", { incidentId, status, actorId: _userId });

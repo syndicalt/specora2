@@ -5,6 +5,7 @@ import { registerPreventionCenterTools } from "./appTools/preventionCenter";
 import { registerAssetCommandTools } from "./appTools/assetCommand";
 import { registerDiscoveryInsightsTools } from "./appTools/discoveryInsights";
 import { registerHealthMonitorTools } from "./appTools/healthMonitor";
+import { registerCustomerPortalTools } from "./appTools/customerPortal";
 
 export function registerAllAppTools() {
   registerChangeManagerTools();
@@ -14,6 +15,7 @@ export function registerAllAppTools() {
   registerAssetCommandTools();
   registerDiscoveryInsightsTools();
   registerHealthMonitorTools();
+  registerCustomerPortalTools();
 }
 
 export function getAllAppToolDefinitions() {

@@ -25,13 +25,17 @@ export class SessionTrace {
   }
 
   static async create(client: PathlightClient, name: string, input?: unknown, options?: { tags?: string[]; metadata?: unknown }): Promise<SessionTrace> {
-    const result = await client._createTrace({
-      name,
-      input,
-      tags: options?.tags,
-      metadata: options?.metadata,
-    });
-    return new SessionTrace(client, result.id, name);
+    try {
+      const result = await client._createTrace({
+        name,
+        input,
+        tags: options?.tags,
+        metadata: options?.metadata,
+      });
+      return new SessionTrace(client, result.id, name);
+    } catch {
+      return new SessionTrace(client, `local-${Date.now()}-${Math.random().toString(16).slice(2)}`, name);
+    }
   }
 
   span(name: string, type: "llm" | "tool" | "retrieval" | "agent" | "chain" | "custom", options?: {
@@ -48,12 +52,17 @@ export class SessionTrace {
 
   async end(data?: { output?: unknown; status?: "completed" | "failed"; error?: string }): Promise<void> {
     const durationMs = Date.now() - this._startTime;
-    await this.client._updateTrace(this._id, {
-      status: data?.status || (data?.error ? "failed" : "completed"),
-      output: data?.output,
-      error: data?.error,
-      totalDurationMs: durationMs,
-    });
+    if (this._id.startsWith("local-")) return;
+    try {
+      await this.client._updateTrace(this._id, {
+        status: data?.status || (data?.error ? "failed" : "completed"),
+        output: data?.output,
+        error: data?.error,
+        totalDurationMs: durationMs,
+      });
+    } catch {
+      // Tracing is best-effort and must never break the product path.
+    }
   }
 }
 
@@ -86,13 +95,18 @@ export class SessionSpan {
   }
 
   private async _init(name: string, type: string, options?: any): Promise<void> {
-    const result = await this.client._createSpan({
-      traceId: this.traceId,
-      name,
-      type,
-      ...options,
-    });
-    this._id = result.id;
+    if (this.traceId.startsWith("local-")) return;
+    try {
+      const result = await this.client._createSpan({
+        traceId: this.traceId,
+        name,
+        type,
+        ...options,
+      });
+      this._id = result.id;
+    } catch {
+      this._id = null;
+    }
   }
 
   get id(): Promise<string> {
@@ -109,16 +123,21 @@ export class SessionSpan {
     cost?: number;
   }): Promise<void> {
     await this._initPromise;
+    if (!this._id) return;
     const durationMs = Date.now() - this._startTime;
-    await this.client._updateSpan(this._id!, {
-      status: data?.status || (data?.error ? "failed" : "completed"),
-      output: data?.output,
-      error: data?.error,
-      durationMs,
-      inputTokens: data?.inputTokens,
-      outputTokens: data?.outputTokens,
-      cost: data?.cost,
-      toolResult: data?.toolResult,
-    });
+    try {
+      await this.client._updateSpan(this._id, {
+        status: data?.status || (data?.error ? "failed" : "completed"),
+        output: data?.output,
+        error: data?.error,
+        durationMs,
+        inputTokens: data?.inputTokens,
+        outputTokens: data?.outputTokens,
+        cost: data?.cost,
+        toolResult: data?.toolResult,
+      });
+    } catch {
+      // Tracing is best-effort and must never break the product path.
+    }
   }
 }

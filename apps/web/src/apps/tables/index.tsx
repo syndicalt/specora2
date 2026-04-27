@@ -25,6 +25,9 @@ type AttributeDef = {
   isMandatory: boolean;
   isKeyAttribute: boolean;
   enumValues?: string[];
+  canRead?: boolean;
+  canWrite?: boolean;
+  isRestricted?: boolean;
 };
 
 type TableDef = {
@@ -93,6 +96,14 @@ function formatValue(value: unknown) {
   if (value === undefined || value === null || value === "") return "-";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function canReadAttr(attr?: AttributeDef) {
+  return attr?.canRead !== false;
+}
+
+function canWriteAttr(attr?: AttributeDef) {
+  return attr?.canWrite !== false;
 }
 
 function coerceValue(raw: string, attr?: AttributeDef): unknown {
@@ -166,6 +177,11 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     return selected?.attributes.find((attr) => attr.name === key);
   }
 
+  function canReadColumn(key: string) {
+    const attr = tableAttr(key);
+    return attr ? canReadAttr(attr) : true;
+  }
+
   function selectTable(table: TableDef) {
     setSelected(table);
     setQuery("");
@@ -228,6 +244,8 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     if (key === "number") return record.number || "-";
     if (key === "id") return record.id;
     if (key === "environment") return record.environment || "-";
+    const attr = tableAttr(key);
+    if (attr && !canReadAttr(attr)) return "Restricted";
     return formatValue((record.attributes || {})[key] ?? record[key]);
   }
 
@@ -307,6 +325,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     try {
       const attributes: Record<string, unknown> = {};
       for (const attr of selected.attributes) {
+        if (!canWriteAttr(attr)) continue;
         attributes[attr.name] = coerceValue(editor.form[attr.name] || "", attr);
       }
       const payload = {
@@ -516,7 +535,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               {filters.map((filter) => (
                 <div key={filter.id} className="grid grid-cols-[220px_160px_1fr_36px] gap-2">
                   <select value={filter.field} onChange={(event) => updateFilter(filter.id, { field: event.target.value })} className="rounded-lg border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-300 outline-none focus:border-indigo-500">
-                    {availableColumns.map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
+                  {availableColumns.filter((column) => canReadColumn(column.key)).map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
                   </select>
                   <select value={filter.operator} onChange={(event) => updateFilter(filter.id, { operator: event.target.value as FilterOperator })} className="rounded-lg border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-300 outline-none focus:border-indigo-500">
                     {OPERATORS.map((operator) => <option key={operator.value} value={operator.value}>{operator.label}</option>)}
@@ -707,13 +726,22 @@ function Field({ label, hint, required, children }: { label: string; hint?: stri
 
 function AttributeInput({ attr, value, onChange }: { attr: AttributeDef; value: string; onChange: (value: string) => void }) {
   const label = attr.displayName || attr.name;
+  if (!canReadAttr(attr)) {
+    return (
+      <Field label={label} required={attr.isMandatory} hint="Restricted by field-level RBAC.">
+        <input value="Restricted" readOnly disabled className="w-full cursor-not-allowed rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm text-gray-500 outline-none" />
+      </Field>
+    );
+  }
+  const disabled = !canWriteAttr(attr);
   let input: React.ReactNode;
   if (attr.attrType === "boolean") {
     input = (
       <button
         type="button"
-        onClick={() => onChange(value === "true" ? "false" : "true")}
-        className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${value === "true" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-gray-700 bg-gray-900 text-gray-400"}`}
+        disabled={disabled}
+        onClick={() => !disabled && onChange(value === "true" ? "false" : "true")}
+        className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50 ${value === "true" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-gray-700 bg-gray-900 text-gray-400"}`}
       >
         <Check className="h-4 w-4" />
         {value === "true" ? "True" : "False"}
@@ -721,7 +749,7 @@ function AttributeInput({ attr, value, onChange }: { attr: AttributeDef; value: 
     );
   } else if (attr.attrType === "enum" && attr.enumValues?.length) {
     input = (
-      <select value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500">
+      <select disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500">
         <option value="">Select value</option>
         {attr.enumValues.map((item) => <option key={item} value={item}>{item}</option>)}
       </select>
@@ -731,13 +759,15 @@ function AttributeInput({ attr, value, onChange }: { attr: AttributeDef; value: 
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        readOnly={disabled}
+        disabled={disabled}
         type={attr.attrType === "number" ? "number" : attr.attrType === "date" ? "date" : "text"}
-        className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
+        className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500"
       />
     );
   }
   return (
-    <Field label={label} required={attr.isMandatory}>
+    <Field label={label} required={attr.isMandatory} hint={disabled ? "Read-only by field-level RBAC." : attr.isRestricted ? "Field-level RBAC managed." : undefined}>
       {input}
     </Field>
   );

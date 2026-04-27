@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { tableRoutes } from "./tables";
 import { clearPermissionCache } from "../services/rbac";
+import { clearFieldRestrictionCache } from "../services/fieldRbac";
 
 function makeRecord(values: Record<string, any>) {
   return {
@@ -80,6 +81,7 @@ async function buildApp(user: any, neo4j = makeNeo4j(), pgHandler?: (sql: string
 describe("tableRoutes", () => {
   beforeEach(() => {
     clearPermissionCache();
+    clearFieldRestrictionCache();
   });
 
   it("lists CI-class backed tables for admins", async () => {
@@ -165,6 +167,59 @@ describe("tableRoutes", () => {
     const res = await app.inject({ method: "GET", url: "/api/tables" });
 
     expect(res.statusCode).toBe(403);
+  });
+
+  it("redacts restricted fields unless the role has a field read grant", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", city: "Austin", attributes: "{\"city\":\"Austin\"}" }) })],
+      [makeRecord({ total: { toNumber: () => 1 } })],
+    ]);
+    const pgHandler = (sql: string, params?: any[]) => {
+      if (sql.includes("FROM app_permissions")) {
+        const resource = params?.[1];
+        const action = params?.[2];
+        const allowed = resource === "tables" && action === "read";
+        return { rows: allowed ? [{ ok: 1 }] : [] };
+      }
+      if (sql.includes("security.field_restrictions")) {
+        return { rows: [{ value: JSON.stringify(["field:cmdb.Location.city"]) }] };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "analyst" }, neo4j, pgHandler);
+
+    const res = await app.inject({ method: "GET", url: "/api/tables/cmdb.Location/records" });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.table.attributes[0]).toMatchObject({ name: "city", canRead: false, canWrite: false, isRestricted: true });
+    expect(body.records[0].attributes.city).toBeNull();
+    expect(body.records[0]._redactedFields).toContain("city");
+  });
+
+  it("rejects writes to restricted fields without a field write grant", async () => {
+    const pgHandler = (sql: string, params?: any[]) => {
+      if (sql.includes("FROM app_permissions")) {
+        const resource = params?.[1];
+        const action = params?.[2];
+        const allowed = resource === "tables" && (action === "read" || action === "write");
+        return { rows: allowed ? [{ ok: 1 }] : [] };
+      }
+      if (sql.includes("security.field_restrictions")) {
+        return { rows: [{ value: JSON.stringify(["field:cmdb.Location.city"]) }] };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "analyst" }, makeNeo4j(), pgHandler);
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/tables/cmdb.Location/records/loc-1",
+      payload: { attributes: { city: "Austin" } },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).error).toContain("cannot write city");
   });
 
   it("registers and CRUDs allowlisted Postgres operational tables", async () => {

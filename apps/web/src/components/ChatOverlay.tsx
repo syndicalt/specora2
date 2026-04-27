@@ -454,6 +454,15 @@ export function ChatOverlay() {
           shell.messageBus.publish({ type: "FOCUS_ASSET", from: "chat", to: "asset-command", payload: { assetId } });
         }, 500);
       }
+    } else if (type === "open-customer-portal") {
+      const params = new URLSearchParams(payload);
+      const requestId = params.get("requestId");
+      shell.dispatch({ type: "OPEN_APP", id: "customer-portal", installKey: "builtin_customer-portal", mode: "canvas", permissions: ["customer-portal:read", "customer-portal:write"], launchPayload: requestId ? { requestId } : undefined });
+      if (requestId) {
+        setTimeout(() => {
+          shell.messageBus.publish({ type: "FOCUS_PORTAL_REQUEST", from: "chat", to: "customer-portal", payload: { requestId } });
+        }, 500);
+      }
     } else if (type === "pick-date") {
       setForceDatePicker(true);
       // Focus the input so user knows something happened

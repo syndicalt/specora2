@@ -1,6 +1,8 @@
 import { FastifyInstance } from "fastify";
 import { requirePermission, clearPermissionCache } from "../services/rbac";
 import { getAllRegisteredApps, permissionToResourceAction } from "../services/appRegistry";
+import { clearFieldRestrictionCache, fieldTargetsForTable } from "../services/fieldRbac";
+import { getTables } from "./tables";
 import { recordAuditEvent } from "../services/auditLog";
 
 const CORE_ADMIN_PANELS = [
@@ -25,6 +27,7 @@ const NUMBER_SEQUENCE_OPTIONS = [
   { appId: "knowledge-core", appName: "Knowledge Core", tableName: "knowledge_items", recordType: "Knowledge", defaultPrefix: "KB" },
   { appId: "prevention-center", appName: "Prevention Center", tableName: "prevention_records", recordType: "Prevention Record", defaultPrefix: "PRV" },
   { appId: "asset-command", appName: "Asset Command Center", tableName: "asset_records", recordType: "Asset", defaultPrefix: "AST" },
+  { appId: "customer-portal", appName: "Customer Portal", tableName: "catalog_requests", recordType: "Catalog Request", defaultPrefix: "REQ" },
   { appId: "discovery", appName: "Discovery", tableName: "discovery_pipelines", recordType: "Discovery Pipeline", defaultPrefix: "DISC" },
   { appId: "discovery", appName: "Discovery", tableName: "discovery_jobs", recordType: "Discovery Job", defaultPrefix: "DJOB" },
 ];
@@ -55,9 +58,65 @@ function normalizeSequenceConfig(body: { prefix?: string; nextValue?: number; pa
 
 function permissionRisk(resource: string, action: string) {
   if (resource === "rbac" || resource === "system-properties") return "critical";
+  if (resource.startsWith("field:") && action === "write") return "high";
+  if (resource.startsWith("field:")) return "medium";
   if (["admin", "govern", "approve", "remediate", "delete"].includes(action)) return "high";
   if (["write", "mutate"].includes(action)) return "medium";
   return "low";
+}
+
+function permissionCategory(resource: string, action: string) {
+  if (resource.startsWith("field:")) return "Field";
+  if (resource === "tables" || resource.startsWith("pg.") || resource.startsWith("cmdb.")) return "Table";
+  if (resource === "rbac" || resource === "system-properties" || resource === "number-sequences") return "Admin";
+  if (resource.includes("package") || resource.includes("provision")) return "Package";
+  if (["operate", "execute", "approve", "remediate"].includes(action)) return "Automation";
+  return "Application";
+}
+
+function actionPhrase(action: string) {
+  switch (action) {
+    case "read": return "view";
+    case "write": return "create or update";
+    case "delete": return "delete";
+    case "operate": return "operate";
+    case "approve": return "approve";
+    case "admin": return "administer";
+    default: return action;
+  }
+}
+
+function permissionDescription(resource: string, action: string, label?: string) {
+  if (resource.startsWith("field:")) {
+    const field = label || resource.replace(/^field:/, "");
+    return `Allows a role to ${actionPhrase(action)} the ${field} field wherever field-level RBAC is enforced.`;
+  }
+  if (resource === "tables") {
+    return `Allows a role to ${actionPhrase(action)} records through the Tables application and table-backed APIs.`;
+  }
+  if (resource === "rbac") {
+    return "Controls access to role grants, access analysis, and security administration.";
+  }
+  if (resource === "system-properties") {
+    return "Controls platform configuration values and app-owned administrative settings.";
+  }
+  if (resource === "number-sequences") {
+    return "Controls record-number sequence registration and counter maintenance.";
+  }
+  return `Allows a role to ${actionPhrase(action)} ${label || resource}.`;
+}
+
+function permissionTarget(resource: string, action: string, overrides: Record<string, any> = {}) {
+  const label = overrides.label || resource;
+  return {
+    resource,
+    action,
+    label,
+    description: overrides.description || permissionDescription(resource, action, label),
+    category: overrides.category || permissionCategory(resource, action),
+    source: overrides.source || "Permission Registry",
+    risk: overrides.risk || permissionRisk(resource, action),
+  };
 }
 
 async function roleHasGrant(pg: any, role: string, resource: string, action: string) {
@@ -228,24 +287,35 @@ export async function adminRoutes(fastify: FastifyInstance) {
         fastify.pg.query("SELECT id, role, resource, action FROM app_permissions ORDER BY role, resource, action"),
         getAllRegisteredApps(fastify),
       ]);
+      const tables = await getTables(fastify).catch(() => []);
       const roles = Array.from(new Set([
         ...usersResult.rows.map((user: any) => user.role).filter(Boolean),
         ...permissionsResult.rows.map((permission: any) => permission.role).filter(Boolean),
       ])).sort();
       const permissionEntries: Array<[string, any]> = [
-        ...permissionsResult.rows.map((permission: any): [string, any] => [`${permission.resource}:${permission.action}`, {
-          resource: permission.resource,
-          action: permission.action,
-          risk: permissionRisk(permission.resource, permission.action),
-        }]),
+        ...permissionsResult.rows.map((permission: any): [string, any] => [
+          `${permission.resource}:${permission.action}`,
+          permissionTarget(permission.resource, permission.action, { source: "Existing Grant" }),
+        ]),
         ...apps.flatMap((app) => app.permissions.map((permission) => {
           const parsed = permissionToResourceAction(permission);
-          return parsed ? [`${parsed.resource}:${parsed.action}`, {
-            resource: parsed.resource,
-            action: parsed.action,
-            risk: permissionRisk(parsed.resource, parsed.action),
-          }] as [string, any] : null;
+          return parsed ? [`${parsed.resource}:${parsed.action}`, permissionTarget(parsed.resource, parsed.action, {
+            label: app.name,
+            source: `Native app: ${app.name}`,
+            category: "Application",
+          })] as [string, any] : null;
         }).filter((entry): entry is [string, any] => Boolean(entry))),
+        ...tables.flatMap((table) => fieldTargetsForTable(table.id, [
+          { name: "name", label: "Name" },
+          ...(table.hasNumber ? [{ name: "number", label: "Number" }] : []),
+          ...(table.provider === "cmdb-class" ? [{ name: "environment", label: "Environment" }] : []),
+          ...table.attributes.map((attr) => ({ name: attr.name, label: attr.displayName || attr.name })),
+        ]).map((target): [string, any] => [`${target.resource}:${target.action}`, permissionTarget(target.resource, target.action, {
+          label: `${table.label} / ${target.label}`,
+          source: `Table field: ${table.label}`,
+          category: "Field",
+          risk: target.risk,
+        })])),
       ];
       const permissionTargets = Array.from(new Map(permissionEntries).values())
         .sort((a: any, b: any) => `${a.resource}:${a.action}`.localeCompare(`${b.resource}:${b.action}`));
@@ -508,6 +578,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         newValues: result.rows[0],
         metadata: { source: "api.admin", surface: "admin-console" },
       });
+      if (body.key === "security.field_restrictions") clearFieldRestrictionCache();
       return { property: result.rows[0] };
     } catch (err: any) {
       if (err.code === "23505") {
@@ -542,6 +613,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         newValues: result.rows[0],
         metadata: { source: "api.admin", surface: "admin-console" },
       });
+      if (key === "security.field_restrictions") clearFieldRestrictionCache();
       return { property: result.rows[0] };
     } catch (err: any) {
       fastify.log.error(err);
@@ -562,6 +634,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         oldValues: existing.rows[0] || { key },
         metadata: { source: "api.admin", surface: "admin-console" },
       });
+      if (key === "security.field_restrictions") clearFieldRestrictionCache();
       return { success: true };
     } catch (err: any) {
       fastify.log.error(err);

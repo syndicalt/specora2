@@ -40,6 +40,7 @@ const APP_IDS = [
   "asset-command",
   "discovery-insights",
   "health-monitor",
+  "customer-portal",
 ];
 
 function resetRegisteredTools() {
@@ -74,6 +75,30 @@ function makePg(allowed = true) {
       if (sql.includes("INSERT INTO incident_events")) {
         return { rows: [] };
       }
+      if (sql.includes("UPDATE incidents SET status = $1::text")) {
+        return { rows: [{ id: params?.[1], title: "Checkout latency", status: params?.[0], severity: "high" }] };
+      }
+      if (sql.includes("SELECT * FROM incidents WHERE id = $1")) {
+        return { rows: [{ id: params?.[0], title: "Checkout latency", severity: "high", status: "triaging", ci_id: "ci-1" }] };
+      }
+      if (sql.includes("SELECT ci_id, role, distance FROM incident_cis")) {
+        return { rows: [{ ci_id: "ci-1", role: "primary", distance: 0 }] };
+      }
+      if (sql.includes("FROM incident_events e")) {
+        return { rows: [] };
+      }
+      if (sql.includes("FROM incident_actions")) {
+        return { rows: [] };
+      }
+      if (sql.includes("FROM incident_roles")) {
+        return { rows: [] };
+      }
+      if (sql.includes("FROM incident_postmortems")) {
+        return { rows: [] };
+      }
+      if (sql.includes("related_changes")) {
+        return { rows: [{ id: "chg-1", title: "Deploy checkout", status: "scheduled", priority: 2, planned_start_at: "2026-04-26T12:00:00.000Z" }] };
+      }
       if (sql.includes("SELECT * FROM knowledge_items") && sql.includes("status = 'published'")) {
         return { rows: [] };
       }
@@ -96,6 +121,60 @@ function makePg(allowed = true) {
       if (sql.includes("UPDATE asset_records SET location")) {
         return { rows: [] };
       }
+      if (sql.includes("FROM catalog_items") && sql.includes("status = 'published'") && sql.includes("ORDER BY category")) {
+        return {
+          rows: [{
+            id: "cat-1",
+            key: "request-application-access",
+            title: "Request Application Access",
+            category: "Access",
+            item_type: "access_request",
+            questions: [],
+            fulfillment: [],
+          }],
+        };
+      }
+      if (sql.includes("FROM catalog_items") && sql.includes("item_type = $1")) {
+        return {
+          rows: [{
+            id: "cat-1",
+            key: "request-application-access",
+            title: "Request Application Access",
+            category: "Access",
+            item_type: params?.[0],
+            questions: [{ key: "application", label: "Application", required: true }],
+            fulfillment: [{ type: "approval" }],
+          }],
+        };
+      }
+      if (sql.includes("FROM support_channels") && sql.includes("enabled = TRUE")) {
+        return { rows: [{ id: "channel-1", name: "Service Desk Callback", channel_type: "callback", target: "service-desk" }] };
+      }
+      if (sql.includes("FROM catalog_requests") && sql.includes("requester_id")) {
+        return { rows: [] };
+      }
+      if (sql.includes("INSERT INTO catalog_requests")) {
+        return {
+          rows: [{
+            id: "request-1",
+            number: "REQ000001",
+            requester_id: params?.[0],
+            catalog_item_id: params?.[1],
+            title: params?.[2],
+            request_type: params?.[4],
+            status: "submitted",
+            answers: params?.[8],
+            ai_resolution: params?.[9],
+            fulfillment_plan: params?.[10],
+          }],
+        };
+      }
+      if (sql.includes("INSERT INTO catalog_request_events")) {
+        return { rows: [] };
+      }
+      if (sql.includes("INSERT INTO support_handoffs")) {
+        return { rows: [{ id: "handoff-1", channel_id: params?.[0], requester_id: params?.[1], request_id: params?.[2], status: "requested" }] };
+      }
       return { rows: [] };
     }),
   };
@@ -107,6 +186,28 @@ async function buildApp(options: {
 } = {}) {
   const app = Fastify();
   app.decorate("pg", makePg(options.allowed ?? true));
+  app.decorate("neo4j", {
+    session: vi.fn(() => ({
+      run: vi.fn(async (cypher: string) => {
+        if (cypher.includes("OPTIONAL MATCH")) {
+          return {
+            records: [{
+              get: (key: string) => ({
+                id: "ci-1",
+                name: "Checkout API",
+                class: "ApplicationService",
+                environment: "Production",
+                health: 0.92,
+                relCount: { toNumber: () => 1 },
+              } as any)[key],
+            }],
+          };
+        }
+        return { records: [] };
+      }),
+      close: vi.fn(async () => {}),
+    })),
+  });
   app.decorate("authenticate", async (request: any) => {
     request.user = {
       id: "550e8400-e29b-41d4-a716-446655440001",
@@ -140,6 +241,26 @@ describe("appToolRoutes with registered native app tools", () => {
     const body = JSON.parse(res.payload);
     expect(body.some((tool: any) => tool.name === "incident-manager_create_incident")).toBe(true);
     expect(body.some((tool: any) => tool.name === "incident-manager_get_incident_details")).toBe(true);
+  });
+
+  it("resolves portal intent and submits a contextual customer request", async () => {
+    const app = await buildApp({ role: "operator" });
+
+    const resolved = await app.inject({
+      method: "POST",
+      url: "/api/apps/customer-portal/tools/resolve_intent",
+      payload: { message: "I need access to the billing dashboard" },
+    });
+    expect(resolved.statusCode).toBe(200);
+    expect(JSON.parse(resolved.payload)).toMatchObject({ intent: "access_request" });
+
+    const submitted = await app.inject({
+      method: "POST",
+      url: "/api/apps/customer-portal/tools/submit_request",
+      payload: { catalogItemId: "cat-1", title: "Request Application Access", requestType: "access_request" },
+    });
+    expect(submitted.statusCode).toBe(200);
+    expect(JSON.parse(submitted.payload)).toMatchObject({ id: "request-1", number: "REQ000001" });
   });
 
   it("executes an incident creation workflow through RBAC and the tool registry", async () => {
@@ -183,6 +304,41 @@ describe("appToolRoutes with registered native app tools", () => {
     expect((app as any).pg.query).not.toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO incidents"),
       expect.anything()
+    );
+  });
+
+  it("loads incident details with related changes using a Postgres-safe distinct ordering query", async () => {
+    const app = await buildApp({ role: "operator" });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/apps/incident-manager/tools/get_incident_details",
+      payload: { incidentId: "inc-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.relatedChanges[0]).toMatchObject({ id: "chg-1", title: "Deploy checkout" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("related_changes"),
+      [["ci-1"]]
+    );
+  });
+
+  it("transitions incidents with explicit parameter casts for command actions", async () => {
+    const app = await buildApp({ role: "operator" });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/apps/incident-manager/tools/transition_incident",
+      payload: { incidentId: "550e8400-e29b-41d4-a716-446655440099", status: "investigating" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload)).toMatchObject({ status: "investigating" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("status = $1::text"),
+      ["investigating", "550e8400-e29b-41d4-a716-446655440099"]
     );
   });
 

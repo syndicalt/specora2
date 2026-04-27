@@ -21,6 +21,7 @@ import {
 
 type Incident = {
   id: string;
+  number?: string | null;
   title: string;
   description?: string;
   service?: string;
@@ -78,6 +79,10 @@ function when(value?: string) {
 function pct(value?: number) {
   if (value === undefined || value === null) return "0%";
   return `${Math.round(value <= 1 ? value * 100 : value)}%`;
+}
+
+function incidentNumber(incident: Incident) {
+  return incident.number || "Number not assigned";
 }
 
 export default function IncidentManagerApp({ shell }: { shell: ShellAPI }) {
@@ -213,7 +218,7 @@ export default function IncidentManagerApp({ shell }: { shell: ShellAPI }) {
 
   function orchestrateInChat(incident?: Incident) {
     const prompt = incident
-      ? `Take command of incident ${incident.id}. Summarize current state, triage it, recommend safe remediation, draft a stakeholder update, and tell me the next human decision needed.`
+      ? `Take command of incident ${incidentNumber(incident)}. Summarize current state, triage it, recommend safe remediation, draft a stakeholder update, and tell me the next human decision needed.`
       : "Review active incidents. Prioritize by severity, business impact, AI confidence, related changes, and remediation readiness.";
     navigator.clipboard?.writeText(prompt).catch(() => undefined);
     shell.notify("Incident prompt copied. Open chat with Ctrl+K and paste it.", "info");
@@ -334,7 +339,8 @@ export default function IncidentManagerApp({ shell }: { shell: ShellAPI }) {
                   <Pill className={STATUS_CLASS[selected.status]}>{label(selected.status)}</Pill>
                   <span className={`text-xs font-semibold uppercase ${SEVERITY_CLASS[selected.severity] || "text-gray-300"}`}>{selected.severity}</span>
                 </div>
-                <h2 className="text-lg font-semibold">{selected.title}</h2>
+                <div className="font-mono text-xs text-gray-500">{incidentNumber(selected)}</div>
+                <h2 className="mt-1 text-lg font-semibold">{selected.title}</h2>
                 <p className="mt-1 text-sm text-gray-500">{selected.service || selected.ci_id || "No service mapped"} · {selected.source}</p>
               </div>
 
@@ -453,7 +459,10 @@ function IncidentList({ incidents, selectedId, onSelect, onTriage, busy, empty =
           <button onClick={() => onSelect(incident.id)} className="block w-full text-left">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="truncate text-sm font-medium text-gray-100">{incident.title}</div>
+                <div className="flex min-w-0 items-center gap-2">
+                  {incident.number && <span className="shrink-0 font-mono text-xs text-indigo-300">{incident.number}</span>}
+                  <div className="truncate text-sm font-medium text-gray-100">{incident.title}</div>
+                </div>
                 <div className="mt-1 text-xs text-gray-500">{incident.service || incident.ci_id || "unmapped"} · {when(incident.created_at)}</div>
               </div>
               <div className="flex shrink-0 items-center gap-2">

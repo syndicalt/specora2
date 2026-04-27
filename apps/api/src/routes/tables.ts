@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "crypto";
 import neo4j from "neo4j-driver";
 import { hasPermission, resolveUserRole } from "../services/rbac";
+import { type FieldAccess, resolveFieldAccess } from "../services/fieldRbac";
 import { assignRecordNumberToRow } from "../services/numberSequences";
 import { recordAuditEvent } from "../services/auditLog";
 
@@ -48,6 +49,9 @@ type TableDefinition = {
     isKeyAttribute: boolean;
     enumValues?: string[];
     referenceClass?: string;
+    canRead?: boolean;
+    canWrite?: boolean;
+    isRestricted?: boolean;
   }>;
 };
 
@@ -103,6 +107,11 @@ const POSTGRES_TABLES: PostgresTableRegistration[] = [
   { tableName: "asset_scan_events", label: "Asset Scan Events", category: "itam", nameField: "value", searchableFields: ["scan_type", "value", "action", "location", "condition"] },
   { tableName: "asset_reconciliation_runs", label: "Asset Reconciliation Runs", category: "itam", nameField: "summary", searchableFields: ["type", "status", "summary"] },
   { tableName: "asset_exceptions", label: "Asset Exceptions", category: "itam", nameField: "title", searchableFields: ["title", "detail", "type", "severity", "status"] },
+  { tableName: "catalog_items", label: "Catalog Items", category: "platform", nameField: "title", searchableFields: ["title", "description", "category", "item_type", "status"] },
+  { tableName: "catalog_requests", label: "Catalog Requests", category: "platform", nameField: "title", searchableFields: ["number", "title", "description", "request_type", "status", "source"] },
+  { tableName: "catalog_request_events", label: "Catalog Request Events", category: "platform", nameField: "message", searchableFields: ["type", "message"] },
+  { tableName: "support_channels", label: "Support Channels", category: "platform", nameField: "name", searchableFields: ["name", "channel_type", "description", "target"] },
+  { tableName: "support_handoffs", label: "Support Handoffs", category: "platform", nameField: "reason", searchableFields: ["status", "reason"] },
 ];
 
 const AUDIT_COLUMNS = new Set(["created_at", "updated_at"]);
@@ -198,7 +207,7 @@ async function canUseTable(fastify: FastifyInstance, role: string | null, action
   return hasPermission(fastify.pg, { role, resource: "tables", action });
 }
 
-async function getTables(fastify: FastifyInstance): Promise<TableDefinition[]> {
+export async function getTables(fastify: FastifyInstance): Promise<TableDefinition[]> {
   const [classes, columns] = await Promise.all([
     fastify.pg.query(
     `SELECT c.id, c.name, c.display_name, c.description, c.icon, c.color,
@@ -486,10 +495,94 @@ function postgresRecord(table: TableDefinition, row: Record<string, unknown>) {
   };
 }
 
+function tableFieldNames(table: TableDefinition): string[] {
+  const names = ["id", "name"];
+  if (table.hasNumber) names.push("number");
+  if (table.provider === "cmdb-class") names.push("environment");
+  names.push(...table.attributes.map((attr) => attr.name));
+  return Array.from(new Set(names));
+}
+
+function writableTableFieldNames(table: TableDefinition): string[] {
+  const names = ["name"];
+  if (table.provider === "cmdb-class") names.push("environment");
+  names.push(...table.attributes.map((attr) => attr.name));
+  return Array.from(new Set(names));
+}
+
+async function tableWithFieldAccess(
+  fastify: FastifyInstance,
+  role: string,
+  table: TableDefinition
+): Promise<{ table: TableDefinition; access: Map<string, FieldAccess> }> {
+  const access = await resolveFieldAccess({
+    pg: fastify.pg,
+    role,
+    tableId: table.id,
+    fieldNames: tableFieldNames(table),
+    writableFieldNames: writableTableFieldNames(table),
+  });
+  return {
+    table: {
+      ...table,
+      attributes: table.attributes.map((attr) => {
+        const field = access.get(attr.name);
+        return {
+          ...attr,
+          canRead: field?.read ?? true,
+          canWrite: field?.write ?? true,
+          isRestricted: field?.restricted ?? false,
+        };
+      }),
+    },
+    access,
+  };
+}
+
+function assertReadableFilters(filters: TableFilter[], access: Map<string, FieldAccess>) {
+  for (const filter of filters) {
+    const field = access.get(filter.field);
+    if (field && !field.read) {
+      return filter.field;
+    }
+  }
+  return null;
+}
+
+function redactRecord(record: any, access: Map<string, FieldAccess>) {
+  const redactedFields: string[] = [];
+  const next = { ...record, attributes: { ...(record.attributes || {}) } };
+  for (const [field, fieldAccess] of access) {
+    if (fieldAccess.read) continue;
+    redactedFields.push(field);
+    if (field === "name") next.name = null;
+    else if (field === "number") next.number = null;
+    else if (field === "environment") next.environment = null;
+    else if (field in next.attributes) next.attributes[field] = null;
+    else if (field in next) next[field] = null;
+  }
+  if (redactedFields.length) next._redactedFields = redactedFields;
+  return next;
+}
+
+function assertWritablePayload(
+  body: { name?: string; environment?: string; attributes?: Record<string, unknown> },
+  access: Map<string, FieldAccess>
+) {
+  if (body.name !== undefined && access.get("name")?.write === false) return "name";
+  if (body.environment !== undefined && access.get("environment")?.write === false) return "environment";
+  const attrs = splitAttrs(body.attributes);
+  for (const key of Object.keys(attrs)) {
+    if (access.get(key)?.write === false) return key;
+  }
+  return null;
+}
+
 async function listPostgresRecords(
   fastify: FastifyInstance,
   table: TableDefinition,
-  query: { limit?: string; offset?: string; q?: string; filters?: string }
+  query: { limit?: string; offset?: string; q?: string; filters?: string },
+  access: Map<string, FieldAccess>
 ) {
   if (!table.tableName) throw new Error("Missing table name");
   const tableName = quoteIdentifier(table.tableName);
@@ -499,8 +592,10 @@ async function listPostgresRecords(
   const whereParts: string[] = [];
   if (query.q?.trim()) {
     const searchable = table.searchableFields?.length ? table.searchableFields : [table.nameField || "id"];
+    const readableSearchable = searchable.filter((field) => access.get(field)?.read !== false);
+    if (!readableSearchable.length) return { table, records: [], total: 0 };
     params.push(`%${query.q.trim()}%`);
-    whereParts.push(`(${searchable.map((field) => `LOWER(${quoteIdentifier(field)}::text) LIKE LOWER($${params.length})`).join(" OR ")})`);
+    whereParts.push(`(${readableSearchable.map((field) => `LOWER(${quoteIdentifier(field)}::text) LIKE LOWER($${params.length})`).join(" OR ")})`);
   }
   whereParts.push(...buildPostgresFilterWhere(table, parseFilters(query.filters), params));
   const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
@@ -515,16 +610,18 @@ async function listPostgresRecords(
   ]);
   return {
     table,
-    records: rows.rows.map((row: any) => postgresRecord(table, row)),
+    records: rows.rows.map((row: any) => redactRecord(postgresRecord(table, row), access)),
     total: count.rows[0]?.total || 0,
   };
 }
 
-async function getPostgresRecord(fastify: FastifyInstance, table: TableDefinition, id: string) {
+async function getPostgresRecord(fastify: FastifyInstance, table: TableDefinition, id: string, access?: Map<string, FieldAccess>) {
   if (!table.tableName) throw new Error("Missing table name");
   const result = await fastify.pg.query(`SELECT * FROM ${quoteIdentifier(table.tableName)} WHERE id = $1`, [id]);
   const row = result.rows[0];
-  return row ? postgresRecord(table, row) : null;
+  if (!row) return null;
+  const record = postgresRecord(table, row);
+  return access ? redactRecord(record, access) : record;
 }
 
 function postgresWriteFields(table: TableDefinition, body: { name?: string; attributes?: Record<string, unknown> }) {
@@ -593,7 +690,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
     const tables = await getTables(fastify);
-    return { tables };
+    const withAccess = await Promise.all(tables.map((table) => tableWithFieldAccess(fastify, role!, table)));
+    return { tables: withAccess.map((item) => item.table) };
   });
 
   fastify.get("/api/tables/:table", { onRequest: [fastify.authenticate] }, async (request, reply) => {
@@ -604,7 +702,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const { table: tableId } = request.params as { table: string };
     const table = await resolveTable(fastify, tableId);
     if (!table) return reply.status(404).send({ error: "Table not found" });
-    return { table };
+    const withAccess = await tableWithFieldAccess(fastify, role!, table);
+    return { table: withAccess.table };
   });
 
   fastify.get("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {
@@ -617,8 +716,15 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const query = request.query as { limit?: string; offset?: string; q?: string; filters?: string };
     const table = await resolveTable(fastify, tableId);
     if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    const filters = parseFilters(query.filters);
+    const unreadableFilter = assertReadableFilters(filters, access);
+    if (unreadableFilter) {
+      return reply.status(403).send({ error: `Forbidden: cannot filter on ${unreadableFilter}` });
+    }
+    const safeQuery = { ...query, filters: filters.length ? JSON.stringify(filters) : undefined };
     if (table.provider === "postgres-table") {
-      return listPostgresRecords(fastify, table, query);
+      return listPostgresRecords(fastify, tableForUser, safeQuery, access);
     }
 
     const limit = Math.min(Math.max(Number(query.limit || 50), 1), 200);
@@ -626,10 +732,15 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const params: Record<string, unknown> = { className: table.className, limit: neo4j.int(limit), offset: neo4j.int(offset) };
     const whereParts = ["n.class = $className"];
     if (query.q?.trim()) {
-      whereParts.push("(toLower(n.name) CONTAINS toLower($q) OR toLower(n.id) CONTAINS toLower($q) OR toLower(coalesce(n.environment, '')) CONTAINS toLower($q))");
+      const searchFields = [
+        access.get("name")?.read !== false ? "toLower(n.name) CONTAINS toLower($q)" : null,
+        access.get("id")?.read !== false ? "toLower(n.id) CONTAINS toLower($q)" : null,
+        access.get("environment")?.read !== false ? "toLower(coalesce(n.environment, '')) CONTAINS toLower($q)" : null,
+      ].filter(Boolean);
+      if (searchFields.length) whereParts.push(`(${searchFields.join(" OR ")})`);
       params.q = query.q.trim();
     }
-    whereParts.push(...buildFilterWhere(table, parseFilters(query.filters), params));
+    whereParts.push(...buildFilterWhere(tableForUser, filters, params));
     const where = whereParts.join(" AND ");
 
     const session = fastify.neo4j.session();
@@ -650,8 +761,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
         params
       );
       return {
-        table,
-        records: result.records.map((record) => parseNode(record.get("n"))),
+        table: tableForUser,
+        records: result.records.map((record) => redactRecord(parseNode(record.get("n")), access)),
         total: countResult.records[0]?.get("total")?.toNumber?.() ?? Number(countResult.records[0]?.get("total") ?? 0),
       };
     } finally {
@@ -667,10 +778,11 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const { table: tableId, id } = request.params as { table: string; id: string };
     const table = await resolveTable(fastify, tableId);
     if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
     if (table.provider === "postgres-table") {
-      const record = await getPostgresRecord(fastify, table, id);
+      const record = await getPostgresRecord(fastify, tableForUser, id, access);
       if (!record) return reply.status(404).send({ error: "Record not found" });
-      return { table, record };
+      return { table: tableForUser, record };
     }
 
     const session = fastify.neo4j.session();
@@ -683,7 +795,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       );
       const record = result.records[0]?.get("n");
       if (!record) return reply.status(404).send({ error: "Record not found" });
-      return { table, record: parseNode(record) };
+      return { table: tableForUser, record: redactRecord(parseNode(record), access) };
     } finally {
       await session.close();
     }
@@ -699,8 +811,11 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const table = await resolveTable(fastify, tableId);
     if (!table) return reply.status(404).send({ error: "Table not found" });
     if (!body.name?.trim()) return reply.status(400).send({ error: "name is required" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    const blockedField = assertWritablePayload(body, access);
+    if (blockedField) return reply.status(403).send({ error: `Forbidden: cannot write ${blockedField}` });
     if (table.provider === "postgres-table") {
-      const record = await createPostgresRecord(fastify, table, body);
+      const record = await createPostgresRecord(fastify, tableForUser, body);
       await recordAuditEvent(fastify, {
         actorId: (request.user as any)?.id,
         action: "table.record.created",
@@ -709,7 +824,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         newValues: record,
         metadata: { source: "api.tables", provider: table.provider, tableName: table.tableName },
       });
-      return reply.status(201).send({ table, record });
+      return reply.status(201).send({ table: tableForUser, record: redactRecord(record, access) });
     }
 
     const attrs = splitAttrs(body.attributes);
@@ -738,7 +853,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         newValues: created,
         metadata: { source: "api.tables", provider: table.provider, className: table.className },
       });
-      return reply.status(201).send({ table, record: created });
+      return reply.status(201).send({ table: tableForUser, record: redactRecord(created, access) });
     } finally {
       await session.close();
     }
@@ -753,9 +868,12 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const body = request.body as { name?: string; environment?: string; attributes?: Record<string, unknown> };
     const table = await resolveTable(fastify, tableId);
     if (!table) return reply.status(404).send({ error: "Table not found" });
+    const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
+    const blockedField = assertWritablePayload(body, access);
+    if (blockedField) return reply.status(403).send({ error: `Forbidden: cannot write ${blockedField}` });
     if (table.provider === "postgres-table") {
       const before = await getPostgresRecord(fastify, table, id);
-      const record = await updatePostgresRecord(fastify, table, id, body);
+      const record = await updatePostgresRecord(fastify, tableForUser, id, body);
       if (!record) return reply.status(404).send({ error: "Record not found" });
       await recordAuditEvent(fastify, {
         actorId: (request.user as any)?.id,
@@ -766,7 +884,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         newValues: record,
         metadata: { source: "api.tables", provider: table.provider, tableName: table.tableName },
       });
-      return { table, record };
+      return { table: tableForUser, record: redactRecord(record, access) };
     }
 
     const hasAttributes = body.attributes !== undefined;
@@ -801,7 +919,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         newValues: updated,
         metadata: { source: "api.tables", provider: table.provider, className: table.className },
       });
-      return { table, record: updated };
+      return { table: tableForUser, record: redactRecord(updated, access) };
     } finally {
       await session.close();
     }

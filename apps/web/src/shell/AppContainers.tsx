@@ -18,6 +18,7 @@ const BUILT_IN_COMPONENTS: Record<string, () => Promise<{ default: React.Compone
   "knowledge-core": () => import("@/apps/knowledge-core"),
   "prevention-center": () => import("@/apps/prevention-center"),
   "asset-command": () => import("@/apps/asset-command"),
+  "customer-portal": () => import("@/apps/customer-portal"),
   "discovery-insights": () => import("@/apps/discovery-insights"),
   "health-monitor": () => import("@/apps/health-monitor"),
   "it-visibility-dcim": () => import("@/apps/it-visibility-dcim"),

@@ -15,6 +15,7 @@ const APP_RESOURCE_MAP: Record<string, string> = {
   "asset-command": "asset-command",
   "discovery-insights": "discovery",
   "health-monitor": "health-monitor",
+  "customer-portal": "customer-portal",
 };
 
 const WRITE_PREFIXES = [
@@ -28,7 +29,9 @@ const WRITE_PREFIXES = [
   "triage",
   "transition",
   "record",
+  "request",
   "resolve",
+  "submit",
   "draft",
   "publish",
 ];
