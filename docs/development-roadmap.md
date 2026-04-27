@@ -330,7 +330,7 @@ Important but not next-sprint critical:
 - Add knowledge freshness automation that turns stale articles into stewarded tasks.
 - Add incident prevention automation that opens prevention candidates from repeated incident patterns.
 - Add advanced DCIM facility modeling only when needed: imported floorplan images, CAD-like walls, zones, elevations, and environmental telemetry overlays.
-- Add production-grade SAML XML signature validation with canonicalization and IdP certificate verification, deepen IdP metadata ingestion, add OIDC ID-token/JWKS validation, and add advanced group-to-role mapping.
+- Deepen IdP metadata ingestion, automate SAML certificate rollover checks, and add advanced group-to-role mapping.
 
 ## Product Direction Guardrails
 

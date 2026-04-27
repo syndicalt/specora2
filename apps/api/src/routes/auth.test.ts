@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import bcrypt from "bcryptjs";
 import { createSign, generateKeyPairSync } from "crypto";
 import { inflateRawSync } from "zlib";
+import { SignedXml } from "xml-crypto";
 import { authRoutes } from "../routes/auth";
 import { hashRefreshToken } from "../services/authSessions";
 
@@ -195,6 +196,74 @@ function signedIdToken(payload: Record<string, unknown>, privateKey: string, kid
   signer.update(`${header}.${body}`);
   signer.end();
   return `${header}.${body}.${signer.sign(privateKey, "base64url")}`;
+}
+
+const SAML_TEST_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC+kIZB2LHr2k2R
+RQVQOsHtMKNLHq2cTfQLl988GWIgECkKP6xAxW6GWTqZ16ELZulcO0qePyyORJcp
+J2fJviVejkrHZSU/F9Bziszm7VAfr1z42vno2lyZ+beOkhVPJhVhfq38obNfWR02
+2LvzsJXqVO9DWaup5v6SYpR1Pbycp7e+VhQqJP6RgJ6Eo4HxadLxf/gIX94ajqB6
+2HpNCZf0avOJF++5DAitqTbLaR1uCihiSSxNbHl5T71jifrOMJasn3ot4CsktxhY
+pWBPCSNlfCs+CD9vM3rwf8EUs9YY7eWPyS0ghsX9ICCuH1EBGnOO8RYb6HQPUMdJ
+/dePc7xNAgMBAAECggEAQa51n+ds97JQDvR/rtX5tmOPvNoPk7KonYBUoJXNJOj9
+BDvLBq4l+Kdzk8fnCZOIdlI3V1DF7ilFApnC452mqq8Xph8+Fb+DCPf7xNJhzfH2
+9Q0gmvn8ddPEyR6fup6ROv/bPxqKxR/lelx8d7NTEKgCqa+UA+UKtHDG45wKUOHD
+pTY+TBsM0XJErTt60y/OaIt3XwM3GOEsL1RDDPKNfEh0lMTbrj4slid1WhOV8Osc
+9xZzSOLK2SVPSCB8cH5j9ShVrMQHy+wzrkCezh9IkgFg76zlEGDOK5BQ1dfVDePk
+OIKQZHhaBeWsvZyzCUbi2ufkMrbVsHQ1lNxc5zmk/wKBgQDf1zbsl9BCj+m+36iJ
+vRjseVgZbXpjxIXzxl4Bv33wCL/l0cfL5+PIx8d18+8eBpXto3cJRifNUgaofhYf
+oYLwD4/UXDHrA/7zWwAcWn18M1+Kfaq8KYr9tE9AdeCuIEH1wdPzE4OTEpYrOYT9
+0o3MpGpSr86SdW3BHRsU7p3YAwKBgQDZ8WzCMTIkAtLdUML10Rv+7Zd/Ml6LJdYd
+0leMjEfciuCtm6TLN/ToDmirV5xE4duOOqjhN+XsnJrfyLJ7j+zSmN1RoomzQbRh
+dakm7xCeIa9XsPt9PWAEvIEN5fYgOnBVjKiQfpL16wYkCwMX0Cln2tmNHMSw0GgE
+0fomJOOxbwKBgBE4i380Rs94JvGKX3sJU0uOIlsCczINwoh4sG7N/rBi2/CgbRCg
+7INb61qFw9W5h/taYiQSg6lmMCDyYl1Ynaw+ZkBeP3DnQ8wRKjcENzdA9I7BEEud
+npXaM2awKvL6hFiV6up+i9bazTbSHAszEbm2xH9MC0Z1RlZfGOBJY1dlAoGBAJHD
+XrIipR5gpRdQRJST3t2JmqF/1qvKCoK3g8aErCtc1xhF2Nnx+uKZgHfYiLOpO2bM
+5NZ8xFKUCyFQ4c6yW/oeMye+RcqWT0Y/o3peugaJEPTdcdY5jlacnNPm0c6MR0Vw
+Zez+Otwu7FR+6PqsRoUnYgl3DDYVrPxMU7nfQkoRAoGAA4VGiAJjgFKW7A2R6Ope
+zvzI5UGUBJbLr/M7NuTmfGH72MzZ7tbVgcFwc0M6xalJQ7OppRRiSwZdAxZ+4csL
+EyHPHgVWma5G84eeAdJIY7OkTT2DIub7AZ/cf+5TuSw3lN0M9MKgbNQ2Bx81aJZi
+qBlxv2F7IdsJ6AVlRVWLR3U=
+-----END PRIVATE KEY-----`;
+
+const SAML_TEST_CERT = `-----BEGIN CERTIFICATE-----
+MIIDGTCCAgGgAwIBAgIUHgrjBYQFi14xY/uYVbbzA58HHaYwDQYJKoZIhvcNAQEL
+BQAwHDEaMBgGA1UEAwwRU3BlY29yYSBTQU1MIFRlc3QwHhcNMjYwNDI3MjMzOTU1
+WhcNMjYwNDI4MjMzOTU1WjAcMRowGAYDVQQDDBFTcGVjb3JhIFNBTUwgVGVzdDCC
+ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAL6QhkHYsevaTZFFBVA6we0w
+o0serZxN9AuX3zwZYiAQKQo/rEDFboZZOpnXoQtm6Vw7Sp4/LI5ElyknZ8m+JV6O
+SsdlJT8X0HOKzObtUB+vXPja+ejaXJn5t46SFU8mFWF+rfyhs19ZHTbYu/OwlepU
+70NZq6nm/pJilHU9vJynt75WFCok/pGAnoSjgfFp0vF/+Ahf3hqOoHrYek0Jl/Rq
+84kX77kMCK2pNstpHW4KKGJJLE1seXlPvWOJ+s4wlqyfei3gKyS3GFilYE8JI2V8
+Kz4IP28zevB/wRSz1hjt5Y/JLSCGxf0gIK4fUQEac47xFhvodA9Qx0n9149zvE0C
+AwEAAaNTMFEwHQYDVR0OBBYEFAWh4TF9+hwgrO0ybliEPwq3NkUjMB8GA1UdIwQY
+MBaAFAWh4TF9+hwgrO0ybliEPwq3NkUjMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI
+hvcNAQELBQADggEBAKQK9pUhk3S2Ey2xXMpOu7AOwXppEjUiVM6Z0aUUohsuii0n
+G48/SsUjJ8Bv5of6K65Hkvw1dGOsEg56tavUpRIRO5h0I7DdrzBvvPuXZsD5m4+P
+l9LYOLVPRc/EBV0XcWo+uhkk9tvzduDB6uUsm0zQsrf2NJAAj82Irzb2L5pmeuFG
+QFL+djUbKPy5iVFKHNGQRaxgPYsGVzud4gdHYjuVUMMhQNagGQG7fIUSHynBIemq
+exAfEku+K1tK2rB3LlcnwDSgT/ixav55snqGAc9MZ51YaaHPNIUImNWNwwBUym/6
+EWFsMuKm3Njcdhbd7SvhfLxW6P8T/otoE/ZMdno=
+-----END CERTIFICATE-----`;
+
+const SAML_TEST_CERT_BODY = SAML_TEST_CERT
+  .replace(/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s+/g, "");
+
+function signSamlAssertion(assertionXml: string, privateKey: string, publicCert: string) {
+  const sig = new SignedXml({
+    privateKey,
+    publicCert,
+    signatureAlgorithm: "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
+    canonicalizationAlgorithm: "http://www.w3.org/2001/10/xml-exc-c14n#",
+  });
+  sig.addReference({
+    xpath: "//*[local-name(.)='Assertion']",
+    transforms: ["http://www.w3.org/2000/09/xmldsig#enveloped-signature", "http://www.w3.org/2001/10/xml-exc-c14n#"],
+    digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
+  });
+  sig.computeSignature(assertionXml, { location: { reference: "//*[local-name(.)='Subject']", action: "before" } });
+  return sig.getSignedXml();
 }
 
 describe("auth routes", () => {
@@ -513,6 +582,7 @@ describe("auth routes", () => {
       email_domains: ["example.com"],
       idp_entity_id: "https://accounts.google.com/o/saml2?idpid=C01s6h8ff",
       idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+      idp_cert: SAML_TEST_CERT_BODY,
       sp_entity_id: "http://localhost:4000/saml/sp/saml-1",
       default_role: "operator",
       attribute_mapping: { email: "email", name: "name", groups: "groups" },
@@ -523,7 +593,7 @@ describe("auth routes", () => {
     const samlResponse = `
       <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" Destination="http://localhost:4000/api/auth/sso/saml-1/acs">
         <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">https://accounts.google.com/o/saml2?idpid=C01s6h8ff</saml:Issuer>
-        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_assertion-1">
           <saml:Subject>
             <saml:NameID>alice@example.com</saml:NameID>
             <saml:SubjectConfirmation>
@@ -548,7 +618,7 @@ describe("auth routes", () => {
       url: "/api/auth/sso/saml-1/acs",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       payload: new URLSearchParams({
-        SAMLResponse: Buffer.from(samlResponse, "utf8").toString("base64"),
+        SAMLResponse: Buffer.from(signSamlAssertion(samlResponse, SAML_TEST_PRIVATE_KEY, SAML_TEST_CERT), "utf8").toString("base64"),
         RelayState: relayState,
       }).toString(),
     });
@@ -568,13 +638,14 @@ describe("auth routes", () => {
       provider: "saml",
       status: "active",
       idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+      idp_cert: SAML_TEST_CERT_BODY,
       sp_entity_id: "http://localhost:4000/saml/sp/saml-1",
     });
     const app = await buildApp(pg);
     const relayState = Buffer.from(JSON.stringify({ typ: "saml-state", configId: "saml-1", returnTo: "/admin" })).toString("base64url");
     const samlResponse = `
       <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
-        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_assertion-bad-audience">
           <saml:Subject><saml:NameID>alice@example.com</saml:NameID></saml:Subject>
           <saml:Conditions NotOnOrAfter="${new Date(Date.now() + 300000).toISOString()}">
             <saml:AudienceRestriction><saml:Audience>https://wrong.example/sp</saml:Audience></saml:AudienceRestriction>
@@ -587,7 +658,126 @@ describe("auth routes", () => {
       url: "/api/auth/sso/saml-1/acs",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       payload: new URLSearchParams({
+        SAMLResponse: Buffer.from(signSamlAssertion(samlResponse, SAML_TEST_PRIVATE_KEY, SAML_TEST_CERT), "utf8").toString("base64"),
+        RelayState: relayState,
+      }).toString(),
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(pg.users).toHaveLength(0);
+  });
+
+  it("rejects unsigned SAML assertions", async () => {
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "saml-1",
+      name: "Google SAML",
+      provider: "saml",
+      status: "active",
+      idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+      idp_cert: SAML_TEST_CERT_BODY,
+      sp_entity_id: "http://localhost:4000/saml/sp/saml-1",
+    });
+    const app = await buildApp(pg);
+    const relayState = Buffer.from(JSON.stringify({ typ: "saml-state", configId: "saml-1", returnTo: "/admin" })).toString("base64url");
+    const samlResponse = `
+      <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
+        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_assertion-unsigned">
+          <saml:Subject><saml:NameID>alice@example.com</saml:NameID></saml:Subject>
+          <saml:Conditions NotOnOrAfter="${new Date(Date.now() + 300000).toISOString()}">
+            <saml:AudienceRestriction><saml:Audience>http://localhost:4000/saml/sp/saml-1</saml:Audience></saml:AudienceRestriction>
+          </saml:Conditions>
+        </saml:Assertion>
+      </samlp:Response>`;
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sso/saml-1/acs",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
         SAMLResponse: Buffer.from(samlResponse, "utf8").toString("base64"),
+        RelayState: relayState,
+      }).toString(),
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(pg.users).toHaveLength(0);
+  });
+
+  it("rejects tampered signed SAML assertions", async () => {
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "saml-1",
+      name: "Google SAML",
+      provider: "saml",
+      status: "active",
+      idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+      idp_cert: SAML_TEST_CERT_BODY,
+      sp_entity_id: "http://localhost:4000/saml/sp/saml-1",
+    });
+    const app = await buildApp(pg);
+    const relayState = Buffer.from(JSON.stringify({ typ: "saml-state", configId: "saml-1", returnTo: "/admin" })).toString("base64url");
+    const samlResponse = `
+      <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
+        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_assertion-tampered">
+          <saml:Subject><saml:NameID>alice@example.com</saml:NameID></saml:Subject>
+          <saml:Conditions NotOnOrAfter="${new Date(Date.now() + 300000).toISOString()}">
+            <saml:AudienceRestriction><saml:Audience>http://localhost:4000/saml/sp/saml-1</saml:Audience></saml:AudienceRestriction>
+          </saml:Conditions>
+        </saml:Assertion>
+      </samlp:Response>`;
+    const tampered = signSamlAssertion(samlResponse, SAML_TEST_PRIVATE_KEY, SAML_TEST_CERT)
+      .replace("alice@example.com", "mallory@example.com");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sso/saml-1/acs",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        SAMLResponse: Buffer.from(tampered, "utf8").toString("base64"),
+        RelayState: relayState,
+      }).toString(),
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(pg.users).toHaveLength(0);
+  });
+
+  it("rejects SAML responses with duplicate assertion IDs", async () => {
+    const pg = new FakePg();
+    pg.ssoConfigs.push({
+      id: "saml-1",
+      name: "Google SAML",
+      provider: "saml",
+      status: "active",
+      idp_sso_url: "https://accounts.google.com/o/saml2/idp?idpid=C01s6h8ff",
+      idp_cert: SAML_TEST_CERT_BODY,
+      sp_entity_id: "http://localhost:4000/saml/sp/saml-1",
+    });
+    const app = await buildApp(pg);
+    const relayState = Buffer.from(JSON.stringify({ typ: "saml-state", configId: "saml-1", returnTo: "/admin" })).toString("base64url");
+    const signedResponse = signSamlAssertion(`
+      <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
+        <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_assertion-duplicate">
+          <saml:Subject><saml:NameID>alice@example.com</saml:NameID></saml:Subject>
+          <saml:Conditions NotOnOrAfter="${new Date(Date.now() + 300000).toISOString()}">
+            <saml:AudienceRestriction><saml:Audience>http://localhost:4000/saml/sp/saml-1</saml:Audience></saml:AudienceRestriction>
+          </saml:Conditions>
+        </saml:Assertion>
+      </samlp:Response>`, SAML_TEST_PRIVATE_KEY, SAML_TEST_CERT);
+    const wrapped = signedResponse.replace(
+      "</samlp:Response>",
+      `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_assertion-duplicate">
+        <saml:Subject><saml:NameID>mallory@example.com</saml:NameID></saml:Subject>
+      </saml:Assertion></samlp:Response>`
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/sso/saml-1/acs",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        SAMLResponse: Buffer.from(wrapped, "utf8").toString("base64"),
         RelayState: relayState,
       }).toString(),
     });

@@ -63,7 +63,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 
 - **Reporting API depth** — Completed: CAB evidence datasets and brief coverage metrics, knowledge feedback/gap datasets, knowledge trust/reuse metrics, operational readiness scoring, and CMDB data-quality readiness checks.
 - **Discovery RC push** — Completed: rollback records/UI, saved mapping profiles, richer AI mapping rationale, Admin-managed credential references with encrypted managed secrets, and edge/collector source registration with source binding.
-- **Operability and scale hardening** — Sprint 1 completed: API worker health checks with gRPC reachability, queue posture, stale/dead-letter counts, and Discovery job health. Sprint 2 completed: local restore rehearsal command with temporary PostgreSQL restore, migration status, Neo4j counts, upload checks, and JSON artifacts. Sprint 3 completed: stable direct API/web dev launcher for the Turbo/Next instability path. Sprint 4 completed: active SAML/OIDC provider readiness validation in Admin identity management. Sprint 5 completed: Redis service wired into local Compose for event propagation and shared permission cache. Sprint 6 completed: audit head anchoring records with provider/external reference payloads. Sprint 7 completed: OIDC RS256/JWKS signature validation plus issuer/audience/time-bound validation. Next sprint: SAML XML signature validation.
+- **Operability and scale hardening** — Sprint 1 completed: API worker health checks with gRPC reachability, queue posture, stale/dead-letter counts, and Discovery job health. Sprint 2 completed: local restore rehearsal command with temporary PostgreSQL restore, migration status, Neo4j counts, upload checks, and JSON artifacts. Sprint 3 completed: stable direct API/web dev launcher for the Turbo/Next instability path. Sprint 4 completed: active SAML/OIDC provider readiness validation in Admin identity management. Sprint 5 completed: Redis service wired into local Compose for event propagation and shared permission cache. Sprint 6 completed: audit head anchoring records with provider/external reference payloads. Sprint 7 completed: OIDC RS256/JWKS signature validation plus issuer/audience/time-bound validation. Sprint 8 completed: SAML XML signature validation bound to signed assertion references with duplicate-ID wrapping protection.
 - **Real-time events** — WebSocket pub/sub for event bus and SSE chat streaming.
 
 ## Technical Debt
@@ -74,7 +74,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - `GraphExplorer.tsx` remains in `components/` but appears unused; delete after migration confirmation.
 - Keep Provara and OpenAI fallback routing covered by tests as the chat/tool-call path evolves.
 - Replace websocket app-layer JSON ping with protocol-level `ping()` / `pong`.
-- Add full SAML/OIDC assertion validation and admin-managed enterprise IdP configuration.
+- Add enterprise IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.
 - Connect audit head anchoring to environment-specific immutable external stores for high-compliance deployments.
 
 ## Decisions Log

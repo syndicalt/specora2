@@ -2,6 +2,8 @@ import { FastifyInstance, FastifyRequest } from "fastify";
 import bcrypt from "bcryptjs";
 import { createHash, createPublicKey, createVerify, randomBytes, randomUUID } from "crypto";
 import { deflateRawSync } from "zlib";
+import { DOMParser } from "@xmldom/xmldom";
+import { SignedXml } from "xml-crypto";
 import { issueAuthTokens, listUserSessions, revokeRefreshToken, revokeUserSession, rotateRefreshToken } from "../services/authSessions";
 import { recordAuditEvent } from "../services/auditLog";
 import { clearPermissionCache } from "../services/rbac";
@@ -539,8 +541,58 @@ function validateSamlTime(value?: string, mode: "notBefore" | "notOnOrAfter" = "
   if (mode === "notOnOrAfter" && timestamp <= Date.now() - skewMs) throw new Error("SAML assertion has expired");
 }
 
-function parseSamlProfile(config: SsoConfig, encodedResponse: string, apiBase = publicApiUrl()): OAuthProfile {
+function samlCertPem(cert?: string | null) {
+  const compact = (cert || "").replace(/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s+/g, "");
+  if (!compact) return "";
+  return `-----BEGIN CERTIFICATE-----\n${compact.match(/.{1,64}/g)?.join("\n") || compact}\n-----END CERTIFICATE-----`;
+}
+
+function assertNoDuplicateSamlIds(doc: ReturnType<DOMParser["parseFromString"]>) {
+  const seen = new Set<string>();
+  const nodes = doc.getElementsByTagName("*");
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes.item(index);
+    if (!node?.attributes) continue;
+    for (const attr of ["ID", "Id", "AssertionID"]) {
+      const value = node.getAttribute(attr);
+      if (!value) continue;
+      if (seen.has(value)) throw new Error("SAML response contains duplicate ID values");
+      seen.add(value);
+    }
+  }
+}
+
+function validateSamlSignature(config: SsoConfig, encodedResponse: string) {
   const xml = Buffer.from(encodedResponse, "base64").toString("utf8");
+  const cert = samlCertPem(config.idp_cert);
+  if (!cert) throw new Error("SAML IdP signing certificate is required");
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+  assertNoDuplicateSamlIds(doc);
+  const signatureNodes = doc.getElementsByTagNameNS("http://www.w3.org/2000/09/xmldsig#", "Signature");
+  const signatures = Array.from({ length: signatureNodes.length }, (_, index) => signatureNodes.item(index)).filter(Boolean) as any[];
+  if (!signatures.length) throw new Error("SAML response is not signed");
+
+  const errors: string[] = [];
+  for (const signature of signatures) {
+    const verifier = new SignedXml({ publicCert: cert, getCertFromKeyInfo: () => null });
+    try {
+      verifier.loadSignature(signature);
+      if (!verifier.checkSignature(xml)) {
+        errors.push("signature check failed");
+        continue;
+      }
+      const signedReference = verifier.getSignedReferences().find((reference) => /<[^>]*Assertion\b/i.test(reference));
+      if (signedReference) return signedReference;
+      errors.push("signed reference did not include assertion");
+    } catch (error: any) {
+      errors.push(error?.message || "signature check failed");
+    }
+  }
+  throw new Error(`SAML signature validation failed${errors.length ? `: ${errors.join("; ")}` : ""}`);
+}
+
+function parseSamlProfile(config: SsoConfig, encodedResponse: string, apiBase = publicApiUrl()): OAuthProfile {
+  const xml = validateSamlSignature(config, encodedResponse);
   if (!xml.includes("Assertion")) throw new Error("SAML response did not include an assertion");
 
   const responseTag = xmlFirstTag(xml, "Response") || "";

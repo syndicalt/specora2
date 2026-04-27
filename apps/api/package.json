@@ -23,6 +23,7 @@
     "@specora/core": "workspace:*",
     "@specora/db": "workspace:*",
     "@specora/sdk": "workspace:*",
+    "@xmldom/xmldom": "^0.9.10",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.4.5",
     "fastify": "^4.26.0",
@@ -33,7 +34,8 @@
     "neo4j-driver": "^5.18.0",
     "openai": "^4.38.0",
     "pg": "^8.20.0",
-    "pino-pretty": "^11.0.0"
+    "pino-pretty": "^11.0.0",
+    "xml-crypto": "^6.1.2"
   },
   "devDependencies": {
     "@specora/eslint-config": "workspace:*",
