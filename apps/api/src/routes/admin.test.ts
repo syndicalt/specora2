@@ -428,6 +428,9 @@ describe("adminRoutes", () => {
             old_values: null,
             new_values: { role: "operator" },
             metadata: { source: "api.admin" },
+            previous_hash: null,
+            entry_hash: "abc123",
+            integrity_version: 1,
             created_at: "2026-04-26T12:00:00.000Z",
           }],
           rowCount: 1,
@@ -451,7 +454,27 @@ describe("adminRoutes", () => {
     });
     expect(exported.statusCode).toBe(200);
     expect(exported.headers["content-type"]).toContain("text/csv");
+    expect(exported.headers["x-specora-export-digest"]).toMatch(/^[a-f0-9]{64}$/);
+    expect(exported.headers["x-specora-export-signature"]).toMatch(/^[a-f0-9]{64}$/);
     expect(exported.payload).toContain("rbac.permission.created");
+  });
+
+  it("verifies audit log integrity from admin route", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("FROM audit_log") && sql.includes("ORDER BY created_at ASC")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/admin/audit-log/integrity",
+      headers: authHeader(app),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload)).toMatchObject({ verified: true, checked: 0 });
   });
 
   it("manages number sequences", async () => {

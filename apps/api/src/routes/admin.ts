@@ -1,9 +1,10 @@
 import { FastifyInstance } from "fastify";
+import { createHash, createHmac } from "crypto";
 import { requirePermission, clearPermissionCache } from "../services/rbac";
 import { getAllRegisteredApps, permissionToResourceAction } from "../services/appRegistry";
 import { clearFieldRestrictionCache, fieldTargetsForTable, resolveFieldAccess } from "../services/fieldRbac";
 import { getTables } from "./tables";
-import { recordAuditEvent } from "../services/auditLog";
+import { recordAuditEvent, verifyAuditIntegrity } from "../services/auditLog";
 import { getAllAppToolDefinitions } from "../services/appTools";
 import { resolveAppToolPolicy } from "./appToolPolicy";
 
@@ -145,8 +146,17 @@ function auditRow(row: any) {
     oldValues: row.old_values,
     newValues: row.new_values,
     metadata: row.metadata,
+    previousHash: row.previous_hash || null,
+    entryHash: row.entry_hash || null,
+    integrityVersion: row.integrity_version || 1,
     createdAt: row.created_at,
   };
+}
+
+function exportSignature(body: string, secret?: string) {
+  const digest = createHash("sha256").update(body).digest("hex");
+  const signature = createHmac("sha256", secret || "specora-dev-secret").update(digest).digest("hex");
+  return { digest, signature, algorithm: "sha256+hmac-sha256" };
 }
 
 type AdminTableField = { name: string; label: string; writable: boolean };
@@ -1484,7 +1494,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     try {
       const result = await fastify.pg.query(
         `SELECT a.id, a.actor_id, u.email AS actor_email, u.name AS actor_name, a.action, a.entity_type, a.entity_id,
-                a.old_values, a.new_values, a.metadata, a.created_at
+                a.old_values, a.new_values, a.metadata, a.previous_hash, a.entry_hash, a.integrity_version, a.created_at
          FROM audit_log a
          LEFT JOIN users u ON u.id = a.actor_id
          WHERE ${where.join(" AND ")}
@@ -1502,18 +1512,32 @@ export async function adminRoutes(fastify: FastifyInstance) {
       const rows = result.rows.map(auditRow);
       if (query.format === "csv") {
         const csv = [
-          ["id", "createdAt", "actorId", "actorEmail", "action", "entityType", "entityId", "metadata"].join(","),
-          ...rows.map((row) => [row.id, row.createdAt, row.actorId, row.actorEmail, row.action, row.entityType, row.entityId, row.metadata].map(csvCell).join(",")),
+          ["id", "createdAt", "actorId", "actorEmail", "action", "entityType", "entityId", "previousHash", "entryHash", "integrityVersion", "metadata"].join(","),
+          ...rows.map((row) => [row.id, row.createdAt, row.actorId, row.actorEmail, row.action, row.entityType, row.entityId, row.previousHash, row.entryHash, row.integrityVersion, row.metadata].map(csvCell).join(",")),
         ].join("\n");
+        const signature = exportSignature(csv, process.env.JWT_SECRET);
         return reply
           .header("content-type", "text/csv; charset=utf-8")
           .header("content-disposition", "attachment; filename=\"specora-audit-log.csv\"")
+          .header("x-specora-export-digest", signature.digest)
+          .header("x-specora-export-signature", signature.signature)
+          .header("x-specora-export-algorithm", signature.algorithm)
           .send(csv);
       }
       return { entries: rows, total: count.rows[0]?.total || 0, limit, offset };
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to fetch audit log" });
+    }
+  });
+
+  fastify.get("/api/admin/audit-log/integrity", { onRequest: [fastify.authenticate, requirePermission("audit-log", "read")] }, async (request, reply) => {
+    const query = request.query as { limit?: string };
+    try {
+      return await verifyAuditIntegrity(fastify.pg, parsePositiveInt(query.limit, 10000, 100000));
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to verify audit integrity" });
     }
   });
 

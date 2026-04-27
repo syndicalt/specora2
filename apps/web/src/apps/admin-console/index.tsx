@@ -257,7 +257,18 @@ interface AuditEntry {
   entityType: string;
   entityId: string;
   metadata: any;
+  previousHash: string | null;
+  entryHash: string | null;
+  integrityVersion: number;
   createdAt: string;
+}
+
+interface AuditIntegrity {
+  verified: boolean;
+  checked: number;
+  legacyRows: number;
+  headHash: string | null;
+  failures: Array<{ id: string; reason: string; expected?: string; actual?: string }>;
 }
 
 interface ProvisioningJob {
@@ -378,6 +389,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditSearch, setAuditSearch] = useState("");
+  const [auditIntegrity, setAuditIntegrity] = useState<AuditIntegrity | null>(null);
   const [openRbacUtilities, setOpenRbacUtilities] = useState<Record<string, boolean>>({
     app: true,
     tool: false,
@@ -419,7 +431,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -429,6 +441,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
         fetch(`${API_URL}/api/admin/rbac/field-restrictions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/rbac/policy-drift`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/audit-log?limit=25`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/audit-log/integrity`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/apps/provisioning-jobs`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/operational-intelligence`, { headers: { Authorization: `Bearer ${token || ""}` } }),
       ]);
@@ -445,6 +458,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const fieldRestrictionsData = fieldRestrictionsRes.ok ? await fieldRestrictionsRes.json() : { tables: [] };
       const driftData = driftRes.ok ? await driftRes.json() : null;
       const auditData = auditRes.ok ? await auditRes.json() : { entries: [], total: 0 };
+      const integrityData = integrityRes.ok ? await integrityRes.json() : null;
       const jobsData = jobsRes.ok ? await jobsRes.json() : { jobs: [] };
       const opsData = opsRes.ok ? await opsRes.json() : null;
 
@@ -463,6 +477,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setPolicyDrift(driftData);
       setAuditEntries(auditData.entries || []);
       setAuditTotal(auditData.total || 0);
+      setAuditIntegrity(integrityData);
       setProvisioningJobs(jobsData.jobs || []);
       setOperationalIntelligence(opsData);
       setAccessProbe((current) => {
@@ -570,6 +585,22 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       if (!res.ok) throw new Error(data.error || "Failed to search audit log");
       setAuditEntries(data.entries || []);
       setAuditTotal(data.total || 0);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function verifyAuditLog() {
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/audit-log/integrity`, { headers: { Authorization: `Bearer ${token || ""}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to verify audit integrity");
+      setAuditIntegrity(data);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1433,6 +1464,25 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
 
             {openRbacUtilities.audit && (
               <div className="mt-4 space-y-4">
+                {auditIntegrity && (
+                  <div className={`rounded-lg border p-3 ${auditIntegrity.verified ? "border-emerald-500/30 bg-emerald-500/10" : "border-red-500/30 bg-red-500/10"}`}>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
+                        {auditIntegrity.verified ? <CheckCircle2 className="h-4 w-4 text-emerald-300" /> : <XCircle className="h-4 w-4 text-red-300" />}
+                        Audit chain {auditIntegrity.verified ? "verified" : "failed verification"}
+                      </div>
+                      <button type="button" onClick={verifyAuditLog} disabled={saving} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50">
+                        Verify chain
+                      </button>
+                    </div>
+                    <div className="mt-2 grid gap-2 text-xs text-gray-500 md:grid-cols-3">
+                      <div>Checked <span className="text-gray-200">{auditIntegrity.checked}</span></div>
+                      <div>Legacy <span className="text-gray-200">{auditIntegrity.legacyRows}</span></div>
+                      <div>Failures <span className={auditIntegrity.failures.length ? "text-red-200" : "text-gray-200"}>{auditIntegrity.failures.length}</span></div>
+                      <div className="truncate md:col-span-3">Head <span className="font-mono text-gray-400">{auditIntegrity.headHash || "-"}</span></div>
+                    </div>
+                  </div>
+                )}
                 <form onSubmit={searchAuditLog} className="flex flex-col gap-3 md:flex-row">
                   <div className="relative flex-1">
                     <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-gray-500" />
@@ -1458,7 +1508,10 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                         <div className="text-xs text-gray-600">{new Date(entry.createdAt).toLocaleString()}</div>
                       </div>
                       <div className="mt-1 text-sm text-gray-400">{entry.entityType} <span className="font-mono text-xs text-gray-600">{entry.entityId}</span></div>
-                      <div className="mt-1 text-xs text-gray-600">{entry.actorEmail || entry.actorName || entry.actorId || "system"}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                        <span>{entry.actorEmail || entry.actorName || entry.actorId || "system"}</span>
+                        {entry.entryHash && <span className="font-mono">hash {entry.entryHash.slice(0, 12)}</span>}
+                      </div>
                     </div>
                   ))}
                   {!auditEntries.length && <div className="px-3 py-8 text-center text-sm text-gray-500">No audit events match this search.</div>}

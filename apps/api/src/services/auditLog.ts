@@ -1,4 +1,5 @@
 import { FastifyInstance } from "fastify";
+import { createHash } from "crypto";
 import { subscribe } from "./eventBus";
 
 type AuditEntry = {
@@ -17,18 +18,96 @@ function normalizeActorId(actorId?: string | null) {
   return actorId && UUID_PATTERN.test(actorId) ? actorId : null;
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashAuditPayload(payload: {
+  previousHash?: string | null;
+  actorId?: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  oldValues?: unknown;
+  newValues?: unknown;
+  metadata?: unknown;
+  createdAt: string;
+}) {
+  return createHash("sha256")
+    .update([
+      payload.previousHash || "",
+      payload.actorId || "",
+      payload.action,
+      payload.entityType,
+      payload.entityId,
+      stableStringify(payload.oldValues),
+      stableStringify(payload.newValues),
+      stableStringify(payload.metadata),
+      payload.createdAt,
+    ].join("\n"))
+    .digest("hex");
+}
+
 export async function persistAuditLog(fastify: FastifyInstance, entry: AuditEntry) {
-  await fastify.pg.query(
-    `INSERT INTO audit_log (actor_id, action, entity_type, entity_id, old_values, new_values, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+  if (typeof (fastify.pg as any).connect === "function" && typeof (fastify.pg as any).totalCount === "number") {
+    const client = await (fastify.pg as any).connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('specora.audit_log'))");
+      await insertAuditLog(client, entry);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+    return;
+  }
+  await insertAuditLog(fastify.pg, entry);
+}
+
+async function insertAuditLog(pg: any, entry: AuditEntry) {
+  const actorId = normalizeActorId(entry.actor_id);
+  const oldValues = entry.old_values || null;
+  const newValues = entry.new_values || null;
+  const metadata = entry.metadata || null;
+  const previous = await pg.query("SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1");
+  const previousHash = previous.rows[0]?.entry_hash || null;
+  const createdAt = new Date().toISOString();
+  const entryHash = hashAuditPayload({
+    previousHash,
+    actorId,
+    action: entry.action,
+    entityType: entry.entity_type,
+    entityId: entry.entity_id,
+    oldValues,
+    newValues,
+    metadata,
+    createdAt,
+  });
+  await pg.query(
+    `INSERT INTO audit_log (actor_id, action, entity_type, entity_id, old_values, new_values, metadata, previous_hash, entry_hash, integrity_version, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10)`,
     [
-      normalizeActorId(entry.actor_id),
+      actorId,
       entry.action,
       entry.entity_type,
       entry.entity_id,
-      entry.old_values ? JSON.stringify(entry.old_values) : null,
-      entry.new_values ? JSON.stringify(entry.new_values) : null,
-      entry.metadata ? JSON.stringify(entry.metadata) : null,
+      oldValues ? JSON.stringify(oldValues) : null,
+      newValues ? JSON.stringify(newValues) : null,
+      metadata ? JSON.stringify(metadata) : null,
+      previousHash,
+      entryHash,
+      createdAt,
     ]
   );
 }
@@ -56,6 +135,54 @@ export async function recordAuditEvent(fastify: FastifyInstance, input: AuditEve
       ...input.metadata,
     },
   });
+}
+
+export function expectedAuditHash(row: any) {
+  return hashAuditPayload({
+    previousHash: row.previous_hash,
+    actorId: row.actor_id,
+    action: row.action,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    oldValues: row.old_values,
+    newValues: row.new_values,
+    metadata: row.metadata,
+    createdAt: typeof row.created_at === "string" ? row.created_at : row.created_at?.toISOString?.() || String(row.created_at),
+  });
+}
+
+export async function verifyAuditIntegrity(pg: any, limit = 10000) {
+  const result = await pg.query(
+    `SELECT id, actor_id, action, entity_type, entity_id, old_values, new_values, metadata, previous_hash, entry_hash, created_at
+     FROM audit_log
+     ORDER BY created_at ASC, id ASC
+     LIMIT $1`,
+    [limit]
+  );
+  let previousHash: string | null = null;
+  let legacyRows = 0;
+  const failures: Array<{ id: string; reason: string; expected?: string; actual?: string }> = [];
+  for (const row of result.rows) {
+    if (!row.entry_hash) {
+      legacyRows += 1;
+      continue;
+    }
+    if (row.previous_hash !== previousHash) {
+      failures.push({ id: row.id, reason: "previous_hash_mismatch", expected: previousHash || "", actual: row.previous_hash || "" });
+    }
+    const expected = expectedAuditHash(row);
+    if (row.entry_hash !== expected) {
+      failures.push({ id: row.id, reason: "entry_hash_mismatch", expected, actual: row.entry_hash || "" });
+    }
+    previousHash = row.entry_hash || null;
+  }
+  return {
+    verified: failures.length === 0,
+    checked: result.rows.length,
+    legacyRows,
+    headHash: previousHash,
+    failures,
+  };
 }
 
 export function initializeAuditLog(fastify: FastifyInstance) {
