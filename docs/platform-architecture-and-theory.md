@@ -18,6 +18,40 @@ Specora is built on five ideas:
 
 The product goal is not to clone existing ITSM suites. The goal is to reduce the amount of human attention required to keep services healthy, while giving operators better command surfaces when a human decision is required.
 
+## North-Star Operating Philosophy
+
+### Low-Friction Engineering, Not Low-Code Sprawl
+
+Specora should not become a generic low-code/no-code platform. Broad low-code/no-code systems often create opaque business logic, hidden runtime scripts, unreviewed table mutations, and per-customer snowflake behavior that is difficult to test, govern, and troubleshoot.
+
+The platform direction is code-first for serious extension and configuration-first for bounded administration:
+
+- Native applications are React/TypeScript platform modules.
+- External applications integrate through manifests, explicit permissions, APIs, events, and chat tools.
+- Common administrative behavior should be represented as declarative, versionable artifacts where possible.
+- AI can help scaffold and modify real code, but production behavior should remain reviewable, testable, observable, and auditable.
+- Declarative builders are appropriate when the domain is narrow and governed, such as Discovery mappings, state machines, RBAC grants, table views, data quality rules, dashboards, and notifications.
+
+Specora should be low-friction engineering, not visual-programming sprawl.
+
+### Conversation-First And Evidence-First, Not Form-First
+
+Specora should reduce reliance on blank-form creation, but it should not eliminate structured forms or tables.
+
+The preferred workflow is:
+
+1. Evidence creates records.
+2. AI explains context and drafts structured proposals.
+3. Humans govern deltas by approving, rejecting, editing, merging, assigning, or escalating.
+4. Forms act as precise fallback editors for corrections and exceptions.
+5. Tables act as stewardship surfaces for visibility, filtering, bulk review, governance, and audit.
+
+This means users should not normally start important work by filling out blank forms. Incidents should be created from alerts, conversations, events, or integrations. Changes should be drafted from deployments and affected CIs. Knowledge should be produced from resolutions and evidence. Discovery should stage normalized observations before mutating the CMDB.
+
+Forms remain necessary for accessibility, auditability, exception handling, data stewardship, regulated workflows, and users who need precise structured control. Tables remain strategically important because administrators and operators need to inspect truth at scale.
+
+The Tables application should therefore evolve into a universal stewardship cockpit with saved views, advanced filters, column sets, inline edit, bulk actions, audit diffs, validation state, export/import, relationship-aware filtering, and AI-assisted explanation or cleanup. This supports the evidence-first philosophy without forcing the platform back into a form-first model.
+
 ## System Overview
 
 ```text
