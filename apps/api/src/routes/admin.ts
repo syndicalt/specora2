@@ -422,6 +422,30 @@ async function loadCmdbStats(fastify: FastifyInstance) {
   }
 }
 
+async function loadCmdbGroupOptions(fastify: FastifyInstance) {
+  if (!(fastify as any).neo4j?.session) return [];
+  const session = (fastify as any).neo4j.session();
+  try {
+    const result = await session.run(
+      `MATCH (n:Group:ConfigurationItem)
+       RETURN n.id AS id, coalesce(n.name, n.displayName, n.id) AS name
+       ORDER BY toLower(name)
+       LIMIT 500`
+    );
+    return result.records
+      .map((record: any) => ({
+        id: String(record.get("id") || ""),
+        name: String(record.get("name") || record.get("id") || ""),
+      }))
+      .filter((item: { id: string }) => item.id);
+  } catch (err: any) {
+    fastify.log.warn({ err: err.message }, "Failed to load CMDB group options");
+    return [];
+  } finally {
+    await session.close();
+  }
+}
+
 async function buildOperationalIntelligence(fastify: FastifyInstance) {
   const [
     incident,
@@ -1718,7 +1742,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   fastify.get("/api/admin/identity/groups", { onRequest: [fastify.authenticate, requirePermission("identity-groups", "read")] }, async (_request, reply) => {
     try {
-      const [groups, memberships, permissions] = await Promise.all([
+      const [groups, memberships, permissions, cmdbGroupOptions] = await Promise.all([
         fastify.pg.query(
           `SELECT id, name, slug, description, source, external_id, cmdb_ci_id, created_at, updated_at
            FROM identity_groups ORDER BY name`
@@ -1734,8 +1758,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
            FROM identity_group_permissions gp
            ORDER BY gp.resource, gp.action`
         ),
+        loadCmdbGroupOptions(fastify),
       ]);
-      return { groups: groups.rows, memberships: memberships.rows, permissions: permissions.rows };
+      return { groups: groups.rows, memberships: memberships.rows, permissions: permissions.rows, cmdbGroupOptions };
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to fetch identity groups" });

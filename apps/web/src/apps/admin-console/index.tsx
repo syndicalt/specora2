@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   CheckCircle2,
+  Clipboard,
   ClipboardCheck,
   Database,
   Download,
@@ -119,6 +120,11 @@ interface AdminPanel {
   icon: string;
   permissions: string[];
   appId?: string;
+}
+
+interface CmdbGroupOption {
+  id: string;
+  name: string;
 }
 
 interface RbacUser {
@@ -435,6 +441,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [identityGroups, setIdentityGroups] = useState<IdentityGroup[]>([]);
   const [identityGroupMemberships, setIdentityGroupMemberships] = useState<IdentityGroupMembership[]>([]);
   const [identityGroupPermissions, setIdentityGroupPermissions] = useState<IdentityGroupPermission[]>([]);
+  const [cmdbGroupOptions, setCmdbGroupOptions] = useState<CmdbGroupOption[]>([]);
   const [newIdentityGroup, setNewIdentityGroup] = useState({ name: "", description: "", cmdbCiId: "" });
   const [groupMemberUserId, setGroupMemberUserId] = useState("");
   const [groupGrant, setGroupGrant] = useState({ resource: "", action: "" });
@@ -547,7 +554,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const identityData = identityRes.ok ? await identityRes.json() : { configs: [] };
-      const groupsData = groupsRes.ok ? await groupsRes.json() : { groups: [], memberships: [], permissions: [] };
+      const groupsData = groupsRes.ok ? await groupsRes.json() : { groups: [], memberships: [], permissions: [], cmdbGroupOptions: [] };
       const rbacOptionsData = rbacOptionsRes.ok ? await rbacOptionsRes.json() : { users: [], targets: [] };
       const fieldRestrictionsData = fieldRestrictionsRes.ok ? await fieldRestrictionsRes.json() : { tables: [] };
       const driftData = driftRes.ok ? await driftRes.json() : null;
@@ -565,6 +572,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setIdentityGroups(groupsData.groups || []);
       setIdentityGroupMemberships(groupsData.memberships || []);
       setIdentityGroupPermissions(groupsData.permissions || []);
+      setCmdbGroupOptions(groupsData.cmdbGroupOptions || []);
       setRbacUsers(rbacOptionsData.users || []);
       setRbacGroups(rbacOptionsData.groups || []);
       setRbacTargets(rbacOptionsData.targets || []);
@@ -960,6 +968,12 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   function copyValue(value: string) {
     if (!value) return;
     navigator.clipboard?.writeText(value).catch(() => {});
+  }
+
+  function cmdbGroupLabel(id?: string | null) {
+    if (!id) return "";
+    const option = cmdbGroupOptions.find((group) => group.id === id);
+    return option ? `${option.name} (${option.id})` : `CMDB ${id}`;
   }
 
   async function addSsoConfig(e: React.FormEvent) {
@@ -2647,7 +2661,15 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
             <form onSubmit={addIdentityGroup} className="grid items-end gap-3 lg:grid-cols-[1fr_1fr_1fr_auto]">
               <FieldInput label="Group Name" value={newIdentityGroup.name} onChange={(value) => setNewIdentityGroup((current) => ({ ...current, name: value }))} placeholder="Network Operations" />
               <FieldInput label="Description" value={newIdentityGroup.description} onChange={(value) => setNewIdentityGroup((current) => ({ ...current, description: value }))} />
-              <FieldInput label="Linked CMDB CI" value={newIdentityGroup.cmdbCiId} onChange={(value) => setNewIdentityGroup((current) => ({ ...current, cmdbCiId: value }))} placeholder="optional group CI id" />
+              <FieldSelect
+                label="Linked CMDB Group"
+                value={newIdentityGroup.cmdbCiId}
+                onChange={(value) => setNewIdentityGroup((current) => ({ ...current, cmdbCiId: value }))}
+                options={[
+                  { value: "", label: "Not linked" },
+                  ...cmdbGroupOptions.map((group) => ({ value: group.id, label: `${group.name} (${group.id})` })),
+                ]}
+              />
               <button type="submit" disabled={saving || !newIdentityGroup.name} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Add Group
               </button>
@@ -2661,7 +2683,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <div className="font-medium text-gray-100">{group.name}</div>
-                        <div className="mt-1 text-xs text-gray-500">{group.slug} · {group.source}{group.cmdb_ci_id ? ` · CMDB ${group.cmdb_ci_id}` : ""}</div>
+                        <div className="mt-1 text-xs text-gray-500">{group.slug} · {group.source}{group.cmdb_ci_id ? ` · ${cmdbGroupLabel(group.cmdb_ci_id)}` : ""}</div>
                         {group.description && <div className="mt-2 text-sm text-gray-400">{group.description}</div>}
                       </div>
                       <div className="flex gap-2 text-xs">
@@ -2744,7 +2766,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     </button>
                   </div>
                 </div>
-                <div className="mt-4 grid gap-3 text-sm md:grid-cols-3 xl:grid-cols-5">
+                <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
                   <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
                     <div className="text-xs text-gray-500">Start URL</div>
                     <div className="mt-1 truncate text-gray-300">{config.provider === "oidc" ? config.authorizationUrl || "-" : config.idpSsoUrl || "-"}</div>
@@ -2753,18 +2775,34 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     <div className="text-xs text-gray-500">Issuer / Entity</div>
                     <div className="mt-1 truncate text-gray-300">{config.provider === "oidc" ? config.issuerUrl || "-" : config.idpEntityId || "-"}</div>
                   </div>
-                  <button type="button" onClick={() => copyValue(config.spAcsUrl)} className="rounded-lg border border-gray-800 bg-gray-950 p-3 text-left hover:border-cyan-500/60">
-                    <div className="text-xs text-gray-500">SP ACS URL</div>
-                    <div className="mt-1 truncate text-gray-300">{config.spAcsUrl || "-"}</div>
-                  </button>
-                  <button type="button" onClick={() => copyValue(config.spEntityId)} className="rounded-lg border border-gray-800 bg-gray-950 p-3 text-left hover:border-cyan-500/60">
-                    <div className="text-xs text-gray-500">SP Entity ID</div>
-                    <div className="mt-1 truncate text-gray-300">{config.spEntityId || "-"}</div>
-                  </button>
                   <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
                     <div className="text-xs text-gray-500">JIT / Role</div>
                     <div className="mt-1 text-gray-300">{config.jitEnabled ? "JIT enabled" : "JIT disabled"} / {config.defaultRole}</div>
                     {config.provider === "saml" && <div className="mt-1 text-xs text-gray-600">{config.metadataXmlPresent ? "Metadata XML stored" : "No metadata XML"}</div>}
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-3">
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-gray-500">SP ACS URL</div>
+                        <div className="mt-1 break-all text-gray-300">{config.spAcsUrl || "-"}</div>
+                      </div>
+                      <button type="button" onClick={() => copyValue(config.spAcsUrl)} className="flex shrink-0 items-center gap-2 rounded-md border border-cyan-500/40 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/10">
+                        <Clipboard className="h-3.5 w-3.5" /> Copy
+                      </button>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-gray-500">SP Entity ID</div>
+                        <div className="mt-1 break-all text-gray-300">{config.spEntityId || "-"}</div>
+                      </div>
+                      <button type="button" onClick={() => copyValue(config.spEntityId)} className="flex shrink-0 items-center gap-2 rounded-md border border-cyan-500/40 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/10">
+                        <Clipboard className="h-3.5 w-3.5" /> Copy
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
