@@ -242,6 +242,24 @@ describe("discoveryRoutes", () => {
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.source_tested", "DiscoverySource", "source-1"]));
   });
 
+  it("requires a registered credential reference for configured external discovery sources", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push(
+      { rows: [{ id: "source-1", type: "api", config: { endpoint: "https://inventory.example/api" }, credential_ref: null }] },
+      { rows: [{ id: "source-1", name: "API", type: "api", config: { endpoint: "https://inventory.example/api" }, last_status: "credential_missing", last_error: "Credential reference is required" }] }
+    );
+
+    const response = await app.inject({ method: "POST", url: "/discovery/sources/source-1/test" });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ ok: false, status: "credential_missing" });
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("last_tested_at = NOW()"), [
+      "source-1",
+      "credential_missing",
+      "Credential reference is required",
+    ]);
+  });
+
   it("reads and updates pipeline schedules", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push(

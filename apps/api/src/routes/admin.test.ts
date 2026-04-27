@@ -5,6 +5,7 @@ import jwt from "@fastify/jwt";
 import { authPlugin } from "../plugins/jwt";
 import { clearPermissionCache } from "../services/rbac";
 import { clearFieldRestrictionCache } from "../services/fieldRbac";
+import { encryptCredentialSecret } from "../services/credentials";
 
 vi.mock("../services/appTools", async () => {
   const actual = await vi.importActual<typeof import("../services/appTools")>("../services/appTools");
@@ -99,6 +100,130 @@ describe("adminRoutes", () => {
       payload: { role: "viewer", resource: "cmdb", action: "read" },
     });
     expect(res.statusCode).toBe(409);
+  });
+
+  it("manages credential references without returning secret values", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM credential_references") && sql.includes("ORDER BY scope")) {
+        return Promise.resolve({
+          rows: [{
+            id: "cred-1",
+            ref: "managed://discovery/inventory-api",
+            name: "Inventory API",
+            provider: "managed",
+            status: "active",
+            scope: "discovery",
+            secret_present: true,
+            secret_env_key: null,
+            external_ref: null,
+            metadata: {},
+            created_at: "2026-04-27",
+            updated_at: "2026-04-27",
+          }],
+          rowCount: 1,
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/admin/credentials",
+      headers: authHeader(app),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.credentials[0]).toMatchObject({ ref: "managed://discovery/inventory-api", secretEnvKey: "", secretPresent: true });
+    expect(JSON.stringify(body)).not.toContain("secretValue");
+  });
+
+  it("creates and tests credential references", async () => {
+    const app = await buildApp((sql: string) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO credential_references")) {
+        return Promise.resolve({
+          rows: [{
+            id: "cred-1",
+            ref: "managed://discovery/inventory-api",
+            name: "Inventory API",
+            provider: "managed",
+            status: "active",
+            scope: "discovery",
+            secret_present: true,
+            metadata: {},
+            created_at: "2026-04-27",
+            updated_at: "2026-04-27",
+          }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("SELECT ref FROM credential_references WHERE id = $1")) {
+        return Promise.resolve({ rows: [{ ref: "managed://discovery/inventory-api" }], rowCount: 1 });
+      }
+      if (sql.includes("FROM credential_references") && sql.includes("WHERE ref = $1")) {
+        return Promise.resolve({
+          rows: [{
+            id: "cred-1",
+            ref: "managed://discovery/inventory-api",
+            name: "Inventory API",
+            provider: "managed",
+            status: "active",
+            scope: "discovery",
+            encrypted_secret: encryptCredentialSecret("secret-token"),
+            metadata: {},
+            created_at: "2026-04-27",
+            updated_at: "2026-04-27",
+          }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("UPDATE credential_references")) {
+        return Promise.resolve({
+          rows: [{
+            id: "cred-1",
+            ref: "managed://discovery/inventory-api",
+            name: "Inventory API",
+            provider: "managed",
+            status: "active",
+            scope: "discovery",
+            secret_present: true,
+            metadata: {},
+            last_status: "ok",
+            created_at: "2026-04-27",
+            updated_at: "2026-04-27",
+          }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("SELECT entry_hash FROM audit_log") || sql.includes("INSERT INTO audit_log")) {
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const createRes = await app.inject({
+      method: "POST",
+      url: "/api/admin/credentials",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { name: "Inventory API", provider: "managed", scope: "discovery", secretValue: "secret-token" },
+    });
+    expect(createRes.statusCode).toBe(200);
+    expect(JSON.parse(createRes.payload).credential.ref).toBe("managed://discovery/inventory-api");
+
+    const testRes = await app.inject({
+      method: "POST",
+      url: "/api/admin/credentials/cred-1/test",
+      headers: authHeader(app),
+    });
+    expect(testRes.statusCode).toBe(200);
+    expect(JSON.parse(testRes.payload)).toMatchObject({ ok: true, status: "ok" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["credential.reference.tested", "CredentialReference", "cred-1"]));
   });
 
   it("DELETE /api/admin/permissions/:id deletes a permission", async () => {

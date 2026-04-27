@@ -10,6 +10,7 @@ import { applyDiscoveryRollback, approveAllSafeStagedRecords, commitStagedDiscov
 import { nextDiscoveryRunAt, normalizeScheduleInterval, runSavedDiscoveryPipeline } from "../services/discoveryScheduler";
 import { hasPermission, resolveUserRole } from "../services/rbac";
 import { recordRouteAudit } from "./auditHelpers";
+import { redactCredentialConfig, validateDiscoveryCredential } from "../services/credentials";
 
 const UPLOAD_DIR = resolve(process.env.UPLOAD_DIR || "./uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -279,14 +280,13 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
   fastify.post("/discovery/sources/:id/test", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
     const { id } = request.params as { id: string };
-    const result = await fastify.pg.query("SELECT id, type, config FROM discovery_sources WHERE id = $1", [id]);
+    const result = await fastify.pg.query("SELECT id, type, config, credential_ref FROM discovery_sources WHERE id = $1", [id]);
     if (!result.rows.length) return reply.status(404).send({ error: "Source not found" });
     const source = result.rows[0];
     const config = source.config || {};
-    const isSupported = ["csv", "manual"].includes(source.type);
-    const ok = isSupported ? !!(config.sample || config.columns || config.rows || Object.keys(config).length >= 0) : !!(config.endpoint || config.connection || config.account);
-    const status = ok ? "ok" : "needs_configuration";
-    const error = ok ? null : "Source configuration is incomplete";
+    const validation = await validateDiscoveryCredential(fastify, source.type, config, source.credential_ref || config.credentialRef);
+    const status = validation.status;
+    const error = validation.message;
     const updated = await fastify.pg.query(
       `UPDATE discovery_sources
        SET last_tested_at = NOW(), last_status = $2, last_error = $3, updated_at = NOW()
@@ -298,10 +298,17 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
       action: "discovery.source_tested",
       entityType: "DiscoverySource",
       entityId: id,
-      newValues: { ok, source: updated.rows[0] },
+      newValues: {
+        ok: validation.ok,
+        source: {
+          ...updated.rows[0],
+          config: redactCredentialConfig(updated.rows[0]?.config || {}),
+        },
+        credential: validation.credential,
+      },
       metadata: { source: "api.discovery", surface: "discovery", status },
     });
-    return { ok, source: updated.rows[0] };
+    return { ok: validation.ok, status, message: error, credential: validation.credential, source: updated.rows[0] };
   });
 
   fastify.get("/discovery/pipelines/:id/schedule", { onRequest: [fastify.authenticate] }, async (request, reply) => {

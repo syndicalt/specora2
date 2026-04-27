@@ -1041,8 +1041,8 @@ LIMIT 50`;
     async createDiscoverySource(_parent: any, args: { name: string; type: string; config?: any }, context: any) {
       await checkPermission(context, "discovery", "write");
       const result = await context.pg.query(
-        "INSERT INTO discovery_sources (name, type, config) VALUES ($1, $2, $3) RETURNING id, name, type, config, credential_ref, last_tested_at, last_status, last_error, created_at, updated_at",
-        [args.name, args.type, JSON.stringify(args.config || {})]
+        "INSERT INTO discovery_sources (name, type, config, credential_ref) VALUES ($1, $2, $3, $4) RETURNING id, name, type, config, credential_ref, last_tested_at, last_status, last_error, created_at, updated_at",
+        [args.name, args.type, JSON.stringify(args.config || {}), args.config?.credentialRef || null]
       );
       const row = result.rows[0];
       return {

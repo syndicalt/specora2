@@ -200,7 +200,7 @@ const CLASSES_QUERY = `query DiscoveryClassData {
 }`;
 
 const CREATE_SOURCE = `mutation CreateDiscoverySource($name: String!, $type: String!, $config: JSON) {
-  createDiscoverySource(name: $name, type: $type, config: $config) { id name type config createdAt }
+  createDiscoverySource(name: $name, type: $type, config: $config) { id name type config credentialRef lastTestedAt lastStatus lastError createdAt updatedAt }
 }`;
 
 const UPDATE_SOURCE = `mutation UpdateDiscoverySource($id: ID!, $name: String!, $type: String!, $config: JSON) {

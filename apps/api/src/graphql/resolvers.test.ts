@@ -532,13 +532,14 @@ describe("Query.discoveryJob", () => {
 
 describe("Mutation.createDiscoverySource", () => {
   it("creates a discovery source", async () => {
-    const pg = mockPg([{ id: "src-1", name: "CSV", type: "file", config: "{}", created_at: "2024-01-01" }]);
-    const result = await resolvers.Mutation.createDiscoverySource(null, { name: "CSV", type: "file" }, mockContextWithPg(mockNeo4jSession(), pg));
-    expect(result.name).toBe("CSV");
+    const pg = mockPg([{ id: "src-1", name: "Inventory API", type: "api", config: "{}", credential_ref: "none://discovery/public", created_at: "2024-01-01" }]);
+    const result = await resolvers.Mutation.createDiscoverySource(null, { name: "Inventory API", type: "api", config: { credentialRef: "none://discovery/public" } }, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result.name).toBe("Inventory API");
+    expect(result.credentialRef).toBe("none://discovery/public");
     expect(result.createdAt).toBe("2024-01-01");
     expect(pg.query).toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO discovery_sources"),
-      expect.anything()
+      ["Inventory API", "api", JSON.stringify({ credentialRef: "none://discovery/public" }), "none://discovery/public"]
     );
   });
 });
