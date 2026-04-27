@@ -465,6 +465,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     jitEnabled: true,
     defaultRole: "user",
   });
+  const [isSsoRegisterOpen, setIsSsoRegisterOpen] = useState(false);
   const [rbacUsers, setRbacUsers] = useState<RbacUser[]>([]);
   const [rbacGroups, setRbacGroups] = useState<RbacGroup[]>([]);
   const [rbacTargets, setRbacTargets] = useState<RbacTarget[]>([]);
@@ -2582,9 +2583,13 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
           </div>
 
           <form onSubmit={addSsoConfig} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
-            <h3 className="mb-4 flex items-center gap-2 text-sm font-medium text-gray-300">
-              <Plus className="h-4 w-4" /> Register Identity Provider
-            </h3>
+            <button type="button" onClick={() => setIsSsoRegisterOpen((open) => !open)} className="flex w-full items-center justify-between gap-3 text-left">
+              <span className="flex items-center gap-2 text-sm font-medium text-gray-300">
+                <Plus className="h-4 w-4" /> Register Identity Provider
+              </span>
+              {isSsoRegisterOpen ? <ChevronDown className="h-4 w-4 text-gray-500" /> : <ChevronRight className="h-4 w-4 text-gray-500" />}
+            </button>
+            {isSsoRegisterOpen && <div className="mt-4">
             <div className="mb-4 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm text-cyan-100">
               <div className="font-medium">SAML service provider values are generated after saving the provider.</div>
               <div className="mt-1 text-cyan-200/70">Create the provider first, then copy the ACS URL and Entity ID from its card into the IdP configuration.</div>
@@ -2652,6 +2657,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Add Provider
               </button>
             </div>
+            </div>}
           </form>
 
           <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
