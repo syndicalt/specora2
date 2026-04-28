@@ -292,7 +292,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     setTimeout(() => setToast(""), 3000);
   }, []);
 
-  const fetchData = useCallback(async (targetRootId: string, highlightId?: string | null) => {
+  const fetchData = useCallback(async (targetRootId: string, highlightId?: string | null, options?: { force?: boolean }) => {
     const requestKey = JSON.stringify({
       targetRootId,
       highlightId: highlightId || null,
@@ -301,7 +301,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       relationshipFilters,
       relationshipTypes: relationshipTypes.map((type) => `${type.name}:${type.color}`),
     });
-    if (lastFetchKeyRef.current === requestKey) {
+    if (!options?.force && lastFetchKeyRef.current === requestKey) {
       setLoading(false);
       return;
     }
@@ -792,7 +792,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }`,
         { input: { sourceId, targetId, type } }
       );
-      await fetchData(rootId);
+      await fetchData(rootId, highlightedNodeId, { force: true });
       showToast("Relationship created");
     } catch (err: any) {
       showToast(err.response?.errors?.[0]?.message || "Failed to create relationship");
@@ -807,7 +807,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }`,
         { sourceId, targetId, type }
       );
-      setEdges((prev) => prev.filter((e) => !(e.source === sourceId && e.target === targetId)));
+      await fetchData(rootId, highlightedNodeId, { force: true });
       showToast("Relationship deleted");
     } catch (err: any) {
       showToast(err.response?.errors?.[0]?.message || "Failed to delete relationship");
@@ -822,7 +822,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }`,
         { sourceId, targetId, type, newType }
       );
-      await fetchData(rootId);
+      await fetchData(rootId, highlightedNodeId, { force: true });
       showToast("Relationship updated");
     } catch (err: any) {
       showToast(err.response?.errors?.[0]?.message || "Failed to update relationship");
