@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ShellAPI } from "@/sdk/types";
-import { AlertTriangle, Building2, CheckCircle2, Database, Edit3, ListChecks, RefreshCw, Save, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Building2, CheckCircle2, Database, Edit3, Link2, ListChecks, RefreshCw, Save, ShieldCheck, Trash2 } from "lucide-react";
 
 type FoundationTable = {
   table: string;
@@ -45,12 +45,25 @@ type ValidationCheck = {
   affectedCount: number;
   detail: string;
 };
+type RelationshipType = {
+  id: string;
+  name: string;
+  displayName: string;
+  description?: string | null;
+  color: string;
+  active: boolean;
+  directed: boolean;
+  isSystem: boolean;
+  sortOrder: number;
+};
 
 export default function DataFoundationsApp({ shell }: { shell: ShellAPI }) {
   const [summary, setSummary] = useState<FoundationSummary | null>(null);
   const [tables, setTables] = useState<FoundationTable[]>([]);
   const [issues, setIssues] = useState<FoundationIssue[]>([]);
   const [checks, setChecks] = useState<ValidationCheck[]>([]);
+  const [relationshipTypes, setRelationshipTypes] = useState<RelationshipType[]>([]);
+  const [relationshipForm, setRelationshipForm] = useState({ name: "", displayName: "", color: "#6366f1", description: "" });
   const [selectedIssue, setSelectedIssue] = useState<FoundationIssue | null>(null);
   const [editValue, setEditValue] = useState("");
   const [loading, setLoading] = useState(true);
@@ -77,6 +90,8 @@ export default function DataFoundationsApp({ shell }: { shell: ShellAPI }) {
       setTables(data.tables || []);
       setIssues(queue.issues || []);
       setChecks(validation.checks || []);
+      const relData = await shell.query(`query { relationshipTypes(activeOnly: false) { id name displayName description color active directed isSystem sortOrder } }`);
+      setRelationshipTypes(relData.relationshipTypes || []);
       setSelectedIssue((current) => current ? (queue.issues || []).find((issue: FoundationIssue) => issue.id === current.id) || null : null);
     } catch {
       shell.notify("Failed to fetch Data Foundations", "error");
@@ -128,6 +143,49 @@ export default function DataFoundationsApp({ shell }: { shell: ShellAPI }) {
       shell.notify("Foundation record could not be updated", "error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveRelationshipType() {
+    if (!relationshipForm.displayName.trim()) return;
+    setSaving(true);
+    try {
+      const name = relationshipForm.name.trim() || relationshipForm.displayName.trim();
+      await shell.query(
+        `mutation($input: RelationshipTypeInput!) {
+          upsertRelationshipType(input: $input) { id }
+        }`,
+        {
+          input: {
+            name,
+            displayName: relationshipForm.displayName.trim(),
+            color: relationshipForm.color,
+            description: relationshipForm.description.trim() || undefined,
+            active: true,
+            directed: true,
+            sortOrder: 100,
+          },
+        }
+      );
+      setRelationshipForm({ name: "", displayName: "", color: "#6366f1", description: "" });
+      shell.notify("Relationship type saved", "success");
+      await loadSummary();
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to save relationship type", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteRelationshipType(type: RelationshipType) {
+    if (type.isSystem) return;
+    if (!confirm(`Delete relationship type ${type.displayName}?`)) return;
+    try {
+      await shell.query(`mutation($id: ID!) { deleteRelationshipType(id: $id) }`, { id: type.id });
+      shell.notify("Relationship type deleted", "success");
+      await loadSummary();
+    } catch (err: any) {
+      shell.notify(err.message || "Failed to delete relationship type", "error");
     }
   }
 
@@ -288,6 +346,98 @@ export default function DataFoundationsApp({ shell }: { shell: ShellAPI }) {
                 <p className="mt-2 text-xs leading-5 text-gray-500">{check.detail}</p>
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-lg border border-gray-800 bg-gray-900/40">
+          <div className="flex items-center gap-2 border-b border-gray-800 px-4 py-3 text-sm font-semibold text-gray-100">
+            <Link2 className="h-4 w-4 text-cyan-300" />
+            Relationship Types
+          </div>
+          <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="overflow-hidden rounded-lg border border-gray-800">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-950">
+                  <tr className="border-b border-gray-800 text-left text-xs uppercase tracking-wider text-gray-500">
+                    <th className="px-3 py-2">Type</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Description</th>
+                    <th className="px-3 py-2 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {relationshipTypes.map((type) => (
+                    <tr key={type.id} className="border-b border-gray-900 bg-gray-950">
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: type.color }} />
+                          <div>
+                            <div className="font-medium text-gray-200">{type.displayName}</div>
+                            <div className="font-mono text-xs text-gray-600">{type.name}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={`rounded px-2 py-0.5 text-xs ${type.active ? "bg-emerald-500/15 text-emerald-300" : "bg-gray-700 text-gray-300"}`}>
+                          {type.active ? "active" : "inactive"}
+                        </span>
+                        {type.isSystem && <span className="ml-2 rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300">system</span>}
+                      </td>
+                      <td className="px-3 py-2 text-gray-500">{type.description || "-"}</td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          onClick={() => deleteRelationshipType(type)}
+                          disabled={type.isSystem}
+                          className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:border-red-500/50 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-950 p-4">
+              <div className="text-sm font-semibold text-gray-100">Add Relationship Type</div>
+              <div className="mt-3 space-y-3">
+                <input
+                  value={relationshipForm.displayName}
+                  onChange={(event) => setRelationshipForm((current) => ({ ...current, displayName: event.target.value }))}
+                  placeholder="Display name"
+                  className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500"
+                />
+                <input
+                  value={relationshipForm.name}
+                  onChange={(event) => setRelationshipForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="Enum name, optional"
+                  className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 font-mono text-sm text-gray-100 outline-none focus:border-cyan-500"
+                />
+                <input
+                  value={relationshipForm.description}
+                  onChange={(event) => setRelationshipForm((current) => ({ ...current, description: event.target.value }))}
+                  placeholder="Description"
+                  className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500"
+                />
+                <div className="flex items-center gap-3">
+                  <input
+                    type="color"
+                    value={relationshipForm.color}
+                    onChange={(event) => setRelationshipForm((current) => ({ ...current, color: event.target.value }))}
+                    className="h-10 w-12 rounded border border-gray-700 bg-gray-900"
+                  />
+                  <button
+                    onClick={saveRelationshipType}
+                    disabled={saving || !relationshipForm.displayName.trim()}
+                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-cyan-600 px-3 py-2 text-sm font-medium text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Save className="h-4 w-4" />
+                    Save Type
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
       </main>

@@ -158,10 +158,12 @@ describe("reportingRoutes enterprise seed coverage", () => {
     const body = JSON.parse(res.body);
     expect(body.kpis.map((kpi: any) => kpi.id).sort()).toEqual([
       "audit_security_posture",
+      "cab_brief_coverage",
       "change_collision_risk",
       "cmdb_completeness",
       "incident_deflection",
       "knowledge_freshness",
+      "knowledge_trust_reuse",
       "request_backlog",
       "sla_risk",
     ]);
@@ -184,10 +186,13 @@ describe("reportingRoutes enterprise seed coverage", () => {
     expect(body.contract.datasets.map((dataset: any) => dataset.id).sort()).toEqual([
       "assets",
       "audit",
+      "cab_briefs",
       "changes",
       "discovery",
       "incidents",
       "knowledge",
+      "knowledge_feedback",
+      "knowledge_gaps",
       "requests",
     ]);
     expect(body.contract.datasets).toEqual(expect.arrayContaining([

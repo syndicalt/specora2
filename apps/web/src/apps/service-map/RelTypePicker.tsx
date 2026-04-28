@@ -4,7 +4,7 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { REL_COLORS } from "./index";
 
-const REL_TYPES = [
+const FALLBACK_REL_TYPES = [
   "PART_OF",
   "DEPENDS_ON",
   "HOSTED_ON",
@@ -12,6 +12,7 @@ const REL_TYPES = [
   "OWNED_BY",
   "LOCATED_AT",
 ];
+type RelationshipTypeOption = { name: string; displayName: string; color: string };
 
 function relLabel(type: string) {
   return type.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
@@ -20,12 +21,16 @@ function relLabel(type: string) {
 interface RelTypePickerProps {
   sourceName: string;
   targetName: string;
+  relationshipTypes?: RelationshipTypeOption[];
   onConfirm: (type: string) => void;
   onCancel: () => void;
 }
 
-export function RelTypePicker({ sourceName, targetName, onConfirm, onCancel }: RelTypePickerProps) {
-  const [selected, setSelected] = useState("DEPENDS_ON");
+export function RelTypePicker({ sourceName, targetName, relationshipTypes, onConfirm, onCancel }: RelTypePickerProps) {
+  const options = relationshipTypes?.length
+    ? relationshipTypes
+    : FALLBACK_REL_TYPES.map((name) => ({ name, displayName: relLabel(name), color: REL_COLORS[name]?.stroke || "#6366f1" }));
+  const [selected, setSelected] = useState(options.find((type) => type.name === "DEPENDS_ON")?.name || options[0]?.name || "DEPENDS_ON");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -50,24 +55,23 @@ export function RelTypePicker({ sourceName, targetName, onConfirm, onCancel }: R
 
         <label className="block text-sm text-gray-400 mb-2">Relationship Type</label>
         <div className="space-y-1 mb-6">
-          {REL_TYPES.map((type) => {
-            const color = REL_COLORS[type];
+          {options.map((type) => {
             return (
               <button
-                key={type}
-                onClick={() => setSelected(type)}
+                key={type.name}
+                onClick={() => setSelected(type.name)}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left text-sm transition-colors ${
-                  selected === type
+                  selected === type.name
                     ? "bg-gray-800 border border-gray-600"
                     : "text-gray-300 hover:bg-gray-800 border border-transparent"
                 }`}
               >
                 <span
                   className="w-3 h-3 rounded-full shrink-0"
-                  style={{ backgroundColor: color?.stroke || "#6366f1" }}
+                  style={{ backgroundColor: type.color || "#6366f1" }}
                 />
-                <span className={selected === type ? "text-gray-100 font-medium" : ""}>
-                  {relLabel(type)}
+                <span className={selected === type.name ? "text-gray-100 font-medium" : ""}>
+                  {type.displayName || relLabel(type.name)}
                 </span>
               </button>
             );

@@ -39,6 +39,14 @@ type APINode = {
   classDisplayName?: string;
 };
 type APIEdge = { id: string; type: string; sourceId: string; targetId: string };
+type RelationshipTypeOption = {
+  id: string;
+  name: string;
+  displayName: string;
+  color: string;
+  active: boolean;
+  isSystem: boolean;
+};
 
 export const REL_COLORS: Record<string, { stroke: string; bg: string }> = {
   PART_OF:      { stroke: "#a78bfa", bg: "#7c3aed" },   // violet
@@ -49,15 +57,16 @@ export const REL_COLORS: Record<string, { stroke: string; bg: string }> = {
   LOCATED_AT:   { stroke: "#fb7185", bg: "#e11d48" },   // rose
 };
 
-function getRelColor(type: string) {
-  return REL_COLORS[type] || REL_COLORS.DEPENDS_ON;
+function getRelColor(type: string, registeredColors: Record<string, string> = {}) {
+  const registered = registeredColors[type];
+  return registered ? { stroke: registered, bg: registered } : REL_COLORS[type] || REL_COLORS.DEPENDS_ON;
 }
 
 function relLabel(type: string) {
   return type.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 
-function computeLayout(nodes: APINode[], edges: APIEdge[], classDisplayNames: Record<string, string>, highlightId?: string | null) {
+function computeLayout(nodes: APINode[], edges: APIEdge[], classDisplayNames: Record<string, string>, highlightId?: string | null, relationshipColors: Record<string, string> = {}) {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "TB", nodesep: 90, ranksep: 160, edgesep: 40, marginx: 20, marginy: 20 });
   g.setDefaultEdgeLabel(() => ({}));
@@ -121,7 +130,7 @@ function computeLayout(nodes: APINode[], edges: APIEdge[], classDisplayNames: Re
     const key = `${ed.sourceId}->${ed.targetId}`;
     if (!seenEdges.has(key)) {
       seenEdges.add(key);
-      const color = getRelColor(ed.type);
+      const color = getRelColor(ed.type, relationshipColors);
       flowEdges.push({
         id: ed.id, source: ed.sourceId, target: ed.targetId, label: relLabel(ed.type), type: "default",
         data: { relationshipType: ed.type },
@@ -215,6 +224,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const [classFilters, setClassFilters] = useState<string[]>([]);
   const [environmentFilters, setEnvironmentFilters] = useState<string[]>([]);
   const [relationshipFilters, setRelationshipFilters] = useState<string[]>([]);
+  const [relationshipTypes, setRelationshipTypes] = useState<RelationshipTypeOption[]>([]);
   const [availableClasses, setAvailableClasses] = useState<string[]>([]);
   const [classDisplayNames, setClassDisplayNames] = useState<Record<string, string>>({});
   const [availableEnvironments, setAvailableEnvironments] = useState<string[]>([]);
@@ -265,6 +275,14 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
 
+  const relationshipColor = useCallback((type: string) => {
+    const registered = relationshipTypes.find((item) => item.name === type)?.color;
+    return getRelColor(type, registered ? { [type]: registered } : {});
+  }, [relationshipTypes]);
+  const relationshipOptions = relationshipTypes.length
+    ? relationshipTypes
+    : REL_TYPES.map((name) => ({ id: name, name, displayName: relLabel(name), color: getRelColor(name).stroke, active: true, isSystem: true }));
+
   // Plugin decorator state — apps can register to add badges to nodes
   const [nodeDecorators, setNodeDecorators] = useState<Record<string, NodeData["decorators"]>>({});
   const lastFetchKeyRef = useRef<string | null>(null);
@@ -281,6 +299,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
       classFilters,
       environmentFilters,
       relationshipFilters,
+      relationshipTypes: relationshipTypes.map((type) => `${type.name}:${type.color}`),
     });
     if (lastFetchKeyRef.current === requestKey) {
       setLoading(false);
@@ -307,7 +326,8 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         ...node,
         classDisplayName: classDisplayNames[node.class] || node.class,
       }));
-      const layout = computeLayout(nodesWithClassNames, map.edges, classDisplayNames, highlightId);
+      const relColors = Object.fromEntries(relationshipTypes.map((type) => [type.name, type.color]));
+      const layout = computeLayout(nodesWithClassNames, map.edges, classDisplayNames, highlightId, relColors);
       // Merge plugin decorators into node data
       const nodesWithDecorators = layout.nodes.map((n) => ({
         ...n,
@@ -325,7 +345,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     } finally {
       setLoading(false);
     }
-  }, [setNodes, setEdges, classFilters, environmentFilters, relationshipFilters, nodeDecorators, classDisplayNames]);
+  }, [setNodes, setEdges, classFilters, environmentFilters, relationshipFilters, nodeDecorators, classDisplayNames, relationshipTypes]);
 
   useEffect(() => { fetchData(rootId, highlightedNodeId); }, [rootId, fetchData, highlightedNodeId]);
 
@@ -469,9 +489,10 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     }
     async function loadFilterOptions() {
       try {
-        const [classesData, envsData] = await Promise.all([
+        const [classesData, envsData, relsData] = await Promise.all([
           graphqlClient.request(`query { ciClasses { name displayName } }`),
           graphqlClient.request(`query { ciEnvironments }`),
+          graphqlClient.request(`query { relationshipTypes { id name displayName color active isSystem } }`),
         ]);
         if (!cancelled) {
           const classes = (classesData as any).ciClasses || [];
@@ -482,6 +503,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
           }
           setClassDisplayNames(dnMap);
           setAvailableEnvironments((envsData as any).ciEnvironments || []);
+          setRelationshipTypes((relsData as any).relationshipTypes || []);
         }
       } catch {
         // silently fail
@@ -732,7 +754,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         const newEdges = result.edges
           .filter((e: APIEdge) => !existingIds.has(e.id))
           .map((e: APIEdge) => {
-            const color = getRelColor(e.type);
+            const color = relationshipColor(e.type);
             return {
               id: e.id, source: e.sourceId, target: e.targetId, label: relLabel(e.type), type: "default",
               data: { relationshipType: e.type },
@@ -750,7 +772,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     } catch {
       showToast("Failed to load neighbors");
     }
-  }, [showToast, classDisplayNames]);
+  }, [showToast, classDisplayNames, relationshipColor]);
 
   const selectRoot = (id: string) => {
     setRootId(id); setPickerOpen(false);
@@ -1246,19 +1268,19 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
             <div>
               <h4 className="text-xs text-gray-500 mb-2">Relationship</h4>
               <div className="space-y-1.5 max-h-32 overflow-y-auto scrollbar-thin">
-                {REL_TYPES.map((rel) => (
-                  <label key={rel} className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer hover:text-gray-100 select-none">
+                {relationshipOptions.map((rel) => (
+                  <label key={rel.name} className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer hover:text-gray-100 select-none">
                     <div className="relative flex items-center">
-                      <input type="checkbox" checked={relationshipFilters.includes(rel)}
-                        onChange={(e) => setRelationshipFilters((prev) => e.target.checked ? [...prev, rel] : prev.filter((r) => r !== rel))}
+                      <input type="checkbox" checked={relationshipFilters.includes(rel.name)}
+                        onChange={(e) => setRelationshipFilters((prev) => e.target.checked ? [...prev, rel.name] : prev.filter((r) => r !== rel.name))}
                         className="peer sr-only" />
                       <div className="w-3.5 h-3.5 rounded border border-gray-600 bg-gray-800 peer-checked:bg-indigo-500 peer-checked:border-indigo-500 transition-colors" />
                       <svg className="absolute left-0.5 top-0.5 w-2.5 h-2.5 text-white opacity-0 peer-checked:opacity-100 pointer-events-none" viewBox="0 0 14 14" fill="none">
                         <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                     </div>
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: getRelColor(rel).stroke }} />
-                    {rel}
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: rel.color || relationshipColor(rel.name).stroke }} />
+                    {rel.displayName || relLabel(rel.name)}
                   </label>
                 ))}
               </div>
@@ -1363,6 +1385,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         <RelTypePicker
           sourceName={relPicker.sourceName}
           targetName={relPicker.targetName}
+          relationshipTypes={relationshipOptions}
           onConfirm={(type) => {
             createRelationship(relPicker.sourceId, relPicker.targetId, type);
             setRelPicker(null);
@@ -1539,8 +1562,8 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
                 onChange={(e) => setChangeRelNewType(e.target.value)}
                 className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-100 focus:outline-none focus:border-indigo-500"
               >
-                {REL_TYPES.map((type) => (
-                  <option key={type} value={type}>{type}</option>
+                {relationshipOptions.map((type) => (
+                  <option key={type.name} value={type.name}>{type.displayName || relLabel(type.name)}</option>
                 ))}
               </select>
             </div>

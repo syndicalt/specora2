@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { previewPipeline, stableDiscoveryCiId, type PipelineDefinition, type PipelinePreview, type TargetClass } from "./discoveryTransform";
 
-const ALLOWED_RELATIONSHIPS = new Set(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]);
+const FALLBACK_RELATIONSHIPS = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"];
+const RELATIONSHIP_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{1,79}$/;
 
 type DiscoveryRollbackRecord = {
   stagedRecordId: string;
@@ -22,9 +23,19 @@ type DiscoveryRollbackRelationship = {
   targetHint: string;
 };
 
-function relType(type: string) {
+async function allowedRelationships(fastify: FastifyInstance) {
+  try {
+    const result = await fastify.pg.query("SELECT name FROM relationship_types WHERE active = true");
+    const names = result.rows.map((row: any) => String(row.name)).filter((name: string) => RELATIONSHIP_TYPE_PATTERN.test(name));
+    return new Set(names.length ? names : FALLBACK_RELATIONSHIPS);
+  } catch {
+    return new Set(FALLBACK_RELATIONSHIPS);
+  }
+}
+
+function relType(type: string, allowed: Set<string>) {
   if (type === "RUNS_ON") return "HOSTED_ON";
-  return ALLOWED_RELATIONSHIPS.has(type) ? type : null;
+  return RELATIONSHIP_TYPE_PATTERN.test(type) && allowed.has(type) ? type : null;
 }
 
 async function findExistingPreviewCiIds(fastify: FastifyInstance, preview: PipelinePreview) {
@@ -198,8 +209,9 @@ export async function stageDiscoveryPipeline(
     );
   }
 
+  const allowedRelationshipTypes = await allowedRelationships(fastify);
   for (const relationship of preview.relationships) {
-    const normalizedType = relType(relationship.type);
+    const normalizedType = relType(relationship.type, allowedRelationshipTypes);
     await fastify.pg.query(
       `INSERT INTO discovery_staged_relationships
        (discovery_job_id, row_number, from_class, to_class, rel_type, source_field, target_hint, confidence, status, message)
@@ -455,8 +467,9 @@ export async function applyDiscoveryRollback(fastify: FastifyInstance, rollbackI
   let deleted = 0;
   let deletedRelationships = 0;
   try {
+    const allowedRelationshipTypes = await allowedRelationships(fastify);
     for (const relationship of relationships) {
-      const type = relType(relationship.relType);
+      const type = relType(relationship.relType, allowedRelationshipTypes);
       if (!type) continue;
       const deletedResult = await session.run(
         `MATCH (source:ConfigurationItem {id: $sourceId})-[r:${type}]->(target:ConfigurationItem)

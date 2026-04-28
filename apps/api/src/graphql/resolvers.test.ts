@@ -431,6 +431,21 @@ describe("Mutation.createRelationship", () => {
     expect(result.type).toBe("DEPENDS_ON");
   });
 
+  it("creates a relationship with an active custom relationship type", async () => {
+    const target = makeNode({ id: "as-1", name: "API", class: "ApplicationService" });
+    const session = mockNeo4jSession([{ get: (k: string) => k === "r" ? { type: "CONNECTED_TO", start: "bs-1", end: "as-1" } : target }]);
+    const pg = mockPgSequence([
+      { rows: [{ name: "CONNECTED_TO" }] },
+    ]);
+
+    const result = await resolvers.Mutation.createRelationship(null, {
+      input: { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "CONNECTED_TO" }
+    }, mockContext(session, {}, pg));
+
+    expect(result.type).toBe("CONNECTED_TO");
+    expect(session.run).toHaveBeenCalledWith(expect.stringContaining("[r:CONNECTED_TO]"), expect.anything());
+  });
+
   it("rejects invalid relationship type", async () => {
     const session = mockNeo4jSession([]);
     try {
@@ -450,6 +465,94 @@ describe("Mutation.createRelationship", () => {
         input: { sourceId: "550e8400-e29b-41d4-a716-446655440000", targetId: "550e8400-e29b-41d4-a716-446655440001", type: "DEPENDS_ON" }
       }, mockContext(session))
     ).rejects.toThrow("Source or target not found");
+  });
+});
+
+describe("Relationship type registry resolvers", () => {
+  it("returns relationship types from postgres", async () => {
+    const pg = mockPgSequence([
+      { rows: [{
+        id: "rel-1",
+        name: "CONNECTED_TO",
+        display_name: "Connected To",
+        description: "Network adjacency",
+        color: "#38bdf8",
+        active: true,
+        directed: true,
+        is_system: false,
+        sort_order: 100,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-02",
+      }] },
+    ]);
+
+    const result = await resolvers.Query.relationshipTypes(null, { activeOnly: false }, mockContext(mockNeo4jSession(), {}, pg));
+
+    expect(result).toEqual([expect.objectContaining({
+      name: "CONNECTED_TO",
+      displayName: "Connected To",
+      color: "#38bdf8",
+      isSystem: false,
+    })]);
+  });
+
+  it("upserts custom relationship types with safe uppercase names", async () => {
+    const pg = mockPgSequence([
+      { rows: [{
+        id: "rel-1",
+        name: "CONNECTED_TO",
+        display_name: "Connected To",
+        description: null,
+        color: "#6366f1",
+        active: true,
+        directed: true,
+        is_system: false,
+        sort_order: 100,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      }] },
+    ]);
+
+    const result = await resolvers.Mutation.upsertRelationshipType(null, {
+      input: { name: "connected to", displayName: "Connected To" },
+    }, mockContext(mockNeo4jSession(), {}, pg));
+
+    expect(result.name).toBe("CONNECTED_TO");
+    expect(pg.query).toHaveBeenLastCalledWith(expect.stringContaining("INSERT INTO relationship_types"), expect.arrayContaining(["CONNECTED_TO", "Connected To"]));
+  });
+
+  it("prevents deleting system relationship types", async () => {
+    const pg = mockPgSequence([
+      { rows: [{ id: "rel-1", name: "DEPENDS_ON", is_system: true }] },
+    ]);
+
+    await expect(
+      resolvers.Mutation.deleteRelationshipType(null, { id: "rel-1" }, mockContext(mockNeo4jSession(), {}, pg))
+    ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+  });
+
+  it("prevents deleting custom relationship types that are in use", async () => {
+    const session = mockNeo4jSession([{ get: () => ({ toNumber: () => 2 }) }]);
+    const pg = mockPgSequence([
+      { rows: [{ id: "rel-1", name: "CONNECTED_TO", is_system: false }] },
+    ]);
+
+    await expect(
+      resolvers.Mutation.deleteRelationshipType(null, { id: "rel-1" }, mockContext(session, {}, pg))
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+  });
+
+  it("deletes unused custom relationship types", async () => {
+    const session = mockNeo4jSession([{ get: () => ({ toNumber: () => 0 }) }]);
+    const pg = mockPgSequence([
+      { rows: [{ id: "rel-1", name: "CONNECTED_TO", is_system: false }] },
+      { rows: [{ id: "rel-1" }] },
+    ]);
+
+    const result = await resolvers.Mutation.deleteRelationshipType(null, { id: "rel-1" }, mockContext(session, {}, pg));
+
+    expect(result).toBe(true);
+    expect(pg.query).toHaveBeenLastCalledWith("DELETE FROM relationship_types WHERE id = $1 RETURNING id", ["rel-1"]);
   });
 });
 

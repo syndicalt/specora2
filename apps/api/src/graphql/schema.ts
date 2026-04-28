@@ -170,6 +170,30 @@ const typeDefs = `
     updatedAt: String!
   }
 
+  type RelationshipType {
+    id: ID!
+    name: String!
+    displayName: String!
+    description: String
+    color: String!
+    active: Boolean!
+    directed: Boolean!
+    isSystem: Boolean!
+    sortOrder: Int!
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  input RelationshipTypeInput {
+    name: String!
+    displayName: String!
+    description: String
+    color: String
+    active: Boolean
+    directed: Boolean
+    sortOrder: Int
+  }
+
   input CIEnvironmentChoiceInput {
     code: String!
     name: String!
@@ -254,6 +278,7 @@ const typeDefs = `
     ciClasses: [CIClass!]!
     ciClass(name: String!): CIClass
     ciEnvironmentChoices(activeOnly: Boolean): [CIEnvironmentChoice!]!
+    relationshipTypes(activeOnly: Boolean): [RelationshipType!]!
   }
 
   type Mutation {
@@ -279,6 +304,8 @@ const typeDefs = `
     deleteCIClass(id: ID!): Boolean!
     upsertCIEnvironmentChoice(input: CIEnvironmentChoiceInput!): CIEnvironmentChoice!
     deleteCIEnvironmentChoice(id: ID!): Boolean!
+    upsertRelationshipType(input: RelationshipTypeInput!): RelationshipType!
+    deleteRelationshipType(id: ID!): Boolean!
   }
 `;
 

@@ -25,8 +25,8 @@ describe("ConfigurationItemSchema", () => {
     expect(() => ConfigurationItemSchema.parse(rest)).toThrow(/Required/);
   });
 
-  it("rejects an invalid UUID", () => {
-    expect(() => ConfigurationItemSchema.parse({ ...valid, id: "not-a-uuid" })).toThrow(/uuid/);
+  it("accepts non-empty external ids", () => {
+    expect(ConfigurationItemSchema.parse({ ...valid, id: "external-ci-1" }).id).toBe("external-ci-1");
   });
 
   it("rejects an empty name", () => {
@@ -57,8 +57,8 @@ describe("RelationshipSchema", () => {
     expect(RelationshipSchema.parse(valid)).toEqual(valid);
   });
 
-  it("rejects an invalid UUID for sourceId", () => {
-    expect(() => RelationshipSchema.parse({ ...valid, sourceId: "bad" })).toThrow(/uuid/);
+  it("accepts non-empty external ids for relationship endpoints", () => {
+    expect(RelationshipSchema.parse({ ...valid, sourceId: "external-source" }).sourceId).toBe("external-source");
   });
 
   it("accepts missing attributes", () => {
@@ -84,8 +84,8 @@ describe("CreateCIInputSchema", () => {
     expect(CreateCIInputSchema.parse(withId)).toEqual(withId);
   });
 
-  it("rejects an invalid optional id", () => {
-    expect(() => CreateCIInputSchema.parse({ ...valid, id: "bad" })).toThrow(/uuid/);
+  it("accepts an external optional id", () => {
+    expect(CreateCIInputSchema.parse({ ...valid, id: "external-db-01" }).id).toBe("external-db-01");
   });
 });
 
@@ -112,17 +112,18 @@ describe("CreateRelationshipInputSchema", () => {
     type: "DEPENDS_ON",
   };
 
-  it("accepts all allowed relationship types", () => {
+  it("accepts registry-safe relationship type names", () => {
     const types = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"] as const;
     for (const type of types) {
       expect(CreateRelationshipInputSchema.parse({ ...valid, type })).toEqual({ ...valid, type });
     }
+    expect(CreateRelationshipInputSchema.parse({ ...valid, type: "CONNECTED_TO" })).toEqual({ ...valid, type: "CONNECTED_TO" });
   });
 
-  it("rejects an invalid relationship type", () => {
+  it("rejects unsafe relationship type names", () => {
     expect(() =>
-      CreateRelationshipInputSchema.parse({ ...valid, type: "INVALID" })
-    ).toThrow(/DEPENDS_ON/);
+      CreateRelationshipInputSchema.parse({ ...valid, type: "bad-type" })
+    ).toThrow();
   });
 
   it("rejects missing required fields", () => {

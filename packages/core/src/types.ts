@@ -33,7 +33,7 @@ export type UpdateCIInput = z.infer<typeof UpdateCIInputSchema>;
 export const CreateRelationshipInputSchema = z.object({
   sourceId: z.string().min(1),
   targetId: z.string().min(1),
-  type: z.enum(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]),
+  type: z.string().regex(/^[A-Z][A-Z0-9_]{1,79}$/),
   attributes: z.record(z.any()).optional(),
 });
 
@@ -42,7 +42,7 @@ export type CreateRelationshipInput = z.infer<typeof CreateRelationshipInputSche
 export const DeleteRelationshipInputSchema = z.object({
   sourceId: z.string().min(1),
   targetId: z.string().min(1),
-  type: z.enum(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]),
+  type: z.string().regex(/^[A-Z][A-Z0-9_]{1,79}$/),
 });
 
 export type DeleteRelationshipInput = z.infer<typeof DeleteRelationshipInputSchema>;
@@ -50,8 +50,8 @@ export type DeleteRelationshipInput = z.infer<typeof DeleteRelationshipInputSche
 export const UpdateRelationshipInputSchema = z.object({
   sourceId: z.string().min(1),
   targetId: z.string().min(1),
-  type: z.enum(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]),
-  newType: z.enum(["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"]).optional(),
+  type: z.string().regex(/^[A-Z][A-Z0-9_]{1,79}$/),
+  newType: z.string().regex(/^[A-Z][A-Z0-9_]{1,79}$/).optional(),
   attributes: z.record(z.any()).optional(),
 });
 

@@ -9,7 +9,7 @@ import {
 } from "@specora/core";
 import { hasPermission } from "../services/rbac";
 
-const ALLOWED_RELATIONSHIP_TYPES = [
+const FALLBACK_RELATIONSHIP_TYPES = [
   "PART_OF",
   "DEPENDS_ON",
   "HOSTED_ON",
@@ -17,14 +17,36 @@ const ALLOWED_RELATIONSHIP_TYPES = [
   "OWNED_BY",
   "LOCATED_AT",
 ] as const;
+const RELATIONSHIP_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{1,79}$/;
 
-function relationshipPattern(types?: string[]) {
-  const relTypes = types?.length ? types : [...ALLOWED_RELATIONSHIP_TYPES];
-  const invalid = relTypes.filter((type) => !ALLOWED_RELATIONSHIP_TYPES.includes(type as any));
+async function activeRelationshipTypeNames(pg: any): Promise<string[]> {
+  try {
+    const result = await pg.query("SELECT name FROM relationship_types WHERE active = true ORDER BY sort_order, display_name");
+    const names = result.rows.map((row: any) => String(row.name)).filter((name: string) => RELATIONSHIP_TYPE_PATTERN.test(name));
+    return names.length > 0 ? names : [...FALLBACK_RELATIONSHIP_TYPES];
+  } catch {
+    return [...FALLBACK_RELATIONSHIP_TYPES];
+  }
+}
+
+async function relationshipPattern(pg: any, types?: string[]) {
+  const allowed = await activeRelationshipTypeNames(pg);
+  const relTypes = types?.length ? types : allowed;
+  const invalid = relTypes.filter((type) => !RELATIONSHIP_TYPE_PATTERN.test(type) || !allowed.includes(type));
   if (invalid.length) {
     throw new GraphQLError(`Invalid relationship type: ${invalid.join(", ")}`, { extensions: { code: "BAD_USER_INPUT" } });
   }
   return relTypes.join("|");
+}
+
+async function assertRelationshipType(pg: any, type: string) {
+  if (!RELATIONSHIP_TYPE_PATTERN.test(type)) {
+    throw new GraphQLError(`Invalid relationship type: ${type}`, { extensions: { code: "BAD_USER_INPUT" } });
+  }
+  const allowed = await activeRelationshipTypeNames(pg);
+  if (!allowed.includes(type)) {
+    throw new GraphQLError(`Inactive or unknown relationship type: ${type}`, { extensions: { code: "BAD_USER_INPUT" } });
+  }
 }
 
 function boundedHopCount(value: number | undefined, fallback: number) {
@@ -58,6 +80,22 @@ function mapEnvironmentChoice(row: any) {
     active: row.active,
     sortOrder: row.sort_order,
     isProductionLike: row.is_production_like,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapRelationshipType(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    displayName: row.display_name,
+    description: row.description,
+    color: row.color,
+    active: row.active,
+    directed: row.directed,
+    isSystem: row.is_system,
+    sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -320,6 +358,15 @@ export const resolvers = {
       const result = await context.pg.query(sql);
       return result.rows.map(mapEnvironmentChoice);
     },
+    async relationshipTypes(_parent: any, args: { activeOnly?: boolean }, context: any) {
+      await checkPermission(context, "relationships", "read");
+      let sql = `SELECT id, name, display_name, description, color, active, directed, is_system, sort_order, created_at, updated_at
+                 FROM relationship_types`;
+      if (args.activeOnly !== false) sql += " WHERE active = true";
+      sql += " ORDER BY sort_order, display_name";
+      const result = await context.pg.query(sql);
+      return result.rows.map(mapRelationshipType);
+    },
     async serviceMap(_parent: any, args: { rootId: string; classFilter?: string[]; environmentFilter?: string[]; relationshipFilter?: string[] }, context: any) {
       const session = context.neo4j.session();
       try {
@@ -330,7 +377,7 @@ export const resolvers = {
         const rootRecord = rootResult.records[0];
         const rootNode = rootRecord ? parseNode(rootRecord.get("root").properties) : null;
 
-        const relTypes = relationshipPattern(args.relationshipFilter);
+        const relTypes = await relationshipPattern(context.pg, args.relationshipFilter);
 
         let query = `MATCH path = (root:ConfigurationItem {id: $rootId})-[:${relTypes}*0..3]-(related:ConfigurationItem)
 WHERE related <> root`;
@@ -401,7 +448,7 @@ LIMIT 50`;
         );
         const rootNode = rootResult.records[0] ? parseNode(rootResult.records[0].get("root").properties) : null;
 
-        const relTypes = relationshipPattern(args.types);
+        const relTypes = await relationshipPattern(context.pg, args.types);
         const limit = args.limit ?? 50;
 
         const result = await session.run(
@@ -953,6 +1000,7 @@ LIMIT 50`;
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
       }
+      await assertRelationshipType(context.pg, validated.data.type);
       const session = context.neo4j.session();
       try {
         const result = await session.run(
@@ -988,6 +1036,7 @@ LIMIT 50`;
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
       }
+      await assertRelationshipType(context.pg, validated.data.type);
       const session = context.neo4j.session();
       try {
         const oldResult = await session.run(
@@ -1029,6 +1078,8 @@ LIMIT 50`;
       if (!validated.success) {
         throw new GraphQLError(validated.error.message, { extensions: { code: "BAD_USER_INPUT" } });
       }
+      await assertRelationshipType(context.pg, validated.data.type);
+      if (validated.data.newType) await assertRelationshipType(context.pg, validated.data.newType);
       const session = context.neo4j.session();
       try {
         const { sourceId, targetId, type, newType, attributes } = validated.data;
@@ -1588,6 +1639,60 @@ LIMIT 50`;
     async deleteCIEnvironmentChoice(_parent: any, args: { id: string }, context: any) {
       await checkPermission(context, "cmdb", "admin");
       const result = await context.pg.query("DELETE FROM ci_environment_choices WHERE id = $1 RETURNING id", [args.id]);
+      return result.rows.length > 0;
+    },
+    async upsertRelationshipType(_parent: any, args: { input: any }, context: any) {
+      await checkPermission(context, "relationships", "write");
+      const name = String(args.input.name || "").trim().toUpperCase().replace(/[^A-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+      const displayName = String(args.input.displayName || "").trim();
+      if (!RELATIONSHIP_TYPE_PATTERN.test(name) || !displayName) {
+        throw new GraphQLError("Relationship type name and display name are required", { extensions: { code: "BAD_USER_INPUT" } });
+      }
+      const result = await context.pg.query(
+        `INSERT INTO relationship_types (name, display_name, description, color, active, directed, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (name) DO UPDATE SET
+           display_name = EXCLUDED.display_name,
+           description = EXCLUDED.description,
+           color = EXCLUDED.color,
+           active = EXCLUDED.active,
+           directed = EXCLUDED.directed,
+           sort_order = EXCLUDED.sort_order,
+           updated_at = NOW()
+         RETURNING id, name, display_name, description, color, active, directed, is_system, sort_order, created_at, updated_at`,
+        [
+          name,
+          displayName,
+          args.input.description || null,
+          args.input.color || "#6366f1",
+          args.input.active ?? true,
+          args.input.directed ?? true,
+          args.input.sortOrder ?? 100,
+        ]
+      );
+      return mapRelationshipType(result.rows[0]);
+    },
+    async deleteRelationshipType(_parent: any, args: { id: string }, context: any) {
+      await checkPermission(context, "relationships", "write");
+      const existing = await context.pg.query("SELECT * FROM relationship_types WHERE id = $1", [args.id]);
+      if (!existing.rows.length) return false;
+      const relType = existing.rows[0];
+      if (relType.is_system) {
+        throw new GraphQLError("System relationship types cannot be deleted", { extensions: { code: "FORBIDDEN" } });
+      }
+      const session = context.neo4j.session();
+      try {
+        const countResult = await session.run(
+          `MATCH ()-[r:${relType.name}]-() RETURN count(r) as relCount`
+        );
+        const relCount = countResult.records[0]?.get("relCount")?.toNumber?.() || 0;
+        if (relCount > 0) {
+          throw new GraphQLError(`Cannot delete relationship type '${relType.name}': ${relCount} relationships exist. Disable it instead.`, { extensions: { code: "BAD_USER_INPUT" } });
+        }
+      } finally {
+        await session.close();
+      }
+      const result = await context.pg.query("DELETE FROM relationship_types WHERE id = $1 RETURNING id", [args.id]);
       return result.rows.length > 0;
     },
   },

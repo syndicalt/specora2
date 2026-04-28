@@ -48,7 +48,7 @@ describe("seedCIClasses", () => {
       String(sql).includes("INSERT INTO ci_class_attributes")
     );
 
-    expect(classInserts).toHaveLength(10);
+    expect(classInserts).toHaveLength(13);
     expect(attrInserts.length).toBeGreaterThan(30);
     expect(client.release).toHaveBeenCalledOnce();
   });
