@@ -97,6 +97,110 @@ type CollectorEnrollmentInput = {
   stats?: Record<string, unknown>;
 };
 
+type EvidenceRecord = {
+  schema?: string;
+  source?: { type?: string; id?: string };
+  subject?: { type?: string; id?: string };
+  observed_at?: string;
+  facts?: Record<string, unknown>;
+  relationships?: unknown[];
+  confidence?: number;
+  metadata?: Record<string, unknown>;
+  signature?: string;
+  signing_key_id?: string;
+};
+
+function decodeUploadChunk(data: unknown): string {
+  if (typeof data === "string") return Buffer.from(data, "base64").toString("utf8");
+  if (Array.isArray(data)) return Buffer.from(data as number[]).toString("utf8");
+  return "";
+}
+
+function parseEvidenceRecords(rawText: string): { records: EvidenceRecord[]; error?: string } {
+  const text = rawText.trim();
+  if (!text) return { records: [] };
+  const lines = text.includes("\n") ? text.split(/\r?\n/) : [text];
+  const records: EvidenceRecord[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    try {
+      const record = JSON.parse(line) as EvidenceRecord;
+      if (record.schema !== "specora.evidence.v1") return { records: [], error: `record ${index + 1} schema is not specora.evidence.v1` };
+      if (!record.source?.type || !record.source?.id) return { records: [], error: `record ${index + 1} source is incomplete` };
+      if (!record.subject?.type || !record.subject?.id) return { records: [], error: `record ${index + 1} subject is incomplete` };
+      if (!record.observed_at || Number.isNaN(new Date(record.observed_at).getTime())) return { records: [], error: `record ${index + 1} observed_at is invalid` };
+      if (!record.facts || !Object.keys(record.facts).length) return { records: [], error: `record ${index + 1} facts are required` };
+      records.push(record);
+    } catch (err: any) {
+      return { records: [], error: `record ${index + 1} is not valid JSON: ${err.message}` };
+    }
+  }
+  return { records };
+}
+
+function naturalKeyForEvidence(record: EvidenceRecord) {
+  const facts = record.facts || {};
+  return String(facts.uuid || facts.hostname || facts.name || facts.address || facts.port || record.subject?.id || "unknown");
+}
+
+async function ingestEvidenceDocument(fastify: FastifyInstance, document: any) {
+  const parsed = parseEvidenceRecords(document.raw_text || "");
+  if (parsed.error) {
+    await fastify.pg.query(
+      `UPDATE edge_evidence_documents
+       SET verification_status = 'invalid_evidence', updated_at = NOW()
+       WHERE id = $1`,
+      [document.id]
+    );
+    return { records: 0, status: "invalid_evidence", error: parsed.error };
+  }
+
+  await fastify.pg.query("DELETE FROM discovery_observations WHERE document_id = $1", [document.id]);
+  for (const record of parsed.records) {
+    await fastify.pg.query(
+      `INSERT INTO discovery_observations
+         (collector_id, document_id, run_id, source_type, source_id, subject_type, subject_id, entity_type, natural_key, observed_at, facts, relationships, confidence, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $6, $8, $9, $10, $11, $12, $13)`,
+      [
+        document.collector_id,
+        document.id,
+        document.run_id,
+        record.source?.type,
+        record.source?.id,
+        record.subject?.type,
+        record.subject?.id,
+        naturalKeyForEvidence(record),
+        record.observed_at,
+        JSON.stringify(record.facts || {}),
+        JSON.stringify(record.relationships || []),
+        typeof record.confidence === "number" ? record.confidence : null,
+        JSON.stringify(record.metadata || {}),
+      ]
+    );
+  }
+
+  await fastify.pg.query(
+    `UPDATE edge_evidence_documents
+     SET schema_version = $2,
+         record_count = $3,
+         verification_status = $4,
+         signature = $5,
+         signing_key_id = $6,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [
+      document.id,
+      parsed.records[0]?.schema || null,
+      parsed.records.length,
+      parsed.records.length ? "parsed" : "empty",
+      parsed.records.find((record) => record.signature)?.signature || null,
+      parsed.records.find((record) => record.signing_key_id)?.signing_key_id || null,
+    ]
+  );
+  return { records: parsed.records.length, status: parsed.records.length ? "parsed" : "empty" };
+}
+
 async function enrollCollector(fastify: FastifyInstance, request: any, reply: any) {
   const body = request.body as CollectorEnrollmentInput;
   const rawToken = (body.token || body.registration_token || body.enrollmentToken || body.enrollment_token || "").trim();
@@ -231,6 +335,105 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     return { accepted: true, policy_version: process.env.EDGE_POLICY_VERSION || "policy-v1" };
   });
 
+  fastify.post("/edge/uploads/session", async (request, reply) => {
+    const body = request.body as { tenant_id?: string; relay_id?: string; upload_id?: string; run_id?: string; digest?: string; byte_count?: number };
+    const relayId = body.relay_id?.trim();
+    const uploadId = body.upload_id?.trim();
+    const runId = body.run_id?.trim();
+    if (!relayId || !uploadId || !runId) return reply.status(400).send({ error: "relay_id, upload_id, and run_id are required" });
+
+    const collector = await fastify.pg.query("SELECT id FROM discovery_collectors WHERE id = $1", [relayId]);
+    if (!collector.rows.length) return reply.status(404).send({ error: "Collector not found" });
+
+    const result = await fastify.pg.query(
+      `INSERT INTO edge_evidence_documents
+         (tenant_id, collector_id, upload_id, run_id, digest, byte_count, storage_class)
+       VALUES ($1, $2, $3, $4, $5, $6, 'database')
+       ON CONFLICT (collector_id, upload_id) DO UPDATE SET
+         tenant_id = EXCLUDED.tenant_id,
+         run_id = EXCLUDED.run_id,
+         digest = COALESCE(EXCLUDED.digest, edge_evidence_documents.digest),
+         byte_count = GREATEST(edge_evidence_documents.byte_count, EXCLUDED.byte_count),
+         updated_at = NOW()
+       RETURNING id, upload_id, accepted_offset, complete, storage_class`,
+      [
+        body.tenant_id || null,
+        relayId,
+        uploadId,
+        runId,
+        body.digest || null,
+        Number(body.byte_count || 0),
+      ]
+    );
+    const row = result.rows[0];
+    return {
+      accepted: true,
+      upload_id: row.upload_id,
+      document_id: row.id,
+      accepted_offset: Number(row.accepted_offset || 0),
+      complete: Boolean(row.complete),
+      storage_class: row.storage_class || "database",
+    };
+  });
+
+  fastify.post("/edge/uploads/:id/chunks", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { tenant_id?: string; relay_id?: string; run_id?: string; offset?: number; data?: unknown; final?: boolean; digest?: string; byte_count?: number };
+    const relayId = body.relay_id?.trim();
+    const runId = body.run_id?.trim();
+    if (!relayId || !runId) return reply.status(400).send({ error: "relay_id and run_id are required" });
+
+    const existing = await fastify.pg.query(
+      `SELECT id, collector_id, upload_id, run_id, accepted_offset, raw_text
+       FROM edge_evidence_documents
+       WHERE collector_id = $1 AND upload_id = $2`,
+      [relayId, id]
+    );
+    const document = existing.rows[0];
+    if (!document) return reply.status(404).send({ error: "Upload session not found" });
+    const offset = Number(body.offset || 0);
+    const acceptedOffset = Number(document.accepted_offset || 0);
+    if (offset !== acceptedOffset) {
+      return reply.status(409).send({ error: "Upload offset does not match accepted offset", accepted_offset: acceptedOffset });
+    }
+
+    const chunk = decodeUploadChunk(body.data);
+    const nextText = `${document.raw_text || ""}${chunk}`;
+    const nextOffset = acceptedOffset + Buffer.byteLength(chunk);
+    const updated = await fastify.pg.query(
+      `UPDATE edge_evidence_documents
+       SET raw_text = $2,
+           accepted_offset = $3,
+           byte_count = GREATEST(byte_count, $4),
+           digest = COALESCE($5, digest),
+           complete = $6,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, collector_id, upload_id, run_id, raw_text, accepted_offset, complete`,
+      [document.id, nextText, nextOffset, Number(body.byte_count || nextOffset), body.digest || null, Boolean(body.final)]
+    );
+    let ingest: { records: number; status: string; error?: string } = { records: 0, status: "pending" };
+    if (body.final) {
+      ingest = await ingestEvidenceDocument(fastify, updated.rows[0]);
+      await recordRouteAudit(fastify, request, {
+        action: "edge.evidence_uploaded",
+        entityType: "EdgeEvidenceDocument",
+        entityId: document.id,
+        newValues: { uploadId: id, runId, collectorId: relayId, records: ingest.records, status: ingest.status, error: ingest.error },
+        metadata: { source: "api.edge", surface: "edge", uploadId: id },
+      });
+    }
+
+    return {
+      accepted_offset: nextOffset,
+      complete: Boolean(body.final),
+      document_id: document.id,
+      records: ingest.records,
+      status: ingest.status,
+      error: ingest.error,
+    };
+  });
+
   fastify.post("/discovery/collectors/enroll", async (request, reply) => {
     const enrollment = await enrollCollector(fastify, request, reply);
     if (!enrollment) return;
@@ -245,6 +448,40 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
        ORDER BY COALESCE(last_heartbeat_at, created_at) DESC, name`
     );
     return { collectors: result.rows.map(collectorRow) };
+  });
+
+  fastify.get("/discovery/collectors/:id/observations", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const { id } = request.params as { id: string };
+    const result = await fastify.pg.query(
+      `SELECT id, document_id, run_id, source_type, source_id, subject_type, subject_id, entity_type, natural_key,
+              observed_at, facts, relationships, confidence, metadata, freshness_status, created_at
+       FROM discovery_observations
+       WHERE collector_id = $1
+       ORDER BY observed_at DESC, created_at DESC
+       LIMIT 500`,
+      [id]
+    );
+    return {
+      observations: result.rows.map((row: any) => ({
+        id: row.id,
+        documentId: row.document_id,
+        runId: row.run_id,
+        sourceType: row.source_type,
+        sourceId: row.source_id,
+        subjectType: row.subject_type,
+        subjectId: row.subject_id,
+        entityType: row.entity_type,
+        naturalKey: row.natural_key,
+        observedAt: row.observed_at,
+        facts: typeof row.facts === "string" ? JSON.parse(row.facts || "{}") : row.facts || {},
+        relationships: typeof row.relationships === "string" ? JSON.parse(row.relationships || "[]") : row.relationships || [],
+        confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
+        metadata: typeof row.metadata === "string" ? JSON.parse(row.metadata || "{}") : row.metadata || {},
+        freshnessStatus: row.freshness_status,
+        createdAt: row.created_at,
+      })),
+    };
   });
 
   fastify.post("/discovery/collectors", { onRequest: [fastify.authenticate] }, async (request, reply) => {

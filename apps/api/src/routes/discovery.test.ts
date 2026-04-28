@@ -207,6 +207,101 @@ describe("discoveryRoutes", () => {
     ]));
   });
 
+  it("starts edge upload sessions and parses final evidence chunks into observations", async () => {
+    const app = await buildApp();
+    const evidence = JSON.stringify({
+      schema: "specora.evidence.v1",
+      source: { type: "osquery", id: "specora-osquery-local" },
+      subject: { type: "host", id: "host-1" },
+      observed_at: "2026-04-27T12:00:00Z",
+      facts: { hostname: "host-1", uuid: "uuid-1", platform: "linux" },
+      confidence: 0.98,
+      metadata: { query_name: "system_info" },
+    });
+
+    (app as any).pg.queuedResults.push(
+      { rows: [{ id: "collector-1" }] },
+      { rows: [{ id: "doc-1", upload_id: "upload-1", accepted_offset: 0, complete: false, storage_class: "database" }] },
+      { rows: [{ id: "doc-1", collector_id: "collector-1", upload_id: "upload-1", run_id: "run-1", accepted_offset: 0, raw_text: "" }] },
+      { rows: [{ id: "doc-1", collector_id: "collector-1", upload_id: "upload-1", run_id: "run-1", raw_text: evidence, accepted_offset: Buffer.byteLength(evidence), complete: true }] },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 }
+    );
+
+    const session = await app.inject({
+      method: "POST",
+      url: "/edge/uploads/session",
+      payload: { tenant_id: "default", relay_id: "collector-1", upload_id: "upload-1", run_id: "run-1", digest: "sha256:test", byte_count: Buffer.byteLength(evidence) },
+    });
+    expect(session.statusCode).toBe(200);
+    expect(JSON.parse(session.body)).toMatchObject({ accepted: true, upload_id: "upload-1", document_id: "doc-1", accepted_offset: 0, storage_class: "database" });
+
+    const chunk = await app.inject({
+      method: "POST",
+      url: "/edge/uploads/upload-1/chunks",
+      payload: {
+        tenant_id: "default",
+        relay_id: "collector-1",
+        run_id: "run-1",
+        offset: 0,
+        data: Buffer.from(evidence, "utf8").toString("base64"),
+        final: true,
+        digest: "sha256:test",
+        byte_count: Buffer.byteLength(evidence),
+      },
+    });
+
+    expect(chunk.statusCode).toBe(200);
+    expect(JSON.parse(chunk.body)).toMatchObject({ accepted_offset: Buffer.byteLength(evidence), complete: true, document_id: "doc-1", records: 1, status: "parsed" });
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO discovery_observations"), expect.arrayContaining([
+      "collector-1",
+      "doc-1",
+      "run-1",
+      "osquery",
+      "specora-osquery-local",
+      "host",
+      "host-1",
+      "uuid-1",
+      "2026-04-27T12:00:00Z",
+    ]));
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["edge.evidence_uploaded", "EdgeEvidenceDocument", "doc-1"]));
+  });
+
+  it("lists normalized collector observations", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push({
+      rows: [{
+        id: "obs-1",
+        document_id: "doc-1",
+        run_id: "run-1",
+        source_type: "osquery",
+        source_id: "specora-osquery-local",
+        subject_type: "host",
+        subject_id: "host-1",
+        entity_type: "host",
+        natural_key: "uuid-1",
+        observed_at: "2026-04-27T12:00:00Z",
+        facts: { hostname: "host-1" },
+        relationships: [],
+        confidence: "0.9800",
+        metadata: { query_name: "system_info" },
+        freshness_status: "current",
+        created_at: "2026-04-27T12:01:00Z",
+      }],
+    });
+
+    const response = await app.inject({ method: "GET", url: "/discovery/collectors/collector-1/observations" });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).observations[0]).toMatchObject({
+      id: "obs-1",
+      documentId: "doc-1",
+      entityType: "host",
+      naturalKey: "uuid-1",
+      confidence: 0.98,
+    });
+  });
+
   it("lists only active discovery-scoped credential references", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push({

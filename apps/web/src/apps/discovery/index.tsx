@@ -103,6 +103,14 @@ type DiscoveryCollector = {
   lastSeenIp?: string | null;
 };
 
+type DiscoveryObservation = {
+  id: string;
+  entityType: string;
+  naturalKey: string;
+  observedAt: string;
+  facts: Record<string, unknown>;
+};
+
 type SourceForm = { name: string; type: string; sample: string; endpoint: string; credentialRef: string; collectorId: string };
 
 type TransformProposal = {
@@ -269,6 +277,18 @@ function edgeCollectorSample(collector: DiscoveryCollector | null): string {
       capabilities,
     }]
   );
+}
+
+function observationsToCsv(observations: DiscoveryObservation[]): string | null {
+  const rows = observations.slice(0, 25).map((observation) => ({
+    entity_type: observation.entityType,
+    natural_key: observation.naturalKey,
+    observed_at: observation.observedAt,
+    ...observation.facts,
+  }));
+  if (!rows.length) return null;
+  const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+  return rowsToCsv(columns, rows);
 }
 
 function sourceConfigFromForm(form: SourceForm) {
@@ -967,10 +987,20 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setStaged(null);
   }
 
-  function applyCollector(collector: DiscoveryCollector) {
+  async function applyCollector(collector: DiscoveryCollector) {
     setSelectedSourceId(`collector:${collector.id}`);
     setSourceName(collector.name);
-    setSample(edgeCollectorSample(collector));
+    try {
+      const res = await shell.fetch(`/discovery/collectors/${collector.id}/observations`);
+      if (!res.ok) throw new Error(`Observation request failed: ${res.status}`);
+      const data = await res.json();
+      const observationSample = observationsToCsv(data.observations || []);
+      setSample(observationSample || edgeCollectorSample(collector));
+      if (!observationSample) shell.notify("No edge observations staged yet; using collector schema sample", "info");
+    } catch {
+      setSample(edgeCollectorSample(collector));
+      shell.notify("Edge observations could not be loaded; using collector schema sample", "error");
+    }
     setProposal(null);
     setPreview(null);
     setStaged(null);
