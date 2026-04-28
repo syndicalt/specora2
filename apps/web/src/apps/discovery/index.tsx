@@ -296,6 +296,12 @@ function sourceConfigFromForm(form: SourceForm) {
     const parsed = parseCsv(form.sample);
     return { sample: form.sample, columns: parsed.columns, rows: parsed.rows };
   }
+  if (form.type === "edge") {
+    return {
+      collectorId: form.collectorId || null,
+      placeholder: true,
+    };
+  }
   return {
     endpoint: form.endpoint,
     credentialRef: form.credentialRef || null,
@@ -1486,8 +1492,6 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 </>
               ) : (
                 <>
-                  <label className="block text-xs text-gray-500">Endpoint or connection placeholder</label>
-                  <input value={sourceForm.endpoint} onChange={(event) => setSourceForm({ ...sourceForm, endpoint: event.target.value })} className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500" placeholder="https://inventory.example/api/assets" />
                   {sourceForm.type === "edge" && (
                     <>
                       <label className="block text-xs text-gray-500">Collector</label>
@@ -1504,23 +1508,32 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                         ))}
                       </select>
                       {!collectors.length && <div className="text-xs leading-5 text-gray-500">Register a collector below before binding edge sources.</div>}
+                      <div className="rounded-md border border-cyan-500/20 bg-cyan-500/10 p-3 text-xs leading-5 text-cyan-100">
+                        Endpoint and credential settings are handled by the enrolled Edge collector. This source only binds Discovery to the registered collector and its uploaded observations.
+                      </div>
                     </>
                   )}
-                  <label className="block text-xs text-gray-500">Credential reference</label>
-                  <select
-                    value={sourceForm.credentialRef}
-                    onChange={(event) => setSourceForm({ ...sourceForm, credentialRef: event.target.value })}
-                    className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500"
-                  >
-                    <option value="">Select a Discovery credential</option>
-                    {credentialRefOptions.map((credential) => (
-                      <option key={credential.ref} value={credential.ref}>
-                        {credential.name} · {credential.provider} · {credential.ref}
-                      </option>
-                    ))}
-                  </select>
-                  {!credentialRefOptions.length && (
-                    <div className="text-xs leading-5 text-gray-500">Create an active Discovery-scoped credential in Admin before testing external sources.</div>
+                  {sourceForm.type !== "edge" && (
+                    <>
+                      <label className="block text-xs text-gray-500">Endpoint or connection placeholder</label>
+                      <input value={sourceForm.endpoint} onChange={(event) => setSourceForm({ ...sourceForm, endpoint: event.target.value })} className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500" placeholder="https://inventory.example/api/assets" />
+                      <label className="block text-xs text-gray-500">Credential reference</label>
+                      <select
+                        value={sourceForm.credentialRef}
+                        onChange={(event) => setSourceForm({ ...sourceForm, credentialRef: event.target.value })}
+                        className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                      >
+                        <option value="">Select a Discovery credential</option>
+                        {credentialRefOptions.map((credential) => (
+                          <option key={credential.ref} value={credential.ref}>
+                            {credential.name} · {credential.provider} · {credential.ref}
+                          </option>
+                        ))}
+                      </select>
+                      {!credentialRefOptions.length && (
+                        <div className="text-xs leading-5 text-gray-500">Create an active Discovery-scoped credential in Admin before testing external sources.</div>
+                      )}
+                    </>
                   )}
                 </>
               )}

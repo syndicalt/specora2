@@ -170,6 +170,11 @@ export async function validateDiscoveryCredential(fastify: FastifyInstance, sour
   if (["csv", "file", "manual"].includes(normalizedType)) {
     return { ok: true, status: "ok", message: null, credential: null as any };
   }
+  if (normalizedType === "edge") {
+    return normalizedConfig.collectorId
+      ? { ok: true, status: "ok", message: null, credential: null as any }
+      : { ok: false, status: "needs_configuration", message: "Edge collector source requires a collector binding", credential: null as any };
+  }
   if (!normalizedConfig.endpoint && !normalizedConfig.connection && !normalizedConfig.account) {
     return { ok: false, status: "needs_configuration", message: "Source configuration is incomplete", credential: null as any };
   }
