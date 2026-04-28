@@ -50,6 +50,24 @@ const ATTR_TYPES = [
   { value: "reference", label: "Reference" },
 ];
 
+function normalizeAttribute(attr: Partial<Attribute>, sortOrder = 0): Attribute {
+  return {
+    id: attr.id,
+    name: attr.name || "",
+    displayName: attr.displayName || "",
+    description: attr.description || "",
+    attrType: attr.attrType || "string",
+    isMandatory: attr.isMandatory || false,
+    isHealthRequired: attr.isHealthRequired || false,
+    isKeyAttribute: attr.isKeyAttribute || false,
+    defaultValue: attr.defaultValue || "",
+    validationRegex: attr.validationRegex || "",
+    enumValues: Array.isArray(attr.enumValues) ? attr.enumValues : [],
+    referenceClass: attr.referenceClass || "",
+    sortOrder: attr.sortOrder ?? sortOrder,
+  };
+}
+
 export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
   const [classes, setClasses] = useState<CIClass[]>([]);
   const [loading, setLoading] = useState(true);
@@ -90,7 +108,11 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
       });
       const data = await res.json();
       if (data.errors) throw new Error(data.errors[0].message);
-      setClasses(data.data.ciClasses);
+      setClasses((data.data.ciClasses || []).map((cls: CIClass) => ({
+        ...cls,
+        attributes: (cls.attributes || []).map((attr, index) => normalizeAttribute(attr, index)),
+        inheritedAttributes: (cls.inheritedAttributes || []).map((attr, index) => normalizeAttribute(attr, index)),
+      })));
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -121,7 +143,7 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
     setFormParent(cls.parentClass || "");
     setFormIcon(cls.icon || "Layers");
     setFormColor(cls.color || "#6366f1");
-    setFormAttributes(cls.attributes.map((a) => ({ ...a })));
+    setFormAttributes(cls.attributes.map((a, index) => normalizeAttribute(a, index)));
     setMode("edit");
     setEditingClass(cls);
   }
@@ -192,7 +214,7 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
         isKeyAttribute: a.isKeyAttribute,
         defaultValue: a.defaultValue || undefined,
         validationRegex: a.validationRegex || undefined,
-        enumValues: a.enumValues.length > 0 ? a.enumValues : undefined,
+        enumValues: Array.isArray(a.enumValues) && a.enumValues.length > 0 ? a.enumValues : undefined,
         referenceClass: a.referenceClass || undefined,
         sortOrder: a.sortOrder,
       }));

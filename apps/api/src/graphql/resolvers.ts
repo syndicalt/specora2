@@ -1396,9 +1396,11 @@ LIMIT 50`;
         }
         const oldClass = existing.rows[0];
 
-        // Block modification of system classes unless caller is admin UI
-        if (oldClass.is_system) {
-          throw new GraphQLError("System classes cannot be modified", { extensions: { code: "FORBIDDEN" } });
+        if (oldClass.is_system && name !== oldClass.name) {
+          throw new GraphQLError("System class names cannot be changed", { extensions: { code: "FORBIDDEN" } });
+        }
+        if (oldClass.is_system && (parentClass || null) !== (oldClass.parent_class || null)) {
+          throw new GraphQLError("System class inheritance cannot be changed", { extensions: { code: "FORBIDDEN" } });
         }
 
         // Check name uniqueness if changing
