@@ -1521,7 +1521,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         ),
         fastify.pg.query(
           `SELECT id, action, entity_type, entity_id, metadata, created_at
-           FROM audit_log WHERE actor_id = $1 OR entity_id = $1 ORDER BY created_at DESC LIMIT 20`,
+           FROM audit_log WHERE actor_id = $1 OR entity_id = $1::text ORDER BY created_at DESC LIMIT 20`,
           [id]
         ),
         userImpactSummary(fastify.pg, id),

@@ -1846,7 +1846,11 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     {filteredManagedUsers.map((user) => (
                       <tr
                         key={user.id}
-                        onClick={() => setSelectedUserId(user.id)}
+                        onClick={() => {
+                          setSelectedUserId(user.id);
+                          setSelectedUserDetail(null);
+                          setUserEditDraft({ name: user.name || "", role: user.role || "" });
+                        }}
                         className={`cursor-pointer border-b border-gray-800/60 hover:bg-gray-800/50 ${selectedUserId === user.id ? "bg-indigo-500/10" : ""}`}
                       >
                         <td className="px-4 py-3">
