@@ -1,11 +1,9 @@
 FROM node:20-alpine AS base
-RUN npm install -g pnpm
+RUN npm install -g pnpm@8.15.6
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml* ./
-COPY apps/api/package.json ./apps/api/
-COPY packages/*/package.json ./packages/*/
-RUN pnpm install
-
 COPY . .
-CMD ["pnpm", "--filter", "@specora/api", "dev"]
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @specora/api build
+
+CMD ["pnpm", "--filter", "@specora/api", "start"]
