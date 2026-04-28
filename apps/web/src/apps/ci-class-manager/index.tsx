@@ -34,6 +34,8 @@ interface CIClass {
   parentClass: string | null;
   icon: string | null;
   color: string | null;
+  displayField: string | null;
+  secondaryDisplayFields: string[];
   isSystem: boolean;
   createdByAppId: string | null;
   attributes: Attribute[];
@@ -83,6 +85,8 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
   const [formParent, setFormParent] = useState("");
   const [formIcon, setFormIcon] = useState("Layers");
   const [formColor, setFormColor] = useState("#6366f1");
+  const [formDisplayField, setFormDisplayField] = useState("name");
+  const [formSecondaryDisplayFields, setFormSecondaryDisplayFields] = useState<string[]>([]);
   const [formAttributes, setFormAttributes] = useState<Attribute[]>([]);
 
   useEffect(() => {
@@ -100,7 +104,7 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
         body: JSON.stringify({
           query: `query {
             ciClasses {
-              id name displayName description parentClass icon color isSystem createdByAppId
+              id name displayName description parentClass icon color displayField secondaryDisplayFields isSystem createdByAppId
               attributes { id name displayName attrType isMandatory isHealthRequired isKeyAttribute defaultValue validationRegex enumValues referenceClass sortOrder }
             }
           }`,
@@ -127,6 +131,8 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
     setFormParent("");
     setFormIcon("Layers");
     setFormColor("#6366f1");
+    setFormDisplayField("name");
+    setFormSecondaryDisplayFields([]);
     setFormAttributes([]);
   }
 
@@ -143,6 +149,8 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
     setFormParent(cls.parentClass || "");
     setFormIcon(cls.icon || "Layers");
     setFormColor(cls.color || "#6366f1");
+    setFormDisplayField(cls.displayField || "name");
+    setFormSecondaryDisplayFields(Array.isArray(cls.secondaryDisplayFields) ? cls.secondaryDisplayFields : []);
     setFormAttributes(cls.attributes.map((a, index) => normalizeAttribute(a, index)));
     setMode("edit");
     setEditingClass(cls);
@@ -190,6 +198,19 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
     });
   }
 
+  const displayFieldOptions = [
+    { value: "name", label: "Name" },
+    { value: "id", label: "ID" },
+    { value: "environment", label: "Environment" },
+    ...formAttributes.map((attr) => ({ value: attr.name, label: attr.displayName || attr.name })).filter((item) => item.value),
+  ];
+
+  function toggleSecondaryDisplayField(field: string) {
+    setFormSecondaryDisplayFields((current) => (
+      current.includes(field) ? current.filter((item) => item !== field) : [...current, field]
+    ));
+  }
+
   async function save() {
     if (!formName.trim() || !formDisplayName.trim()) {
       setError("Name and Display Name are required");
@@ -224,8 +245,8 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
         : `mutation UpdateClass($id: ID!, $input: CreateCIClassInput!) { updateCIClass(id: $id, input: $input) { id } }`;
 
       const variables = mode === "create"
-        ? { input: { name: formName, displayName: formDisplayName, description: formDescription, parentClass: formParent || undefined, icon: formIcon, color: formColor, attributes: attrs } }
-        : { id: editingClass!.id, input: { name: formName, displayName: formDisplayName, description: formDescription, parentClass: formParent || undefined, icon: formIcon, color: formColor, attributes: attrs } };
+        ? { input: { name: formName, displayName: formDisplayName, description: formDescription, parentClass: formParent || undefined, icon: formIcon, color: formColor, displayField: formDisplayField || "name", secondaryDisplayFields: formSecondaryDisplayFields, attributes: attrs } }
+        : { id: editingClass!.id, input: { name: formName, displayName: formDisplayName, description: formDescription, parentClass: formParent || undefined, icon: formIcon, color: formColor, displayField: formDisplayField || "name", secondaryDisplayFields: formSecondaryDisplayFields, attributes: attrs } };
 
       const res = await fetch(API_URL, {
         method: "POST",
@@ -448,6 +469,47 @@ export default function CIClassManagerApp(_props: { shell: ShellAPI }) {
                     onChange={(e) => setFormColor(e.target.value)}
                     className="w-12 h-9 bg-gray-800 border border-gray-700 rounded-lg cursor-pointer"
                   />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
+            <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+              <Info className="w-4 h-4" /> Reference Display
+            </h2>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Primary display field</label>
+                <select
+                  value={formDisplayField}
+                  onChange={(e) => setFormDisplayField(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:border-indigo-500"
+                >
+                  {displayFieldOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Secondary display fields</label>
+                <div className="min-h-10 rounded-lg border border-gray-700 bg-gray-800 px-2 py-2">
+                  <div className="flex flex-wrap gap-2">
+                    {displayFieldOptions.map((option) => (
+                      <label key={option.value} className="inline-flex cursor-pointer items-center gap-1.5 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={formSecondaryDisplayFields.includes(option.value)}
+                          onChange={() => toggleSecondaryDisplayField(option.value)}
+                          className="rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
+                        />
+                        {option.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-1 text-xs text-gray-600">
+                  Selected fields render in order, separated by " | ".
                 </div>
               </div>
             </div>

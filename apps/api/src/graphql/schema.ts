@@ -149,6 +149,8 @@ const typeDefs = `
     parentClass: String
     icon: String
     color: String
+    displayField: String
+    secondaryDisplayFields: [String!]!
     isSystem: Boolean!
     createdByAppId: String
     attributes: [CIClassAttribute!]!
@@ -198,6 +200,8 @@ const typeDefs = `
     parentClass: String
     icon: String
     color: String
+    displayField: String
+    secondaryDisplayFields: [String!]
     attributes: [CIClassAttributeInput!]!
   }
 

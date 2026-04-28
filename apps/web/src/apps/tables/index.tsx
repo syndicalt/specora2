@@ -43,6 +43,8 @@ type TableDef = {
   label: string;
   provider?: "cmdb-class" | "postgres-table";
   className: string;
+  displayField?: string;
+  secondaryDisplayFields?: string[];
   category: string;
   hasNumber?: boolean;
   attributes: AttributeDef[];
@@ -363,17 +365,40 @@ function initialForm(table: TableDef, record?: TableRecord): Record<string, stri
   return next;
 }
 
-function referenceOptionForRecord(className: string, record: TableRecord): ReferenceOption {
+function recordDisplayValue(record: TableRecord, field?: string) {
+  if (!field) return undefined;
+  if (field === "id") return record.id;
+  if (field === "name") return record.name;
+  if (field === "class") return record.class;
+  if (field === "environment") return record.environment;
+  return (record.attributes || {})[field] ?? record[field];
+}
+
+function firstDisplayValue(record: TableRecord, fields: Array<string | undefined>) {
+  for (const field of fields) {
+    const value = recordDisplayValue(record, field);
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value);
+  }
+  return undefined;
+}
+
+function referenceOptionForRecord(table: TableDef | undefined, record: TableRecord): ReferenceOption {
   const attrs = record.attributes || {};
-  const code = attrs.code || attrs.departmentCode || attrs.email;
-  const label = String(record.name || code || record.id);
-  const sublabel = [code, record.environment, record.id]
+  const keyAttrs = table?.attributes.filter((attr) => attr.isKeyAttribute).map((attr) => attr.name) || [];
+  const mandatoryStringAttrs = table?.attributes.filter((attr) => attr.isMandatory && attr.attrType === "string").map((attr) => attr.name) || [];
+  const legacyFields = ["code", "departmentCode", "email"];
+  const label = firstDisplayValue(record, [table?.displayField, "name", ...keyAttrs, ...mandatoryStringAttrs, ...legacyFields, "id"]) || String(record.id);
+  const configuredSecondary = (table?.secondaryDisplayFields || [])
+    .map((field) => recordDisplayValue(record, field))
+    .filter((item) => item !== undefined && item !== null && String(item).trim() !== "" && String(item) !== label)
+    .map((item) => String(item));
+  const fallbackSecondary = [attrs.code, attrs.departmentCode, attrs.email, record.environment, record.id]
     .filter((item) => item !== undefined && item !== null && String(item) !== "" && String(item) !== label)
     .map((item) => String(item))[0];
   return {
     id: String(record.id),
     label,
-    sublabel: className === "User" && attrs.email ? String(attrs.email) : sublabel,
+    sublabel: configuredSecondary.length > 0 ? configuredSecondary.join(" | ") : fallbackSecondary,
   };
 }
 
@@ -778,6 +803,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
     const entries = await Promise.all(classes.map(async (className) => {
       try {
+        const refTable = nextTables.find((table) => table.provider === "cmdb-class" && table.className === className);
         const params = new URLSearchParams({
           limit: String(REFERENCE_OPTIONS_LIMIT),
           offset: "0",
@@ -788,7 +814,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
         if (!res.ok) return [className, []] as const;
         const data = await res.json();
         const records = Array.isArray(data.records) ? data.records as TableRecord[] : [];
-        return [className, records.map((record) => referenceOptionForRecord(className, record))] as const;
+        return [className, records.map((record) => referenceOptionForRecord(refTable, record))] as const;
       } catch {
         return [className, []] as const;
       }

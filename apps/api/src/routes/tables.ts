@@ -61,6 +61,8 @@ type TableDefinition = {
   provider: "cmdb-class" | "postgres-table";
   className?: string;
   tableName?: string;
+  displayField?: string;
+  secondaryDisplayFields?: string[];
   nameField?: string;
   searchableFields?: string[];
   auditFields?: string[];
@@ -278,7 +280,7 @@ async function canUseTable(fastify: FastifyInstance, role: string | null, action
 export async function getTables(fastify: FastifyInstance): Promise<TableDefinition[]> {
   const [classes, columns] = await Promise.all([
     fastify.pg.query(
-    `SELECT c.id, c.name, c.display_name, c.description, c.icon, c.color,
+    `SELECT c.id, c.name, c.display_name, c.description, c.icon, c.color, c.display_field, c.secondary_display_fields,
             COALESCE(
               json_agg(
                 json_build_object(
@@ -297,7 +299,7 @@ export async function getTables(fastify: FastifyInstance): Promise<TableDefiniti
             ) AS attributes
      FROM ci_classes c
      LEFT JOIN ci_class_attributes a ON a.class_id = c.id
-     GROUP BY c.id, c.name, c.display_name, c.description, c.icon, c.color
+     GROUP BY c.id, c.name, c.display_name, c.description, c.icon, c.color, c.display_field, c.secondary_display_fields
      ORDER BY c.display_name, c.name`
     ),
     fastify.pg.query(
@@ -318,6 +320,8 @@ export async function getTables(fastify: FastifyInstance): Promise<TableDefiniti
       label: row.display_name || row.name,
       provider: "cmdb-class" as const,
       className: row.name,
+      displayField: row.display_field || "name",
+      secondaryDisplayFields: row.secondary_display_fields || [],
       resource: "tables",
       actions: ["read", "write", "delete"] as TableAction[],
       category: FOUNDATION_CLASSES.has(row.name) ? "foundation" as const : "cmdb" as const,

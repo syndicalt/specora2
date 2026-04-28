@@ -101,7 +101,20 @@ async function getClassDefinition(pg: any, className: string) {
     return !own;
   });
 
-  return { ...cls, attributes: ownAttrs, inheritedAttributes: inheritedAttrs, allAttributes: attributes };
+  return {
+    ...cls,
+    displayName: cls.display_name,
+    parentClass: cls.parent_class,
+    isSystem: cls.is_system,
+    createdByAppId: cls.created_by_app_id,
+    createdAt: cls.created_at,
+    updatedAt: cls.updated_at,
+    displayField: cls.display_field,
+    secondaryDisplayFields: cls.secondary_display_fields || [],
+    attributes: ownAttrs,
+    inheritedAttributes: inheritedAttrs,
+    allAttributes: attributes,
+  };
 }
 
 async function validateCIAgainstClass(pg: any, className: string, ciData: any, mode: "create" | "update") {
@@ -275,7 +288,7 @@ export const resolvers = {
     async ciClasses(_parent: any, _args: any, context: any) {
       await checkPermission(context, "cmdb", "read");
       const result = await context.pg.query(
-        `SELECT id, name, display_name, description, parent_class, icon, color, is_system, created_by_app_id, created_at, updated_at
+        `SELECT id, name, display_name, description, parent_class, icon, color, display_field, secondary_display_fields, is_system, created_by_app_id, created_at, updated_at
          FROM ci_classes ORDER BY name`
       );
       return result.rows.map((row: any) => ({
@@ -286,6 +299,8 @@ export const resolvers = {
         parentClass: row.parent_class,
         icon: row.icon,
         color: row.color,
+        displayField: row.display_field,
+        secondaryDisplayFields: row.secondary_display_fields || [],
         isSystem: row.is_system,
         createdByAppId: row.created_by_app_id,
         createdAt: row.created_at,
@@ -1308,7 +1323,7 @@ LIMIT 50`;
     },
     async createCIClass(_parent: any, args: { input: any }, context: any) {
       await checkPermission(context, "cmdb", "admin");
-      const { name, displayName, description, parentClass, icon, color, attributes } = args.input;
+      const { name, displayName, description, parentClass, icon, color, displayField, secondaryDisplayFields, attributes } = args.input;
 
       // Validate name is PascalCase
       if (!/^[A-Z][a-zA-Z0-9]*$/.test(name)) {
@@ -1335,10 +1350,10 @@ LIMIT 50`;
 
         // Insert class
         const classResult = await client.query(
-          `INSERT INTO ci_classes (name, display_name, description, parent_class, icon, color, created_by_app_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           RETURNING id, name, display_name, description, parent_class, icon, color, is_system, created_by_app_id, created_at, updated_at`,
-          [name, displayName, description || null, parentClass || null, icon || null, color || null, context.appId || null]
+          `INSERT INTO ci_classes (name, display_name, description, parent_class, icon, color, display_field, secondary_display_fields, created_by_app_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING id, name, display_name, description, parent_class, icon, color, display_field, secondary_display_fields, is_system, created_by_app_id, created_at, updated_at`,
+          [name, displayName, description || null, parentClass || null, icon || null, color || null, displayField || "name", secondaryDisplayFields || [], context.appId || null]
         );
         const cls = classResult.rows[0];
 
@@ -1379,6 +1394,8 @@ LIMIT 50`;
           parentClass: cls.parent_class,
           icon: cls.icon,
           color: cls.color,
+          displayField: cls.display_field,
+          secondaryDisplayFields: cls.secondary_display_fields || [],
           isSystem: cls.is_system,
           createdByAppId: cls.created_by_app_id,
           createdAt: cls.created_at,
@@ -1393,7 +1410,7 @@ LIMIT 50`;
     },
     async updateCIClass(_parent: any, args: { id: string; input: any }, context: any) {
       await checkPermission(context, "cmdb", "admin");
-      const { name, displayName, description, parentClass, icon, color, attributes } = args.input;
+      const { name, displayName, description, parentClass, icon, color, displayField, secondaryDisplayFields, attributes } = args.input;
 
       const client = await context.pg.connect();
       try {
@@ -1432,10 +1449,10 @@ LIMIT 50`;
         // Update class
         const classResult = await client.query(
           `UPDATE ci_classes
-           SET name = $1, display_name = $2, description = $3, parent_class = $4, icon = $5, color = $6, updated_at = NOW()
-           WHERE id = $7
-           RETURNING id, name, display_name, description, parent_class, icon, color, is_system, created_by_app_id, created_at, updated_at`,
-          [name, displayName, description || null, parentClass || null, icon || null, color || null, args.id]
+           SET name = $1, display_name = $2, description = $3, parent_class = $4, icon = $5, color = $6, display_field = $7, secondary_display_fields = $8, updated_at = NOW()
+           WHERE id = $9
+           RETURNING id, name, display_name, description, parent_class, icon, color, display_field, secondary_display_fields, is_system, created_by_app_id, created_at, updated_at`,
+          [name, displayName, description || null, parentClass || null, icon || null, color || null, displayField || "name", secondaryDisplayFields || [], args.id]
         );
         const cls = classResult.rows[0];
 
@@ -1477,6 +1494,8 @@ LIMIT 50`;
           parentClass: cls.parent_class,
           icon: cls.icon,
           color: cls.color,
+          displayField: cls.display_field,
+          secondaryDisplayFields: cls.secondary_display_fields || [],
           isSystem: cls.is_system,
           createdByAppId: cls.created_by_app_id,
           createdAt: cls.created_at,
