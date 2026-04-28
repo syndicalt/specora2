@@ -32,6 +32,7 @@ type AttributeDef = {
   isHealthRequired?: boolean;
   isKeyAttribute: boolean;
   enumValues?: string[];
+  referenceClass?: string;
   canRead?: boolean;
   canWrite?: boolean;
   isRestricted?: boolean;
@@ -168,6 +169,11 @@ type ImportDecision = {
   recordName?: string | null;
   reason?: string;
 };
+type ReferenceOption = {
+  id: string;
+  label: string;
+  sublabel?: string;
+};
 
 const PAGE_SIZE = 100;
 const IMPORT_LIMIT = 250;
@@ -204,9 +210,27 @@ function operatorLabel(operator: FilterOperator) {
   return OPERATORS.find((item) => item.value === operator)?.label || operator;
 }
 
-function formatValue(value: unknown) {
+function formatValue(value: unknown): string {
   if (value === undefined || value === null || value === "") return "-";
-  if (typeof value === "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "-";
+    if (value.every((item) => item === null || ["string", "number", "boolean"].includes(typeof item))) {
+      return value.map((item) => String(item)).join(", ");
+    }
+    return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const healthParts = [
+      typeof record.running === "number" ? `${record.running} running` : null,
+      typeof record.failed === "number" ? `${record.failed} failed` : null,
+      typeof record.total === "number" ? `${record.total} total` : null,
+    ].filter(Boolean);
+    if (healthParts.length > 0) return healthParts.join(" / ");
+    const entries = Object.entries(record);
+    if (entries.length === 0) return "-";
+    return entries.slice(0, 4).map(([key, item]) => `${key}: ${formatValue(item)}`).join(" / ");
+  }
   return String(value);
 }
 
@@ -226,6 +250,14 @@ function canWriteAttr(attr?: AttributeDef) {
 
 function coerceValue(raw: string, attr?: AttributeDef): unknown {
   if (!attr) return raw;
+  if (attr.attrType === "json") {
+    if (!raw.trim()) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
   if (attr.attrType === "number") {
     const value = Number(raw);
     return Number.isFinite(value) ? value : raw;
@@ -321,7 +353,11 @@ function initialForm(table: TableDef, record?: TableRecord): Record<string, stri
   };
   for (const attr of table.attributes) {
     const value = (record?.attributes || {})[attr.name] ?? record?.[attr.name] ?? "";
-    next[attr.name] = value === undefined || value === null ? "" : String(value);
+    next[attr.name] = value === undefined || value === null
+      ? ""
+      : attr.attrType === "json" && typeof value === "object"
+        ? JSON.stringify(value, null, 2)
+        : String(value);
   }
   return next;
 }
@@ -514,6 +550,8 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [importMode, setImportMode] = useState<ImportMode>("create");
   const [importMatchKeys, setImportMatchKeys] = useState<string[]>(["name"]);
   const [importDecisions, setImportDecisions] = useState<ImportDecision[]>([]);
+  const [environments, setEnvironments] = useState<string[]>([]);
+  const [referenceOptions, setReferenceOptions] = useState<Record<string, ReferenceOption[]>>({});
   const handledLaunchRef = useRef<string | null>(null);
 
   const availableColumns = useMemo<ColumnDef[]>(() => {
@@ -689,6 +727,31 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function loadEditorOptions() {
+    try {
+      const envData = await shell.query(`query { ciEnvironments }`);
+      setEnvironments((envData.ciEnvironments || []) as string[]);
+    } catch {
+      setEnvironments([]);
+    }
+    try {
+      const res = await shell.fetch("/api/admin/users");
+      if (!res.ok) return;
+      const data = await res.json();
+      const users = Array.isArray(data.users) ? data.users : [];
+      setReferenceOptions((current) => ({
+        ...current,
+        User: users.map((user: any) => ({
+          id: String(user.id),
+          label: String(user.name || user.email || user.id),
+          sublabel: user.email ? String(user.email) : undefined,
+        })),
+      }));
+    } catch {
+      setReferenceOptions((current) => ({ ...current, User: current.User || [] }));
+    }
+  }
+
   async function saveCurrentView() {
     if (!selected) return;
     const name = window.prompt("View name", `${selected.label} view`);
@@ -794,7 +857,8 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     const attr = tableAttr(key);
     if (attr && !canReadAttr(attr)) return "";
     const value = (record.attributes || {})[key] ?? record[key] ?? "";
-    return value === null || value === undefined ? "" : String(value);
+    if (value === null || value === undefined) return "";
+    return typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
   }
 
   function addFilter() {
@@ -1310,6 +1374,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
 
   useEffect(() => {
     loadTables();
+    loadEditorOptions();
   }, []);
 
   useEffect(() => {
@@ -1856,6 +1921,8 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
           saving={saving}
           auditEntries={auditEntries}
           serverValidationIssues={serverValidationIssues}
+          environments={environments}
+          referenceOptions={referenceOptions}
           onChange={updateForm}
           onClose={() => { setEditor(null); setServerValidationIssues(null); }}
           onSave={saveRecord}
@@ -2383,6 +2450,8 @@ function RecordEditor({
   saving,
   auditEntries,
   serverValidationIssues,
+  environments,
+  referenceOptions,
   onChange,
   onClose,
   onSave,
@@ -2392,11 +2461,14 @@ function RecordEditor({
   saving: boolean;
   auditEntries: AuditEntry[];
   serverValidationIssues: ValidationIssue[] | null;
+  environments: string[];
+  referenceOptions: Record<string, ReferenceOption[]>;
   onChange: (key: string, value: string) => void;
   onClose: () => void;
   onSave: () => void;
 }) {
   const editorIssues = validationIssuesForForm(table, editor.form);
+  const environmentOptions = Array.from(new Set([editor.form.environment, ...environments].filter(Boolean)));
   return (
     <aside data-testid="tables-record-editor" className="flex w-[420px] shrink-0 flex-col border-l border-gray-800 bg-gray-950 shadow-[-12px_0_32px_rgba(0,0,0,0.35)]">
       <div className="flex items-center gap-3 border-b border-gray-800 px-4 py-4">
@@ -2426,14 +2498,23 @@ function RecordEditor({
           <input value={editor.form.name || ""} onChange={(event) => onChange("name", event.target.value)} className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500" />
         </Field>
         <Field label="Environment">
-          <input value={editor.form.environment || ""} onChange={(event) => onChange("environment", event.target.value)} className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500" />
+          <select value={editor.form.environment || ""} onChange={(event) => onChange("environment", event.target.value)} className={`w-full ${SELECT_CLASS}`}>
+            <option value="">Select environment</option>
+            {environmentOptions.map((environment) => <option key={environment} value={environment}>{environment}</option>)}
+          </select>
         </Field>
 
         <div className="border-t border-gray-800 pt-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Attributes</div>
           <div className="space-y-3">
             {table.attributes.map((attr) => (
-              <AttributeInput key={attr.name} attr={attr} value={editor.form[attr.name] || ""} onChange={(value) => onChange(attr.name, value)} />
+              <AttributeInput
+                key={attr.name}
+                attr={attr}
+                value={editor.form[attr.name] || ""}
+                referenceOptions={referenceOptions[attr.referenceClass || ""] || []}
+                onChange={(value) => onChange(attr.name, value)}
+              />
             ))}
           </div>
         </div>
@@ -2514,7 +2595,7 @@ function Field({ label, hint, required, children }: { label: string; hint?: stri
   );
 }
 
-function AttributeInput({ attr, value, onChange }: { attr: AttributeDef; value: string; onChange: (value: string) => void }) {
+function AttributeInput({ attr, value, referenceOptions, onChange }: { attr: AttributeDef; value: string; referenceOptions: ReferenceOption[]; onChange: (value: string) => void }) {
   const label = attr.displayName || attr.name;
   if (!canReadAttr(attr)) {
     return (
@@ -2543,6 +2624,31 @@ function AttributeInput({ attr, value, onChange }: { attr: AttributeDef; value: 
         <option value="">Select value</option>
         {attr.enumValues.map((item) => <option key={item} value={item}>{item}</option>)}
       </select>
+    );
+  } else if (attr.attrType === "reference") {
+    const options = referenceOptions.some((option) => option.id === value) || !value
+      ? referenceOptions
+      : [{ id: value, label: value }, ...referenceOptions];
+    input = (
+      <select disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} className={`w-full ${SELECT_CLASS}`}>
+        <option value="">{attr.referenceClass ? `Select ${attr.referenceClass}` : "Select reference"}</option>
+        {options.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.sublabel ? `${option.label} - ${option.sublabel}` : option.label}
+          </option>
+        ))}
+      </select>
+    );
+  } else if (attr.attrType === "json") {
+    input = (
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        readOnly={disabled}
+        disabled={disabled}
+        rows={Math.min(10, Math.max(4, value.split("\n").length))}
+        className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 font-mono text-xs text-gray-100 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500"
+      />
     );
   } else {
     input = (
