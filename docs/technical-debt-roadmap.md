@@ -15,6 +15,14 @@ Fresh baseline from the last sweep:
 
 The web number is intentionally called out as configured scope because current Vitest coverage includes `src/lib/**/*.ts`, not the full app/shell TSX surface.
 
+## Completed In This Debt Sprint
+
+- Added this technical debt roadmap and raised API/web coverage thresholds to the current passing baselines.
+- Moved transient per-tab UI state from shared `localStorage` to `sessionStorage` for CMDB Explorer, Service Map, chat panel, and app container launch/window state.
+- Extracted GraphQL relationship-type validation and mapping helpers from the monolithic resolver module.
+- Extracted Tables route definitions and static registrations from the Tables route handler.
+- Shared the reference typeahead component between Tables and Service Mapping, then added direct component behavior tests.
+
 ## P0 — Structural Risk Reduction
 
 ### Split the highest-risk large files
@@ -30,6 +38,12 @@ Current largest hotspots:
 - `apps/api/src/routes/tables.ts`
 - `apps/api/src/graphql/resolvers.ts`
 - `apps/web/src/apps/service-map/index.tsx`
+
+Initial progress:
+
+- `apps/api/src/graphql/relationshipTypes.ts` now owns relationship-type validation/mapping helpers.
+- `apps/api/src/routes/tableDefinitions.ts` now owns table metadata types and static table registrations.
+- `apps/web/src/components/ReferenceTypeahead.tsx` now owns the shared reference-field typeahead UI.
 
 Plan:
 
@@ -95,13 +109,13 @@ Problem: Web coverage is high only because the configured scope is currently `sr
 Plan:
 
 1. Add component tests for Settings, AppDock, AppLauncher, and ChatPanel.
-2. Add focused app tests for Tables reference typeahead, Service Map edit modal, and CI Class Manager field editing.
+2. Continue focused app tests for Service Map edit modal and CI Class Manager field editing.
 3. Expand coverage include patterns once the first component test layer is stable.
 
 Acceptance criteria:
 
 - Web coverage includes `src/shell`, `src/components`, and selected critical apps.
-- Settings, Dock, Tables reference fields, and Service Map edit modal have regression tests.
+- Settings, Dock, Service Map edit modal, and CI Class Manager field editing have regression tests.
 - Coverage thresholds remain at or above 80 after scope expansion.
 
 ## P1 — Type Safety
