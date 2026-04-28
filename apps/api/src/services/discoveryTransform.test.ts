@@ -141,8 +141,8 @@ describe("buildDeterministicProposal", () => {
       {
         entityType: "host",
         recordCount: 1,
-        columns: ["entity_type", "natural_key", "hostname", "name", "version"],
-        sampleRows: [{ entity_type: "host", natural_key: "nb-lenovo", hostname: "nb-lenovo", name: "Pop!_OS", version: "24.04 LTS" }],
+        columns: ["entity_type", "natural_key", "hostname", "name", "version", "physical_memory", "hardware_vendor", "hardware_model", "hardware_serial"],
+        sampleRows: [{ entity_type: "host", natural_key: "nb-lenovo", hostname: "nb-lenovo", name: "Pop!_OS", version: "24.04 LTS", physical_memory: 17179869184, hardware_vendor: "Lenovo", hardware_model: "ThinkPad", hardware_serial: "SN123" }],
       },
       {
         entityType: "network_interface",
@@ -159,8 +159,8 @@ describe("buildDeterministicProposal", () => {
       {
         entityType: "service",
         recordCount: 1,
-        columns: ["entity_type", "natural_key", "name", "state", "status"],
-        sampleRows: [{ entity_type: "service", natural_key: "nb-lenovo:docker.service", name: "docker.service", state: "running", status: "active" }],
+        columns: ["entity_type", "natural_key", "id", "sub_state", "active_state", "unit_file_state"],
+        sampleRows: [{ entity_type: "service", natural_key: "nb-lenovo:docker.service", id: "docker.service", sub_state: "running", active_state: "active", unit_file_state: "enabled" }],
       },
     ];
     const proposal = buildDeterministicProposal(
@@ -187,7 +187,12 @@ describe("buildDeterministicProposal", () => {
       attributes: expect.objectContaining({
         ipAddress: "10.0.0.22",
         installedSoftware: expect.arrayContaining([expect.objectContaining({ name: "docker" })]),
-        services: expect.arrayContaining([expect.objectContaining({ name: "docker.service" })]),
+        services: expect.arrayContaining([expect.objectContaining({ name: "docker.service", state: "running", status: "active", startType: "enabled" })]),
+        serialNumber: "SN123",
+        manufacturer: "Lenovo",
+        model: "ThinkPad",
+        memoryGB: 16,
+        healthSummary: expect.objectContaining({ totalServices: 1, runningServices: 1, failedServices: 0, enabledServices: 1, posture: "healthy" }),
       }),
     }));
     expect(preview.records).toContainEqual(expect.objectContaining({ targetClass: "ApplicationService", name: "docker.service" }));

@@ -27,6 +27,15 @@ export type TransformProposal = {
   summary: string;
   confidence: number;
   sourceProfile: SourceProfile;
+  entityPlan?: Array<{
+    sourceEntity: string;
+    treatment: "ci" | "embedded_evidence" | "relationship" | "ignore" | "suggest_class";
+    target?: string;
+    parentEntity?: string;
+    cardinality?: string;
+    rationale: string;
+    confidence: number;
+  }>;
   classRoutes: Array<{ sourcePattern: string; targetClass: string; confidence: number; rationale: string }>;
   fieldMappings: Array<{ sourceField: string; targetClass: string; targetField: string; transform: string; confidence: number; rationale?: string; evidence?: string[]; alternatives?: string[] }>;
   relationshipRules: Array<{ fromClass: string; toClass: string; type: string; sourceField: string; confidence: number; rationale?: string; evidence?: string[] }>;
@@ -165,6 +174,73 @@ function profileContext(profile: SourceProfile) {
   }));
 }
 
+function buildEntityPlan(profile: SourceProfile, primaryClass: string) {
+  const entityProfiles = profile.entityProfiles || [];
+  if (!entityProfiles.length) {
+    return [{
+      sourceEntity: profile.entityType || "source_rows",
+      treatment: "ci" as const,
+      target: primaryClass,
+      cardinality: `${profile.recordCount || profile.sampleRows.length || 0} rows`,
+      rationale: "Single source table is treated as the primary CI candidate.",
+      confidence: 0.72,
+    }];
+  }
+  return entityProfiles.map((entity) => {
+    if (entity.entityType === "host") {
+      return {
+        sourceEntity: "host",
+        treatment: "ci" as const,
+        target: primaryClass,
+        cardinality: `${entity.recordCount} host observation${entity.recordCount === 1 ? "" : "s"}`,
+        rationale: "Host observations represent the parent configuration item for edge inventory.",
+        confidence: 0.9,
+      };
+    }
+    if (entity.entityType === "software_package") {
+      return {
+        sourceEntity: entity.entityType,
+        treatment: "embedded_evidence" as const,
+        target: `${primaryClass}.installedSoftware`,
+        parentEntity: "host",
+        cardinality: `${entity.recordCount} package observation${entity.recordCount === 1 ? "" : "s"}`,
+        rationale: "Installed packages are inventory evidence keyed to the host; they should not overwrite host identity.",
+        confidence: 0.82,
+      };
+    }
+    if (entity.entityType === "network_interface") {
+      return {
+        sourceEntity: entity.entityType,
+        treatment: "embedded_evidence" as const,
+        target: `${primaryClass}.networkInterfaces`,
+        parentEntity: "host",
+        cardinality: `${entity.recordCount} interface observation${entity.recordCount === 1 ? "" : "s"}`,
+        rationale: "Interface rows enrich the host and provide preferred IP selection.",
+        confidence: 0.84,
+      };
+    }
+    if (entity.entityType === "service" || entity.entityType === "listening_port") {
+      return {
+        sourceEntity: entity.entityType,
+        treatment: "embedded_evidence" as const,
+        target: `${primaryClass}.${entity.entityType === "service" ? "services" : "listeningPorts"}`,
+        parentEntity: "host",
+        cardinality: `${entity.recordCount} observation${entity.recordCount === 1 ? "" : "s"}`,
+        rationale: "Operational rows are retained as host evidence unless a reviewed service route promotes them to CIs.",
+        confidence: 0.78,
+      };
+    }
+    return {
+      sourceEntity: entity.entityType,
+      treatment: "ignore" as const,
+      parentEntity: "host",
+      cardinality: `${entity.recordCount} observation${entity.recordCount === 1 ? "" : "s"}`,
+      rationale: "No safe default CSDM target was identified for this entity group.",
+      confidence: 0.45,
+    };
+  });
+}
+
 function fieldRationale(sourceField: string, targetField: string, transform: string) {
   const normalized = normalize(sourceField);
   const aliasMatch = Object.entries(CANDIDATE_FIELDS).find(([target, aliases]) =>
@@ -194,6 +270,51 @@ function rowValue(row: Record<string, unknown>, field: string): unknown {
 
 function compactValues(values: unknown[]) {
   return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
+function firstValue(row: Record<string, unknown>, fields: string[]) {
+  for (const field of fields) {
+    const value = row[field] ?? row[normalize(field)];
+    if (value !== null && value !== undefined && String(value).trim() !== "") return value;
+  }
+  return "";
+}
+
+function memoryGb(value: unknown) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return undefined;
+  return Math.round((bytes / 1024 / 1024 / 1024) * 10) / 10;
+}
+
+function serviceName(row: Record<string, unknown>) {
+  return String(firstValue(row, ["name", "id", "service_name"]) || "").trim();
+}
+
+function serviceStatus(row: Record<string, unknown>) {
+  return String(firstValue(row, ["status", "active_state"]) || "").trim();
+}
+
+function serviceState(row: Record<string, unknown>) {
+  return String(firstValue(row, ["state", "sub_state"]) || "").trim();
+}
+
+function serviceStartType(row: Record<string, unknown>) {
+  return String(firstValue(row, ["start_type", "unit_file_state"]) || "").trim();
+}
+
+function healthSummary(serviceRows: Record<string, unknown>[]) {
+  if (!serviceRows.length) return undefined;
+  const totalServices = serviceRows.length;
+  const runningServices = serviceRows.filter((row) => serviceStatus(row) === "active" || serviceState(row) === "running").length;
+  const failedServices = serviceRows.filter((row) => ["failed", "error"].includes(serviceStatus(row)) || ["failed", "error"].includes(serviceState(row))).length;
+  const enabledServices = serviceRows.filter((row) => serviceStartType(row) === "enabled").length;
+  return {
+    totalServices,
+    runningServices,
+    failedServices,
+    enabledServices,
+    posture: failedServices > 0 ? "attention" : runningServices > 0 ? "healthy" : "unknown",
+  };
 }
 
 function hostKey(row: Record<string, unknown>) {
@@ -308,6 +429,11 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
         attributes.osVersion = attributes.osVersion || hostRow.version;
         attributes.cpuType = attributes.cpuType || hostRow.cpu_type;
         attributes.physicalMemory = attributes.physicalMemory || hostRow.physical_memory;
+        attributes.memoryGB = attributes.memoryGB || memoryGb(hostRow.physical_memory);
+        attributes.serialNumber = attributes.serialNumber || firstValue(hostRow, ["hardware_serial", "board_serial", "serial", "serial_number"]);
+        attributes.manufacturer = attributes.manufacturer || firstValue(hostRow, ["hardware_vendor", "board_vendor", "manufacturer", "vendor"]);
+        attributes.model = attributes.model || firstValue(hostRow, ["hardware_model", "board_model", "model"]);
+        attributes.hardwareVersion = attributes.hardwareVersion || firstValue(hostRow, ["hardware_version", "board_version"]);
         if (targetClass === "Computer" && !attributes.deviceType) attributes.deviceType = "workstation";
         const ip = preferredIp(networkRows);
         if (ip && !attributes.ipAddress) attributes.ipAddress = ip;
@@ -315,7 +441,10 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
         if (ipAddresses.length) attributes.ipAddresses = ipAddresses;
         if (networkRows.length) attributes.networkInterfaces = networkRows.map((row) => ({ interface: row.interface, address: row.address, mask: row.mask, type: row.type })).slice(0, 25);
         if (softwareRows.length) attributes.installedSoftware = softwareRows.map((row) => ({ name: row.name, version: row.version, source: row.source })).slice(0, 50);
-        if (serviceRows.length) attributes.services = serviceRows.map((row) => ({ name: row.name, state: row.state, status: row.status, startType: row.start_type })).slice(0, 50);
+        if (serviceRows.length) {
+          attributes.services = serviceRows.map((row) => ({ name: serviceName(row), state: serviceState(row), status: serviceStatus(row), startType: serviceStartType(row) })).filter((row) => row.name).slice(0, 50);
+          attributes.healthSummary = attributes.healthSummary || healthSummary(serviceRows);
+        }
         if (portRows.length) attributes.listeningPorts = portRows.map((row) => ({ port: row.port, protocol: row.protocol, address: row.address, pid: row.pid })).slice(0, 50);
       }
 
@@ -348,14 +477,14 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
     for (const serviceRow of serviceRows.slice(0, 25)) {
       if (hostTargetClass !== "Server") break;
       if (!targetClasses.some((targetClass) => targetClass.name === "ApplicationService")) break;
-      const serviceName = String(serviceRow.name || "").trim();
-      if (!serviceName) continue;
+      const appServiceName = serviceName(serviceRow);
+      if (!appServiceName) continue;
       records.push({
         row: rowIndex + 1,
-        action: existingCiIds.has(stableDiscoveryCiId("ApplicationService", serviceName)) ? "update" : "create",
+        action: existingCiIds.has(stableDiscoveryCiId("ApplicationService", appServiceName)) ? "update" : "create",
         targetClass: "ApplicationService",
-        name: serviceName,
-        attributes: { state: serviceRow.state, status: serviceRow.status, startType: serviceRow.start_type, host: key },
+        name: appServiceName,
+        attributes: { state: serviceState(serviceRow), status: serviceStatus(serviceRow), startType: serviceStartType(serviceRow), host: key },
         matchKeys: ["name"],
         errors: [],
         warnings: [],
@@ -582,6 +711,7 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
     summary: `Drafted ${fieldMappings.length} mappings into ${routes.map((r) => r.name).join(", ")} with ${relationshipRules.length} relationship rules${profile.entityType ? ` from ${profile.recordCount || profile.sampleRows.length} ${profile.entityType} observations` : ""}${entityProfiles.length ? ` using ${entityProfiles.length} edge entity profiles` : ""}.`,
     confidence: Math.min(0.92, 0.55 + routes[0].score * 0.08 + matchKeys.length * 0.05),
     sourceProfile: { ...profile, columns },
+    entityPlan: buildEntityPlan(profile, primaryClass),
     classRoutes: routes.map((r) => ({
       sourcePattern: r.score > 1 ? "column signatures" : "default route",
       targetClass: r.name,
@@ -675,6 +805,14 @@ export async function proposeTransform(profile: SourceProfile, targetClasses: Ta
       role: "user" as const,
       content: JSON.stringify({
         task: "Map this source into Specora CSDM-shaped CIs, transforms, reconciliation keys, and relationships.",
+        workflow: [
+          "1. Read the source/entity profile.",
+          "2. Decompose source entities and decide whether each becomes a CI, embedded evidence, relationship-only data, ignored data, or a suggested class.",
+          "3. Create a class routing plan.",
+          "4. Draft field mappings per routed class.",
+          "5. Draft reconciliation rules per routed class.",
+          "6. Draft only relationships with durable source and target evidence.",
+        ],
         allowedRelationshipTypes: ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"],
         targetClasses,
         sourceProfile: profile,

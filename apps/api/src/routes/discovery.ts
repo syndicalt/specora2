@@ -264,7 +264,7 @@ const HOST_INVENTORY_JOBS = [
     priority: 10,
     payload: {
       queries: [
-        { name: "system_info", sql: "select hostname, uuid, cpu_type, physical_memory from system_info;" },
+        { name: "system_info", sql: "select hostname, uuid, cpu_type, physical_memory, hardware_vendor, hardware_model, hardware_version, hardware_serial, board_vendor, board_model, board_serial, computer_name, local_hostname from system_info;" },
         { name: "os_version", sql: "select name, version, major, minor, patch, platform from os_version;" },
       ],
     },

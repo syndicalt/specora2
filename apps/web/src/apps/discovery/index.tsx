@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -46,6 +46,7 @@ import {
   Workflow,
   Wand2,
   XCircle,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -118,6 +119,7 @@ type TransformProposal = {
   title: string;
   summary: string;
   confidence: number;
+  entityPlan?: Array<{ sourceEntity: string; treatment: string; target?: string; parentEntity?: string; cardinality?: string; rationale: string; confidence: number }>;
   classRoutes: Array<{ sourcePattern: string; targetClass: string; confidence: number; rationale: string }>;
   fieldMappings: Array<{ sourceField: string; targetClass: string; targetField: string; transform: string; confidence: number; rationale?: string; evidence?: string[]; alternatives?: string[] }>;
   relationshipRules: Array<{ fromClass: string; toClass: string; type: string; sourceField: string; confidence: number; rationale?: string; evidence?: string[] }>;
@@ -258,6 +260,13 @@ function parseCsv(text: string): { columns: string[]; rows: Record<string, strin
 
 function rowsToCsv(columns: string[], rows: Record<string, unknown>[]): string {
   return [columns.join(","), ...rows.map((row) => columns.map((column) => String(row[column] ?? "")).join(","))].join("\n");
+}
+
+function sourceFields(columns: string[], entityProfiles: EdgeObservationProfile[] = []) {
+  return Array.from(new Set([
+    ...columns,
+    ...entityProfiles.flatMap((entity) => entity.columns.map((column) => `${entity.entityType}.${column}`)),
+  ].filter(Boolean)));
 }
 
 function edgeCollectorSample(collector: DiscoveryCollector | null): string {
@@ -575,6 +584,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [mappingProfileName, setMappingProfileName] = useState("Reusable mapping");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const [stepMenuOpen, setStepMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<"builder" | "pipelines" | "runs" | "sources">("builder");
@@ -601,6 +611,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const risks = proposal?.risks || [];
   const currentPipeline = useMemo(() => pipelines.find((pipeline) => pipeline.id === currentPipelineId) || null, [pipelines, currentPipelineId]);
   const selectedNode = useMemo(() => nodes.find((item) => item.id === selectedNodeId) || null, [nodes, selectedNodeId]);
+  const detailNode = useMemo(() => nodes.find((item) => item.id === detailNodeId) || null, [nodes, detailNodeId]);
+  const editableSourceFields = useMemo(() => sourceFields(profile.columns, edgeProfiles), [edgeProfiles, profile.columns]);
   const orderedJobs = useMemo(
     () => [...jobs].sort((a, b) => discoveryJobTimestamp(b) - discoveryJobTimestamp(a) || b.id.localeCompare(a.id)),
     [jobs]
@@ -1328,6 +1340,56 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setPreview(null);
   }
 
+  function addClassRoute() {
+    if (!proposal) return;
+    const targetClass = classes[0]?.name || "ConfigurationItem";
+    setProposal({
+      ...proposal,
+      classRoutes: [
+        ...proposal.classRoutes,
+        { sourcePattern: "manual route", targetClass, confidence: 0.5, rationale: "Added by discovery admin." },
+      ],
+    });
+    setPreview(null);
+  }
+
+  function updateClassRoute(index: number, patch: Partial<TransformProposal["classRoutes"][number]>) {
+    if (!proposal) return;
+    setProposal({ ...proposal, classRoutes: proposal.classRoutes.map((route, i) => i === index ? { ...route, ...patch } : route) });
+    setPreview(null);
+  }
+
+  function deleteClassRoute(index: number) {
+    if (!proposal) return;
+    setProposal({ ...proposal, classRoutes: proposal.classRoutes.filter((_, i) => i !== index) });
+    setPreview(null);
+  }
+
+  function addMapping() {
+    if (!proposal) return;
+    setProposal({
+      ...proposal,
+      fieldMappings: [
+        ...proposal.fieldMappings,
+        {
+          sourceField: editableSourceFields[0] || "name",
+          targetClass: proposal.classRoutes[0]?.targetClass || classes[0]?.name || "ConfigurationItem",
+          targetField: "name",
+          transform: "trim",
+          confidence: 0.5,
+          rationale: "Added by discovery admin.",
+        },
+      ],
+    });
+    setPreview(null);
+  }
+
+  function deleteMapping(index: number) {
+    if (!proposal) return;
+    setProposal({ ...proposal, fieldMappings: proposal.fieldMappings.filter((_, i) => i !== index) });
+    setPreview(null);
+  }
+
   function addRelationshipRule() {
     if (!proposal) return;
     const firstClass = proposal.classRoutes[0]?.targetClass || "ConfigurationItem";
@@ -1345,6 +1407,36 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     if (!proposal) return;
     const relationshipRules = proposal.relationshipRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule);
     setProposal({ ...proposal, relationshipRules });
+    setPreview(null);
+  }
+
+  function deleteRelationship(index: number) {
+    if (!proposal) return;
+    setProposal({ ...proposal, relationshipRules: proposal.relationshipRules.filter((_, i) => i !== index) });
+    setPreview(null);
+  }
+
+  function addReconciliationRule() {
+    if (!proposal) return;
+    setProposal({
+      ...proposal,
+      reconciliationRules: [
+        ...proposal.reconciliationRules,
+        { targetClass: proposal.classRoutes[0]?.targetClass || classes[0]?.name || "ConfigurationItem", matchKeys: ["name"], strategy: "create_or_update" },
+      ],
+    });
+    setPreview(null);
+  }
+
+  function updateReconciliation(index: number, patch: Partial<TransformProposal["reconciliationRules"][number]>) {
+    if (!proposal) return;
+    setProposal({ ...proposal, reconciliationRules: proposal.reconciliationRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) });
+    setPreview(null);
+  }
+
+  function deleteReconciliation(index: number) {
+    if (!proposal) return;
+    setProposal({ ...proposal, reconciliationRules: proposal.reconciliationRules.filter((_, i) => i !== index) });
     setPreview(null);
   }
 
@@ -1957,6 +2049,11 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
               onEdgesChange={handleEdgesChange}
               onConnect={onConnect}
               onNodeClick={(_, clickedNode) => setSelectedNodeId(clickedNode.id)}
+              onNodeContextMenu={(event, clickedNode) => {
+                event.preventDefault();
+                setSelectedNodeId(clickedNode.id);
+                setDetailNodeId(clickedNode.id);
+              }}
               onPaneClick={() => setSelectedNodeId(null)}
               nodesDraggable
               nodesConnectable
@@ -1967,6 +2064,29 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
               <Background color="#374151" gap={18} />
               <Controls position="bottom-right" showInteractive={false} />
             </ReactFlow>
+            {detailNode && (
+              <PipelineNodeWindow
+                node={detailNode}
+                proposal={proposal}
+                classes={classes}
+                sourceFields={editableSourceFields}
+                edgeProfiles={edgeProfiles}
+                onClose={() => setDetailNodeId(null)}
+                onUpdateNode={(patch) => updateCanvasNode(detailNode.id, patch)}
+                onAddClassRoute={addClassRoute}
+                onUpdateClassRoute={updateClassRoute}
+                onDeleteClassRoute={deleteClassRoute}
+                onAddMapping={addMapping}
+                onUpdateMapping={updateMapping}
+                onDeleteMapping={deleteMapping}
+                onAddRelationship={addRelationshipRule}
+                onUpdateRelationship={updateRelationship}
+                onDeleteRelationship={deleteRelationship}
+                onAddReconciliation={addReconciliationRule}
+                onUpdateReconciliation={updateReconciliation}
+                onDeleteReconciliation={deleteReconciliation}
+              />
+            )}
           </section>
 
           <aside className="min-h-0 overflow-auto border-t border-gray-800 bg-gray-950 p-4 pb-24 xl:border-l xl:border-t-0">
@@ -2044,32 +2164,38 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                   {proposal.classRoutes.map((route) => (
                     <ReviewRow key={route.targetClass} primary={route.targetClass} secondary={route.rationale} metric={pct(route.confidence)} />
                   ))}
+                  <button onClick={() => setDetailNodeId("classify")} className="mt-2 w-full rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800">
+                    Edit class routes
+                  </button>
                 </ReviewBlock>
 
                 <ReviewBlock icon={<Play className="h-4 w-4" />} title="Field Mappings">
-                  {proposal.fieldMappings.map((mapping, index) => (
-                    <MappingEditor
-                      key={`${mapping.sourceField}-${index}`}
-                      mapping={mapping}
-                      classes={classes}
-                      columns={profile.columns}
-                      onChange={(patch) => updateMapping(index, patch)}
-                    />
-                  ))}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <PreviewMetric label="Rules" value={proposal.fieldMappings.length} />
+                    <PreviewMetric label="Classes" value={new Set(proposal.fieldMappings.map((mapping) => mapping.targetClass)).size} />
+                  </div>
+                  <button onClick={() => setDetailNodeId("map")} className="mt-2 w-full rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800">
+                    Edit field mappings
+                  </button>
                 </ReviewBlock>
 
                 <ReviewBlock icon={<Link2 className="h-4 w-4" />} title="Relationship Rules">
-                  {proposal.relationshipRules.length ? proposal.relationshipRules.map((rule, index) => (
-                    <RelationshipEditor
-                      key={`${rule.fromClass}-${rule.type}-${rule.toClass}-${index}`}
-                      rule={rule}
-                      classes={classes}
-                      columns={profile.columns}
-                      onChange={(patch) => updateRelationship(index, patch)}
-                    />
-                  )) : <p className="text-sm text-gray-500">No relationships proposed yet.</p>}
-                  <button onClick={addRelationshipRule} className="mt-2 w-full rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800">
-                    Add relationship rule
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <PreviewMetric label="Rules" value={proposal.relationshipRules.length} />
+                    <PreviewMetric label="Targets" value={new Set(proposal.relationshipRules.map((rule) => rule.toClass)).size} />
+                  </div>
+                  <button onClick={() => setDetailNodeId("link")} className="mt-2 w-full rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800">
+                    Edit relationship rules
+                  </button>
+                </ReviewBlock>
+
+                <ReviewBlock icon={<GitBranch className="h-4 w-4" />} title="Reconciliation Rules">
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <PreviewMetric label="Rules" value={proposal.reconciliationRules.length} />
+                    <PreviewMetric label="Keys" value={new Set(proposal.reconciliationRules.flatMap((rule) => rule.matchKeys)).size} />
+                  </div>
+                  <button onClick={() => setDetailNodeId("reconcile")} className="mt-2 w-full rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800">
+                    Edit reconciliation
                   </button>
                 </ReviewBlock>
 
@@ -2330,17 +2456,27 @@ function MappingEditor({
   classes,
   columns,
   onChange,
+  onDelete,
 }: {
   mapping: TransformProposal["fieldMappings"][number];
   classes: TargetClass[];
   columns: string[];
   onChange: (patch: Partial<TransformProposal["fieldMappings"][number]>) => void;
+  onDelete?: () => void;
 }) {
   return (
     <div className="rounded-md bg-gray-950 p-2">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-gray-400">{mapping.sourceField} to {mapping.targetClass}.{mapping.targetField}</span>
+        {onDelete && (
+          <button onClick={onDelete} className="rounded p-1 text-gray-500 hover:bg-rose-500/10 hover:text-rose-300" aria-label="Delete field mapping">
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
       <div className="grid grid-cols-2 gap-2">
-        <select value={mapping.sourceField} onChange={(event) => onChange({ sourceField: event.target.value })} className="rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs">
-          {columns.map((column) => <option key={column} value={column}>{column}</option>)}
+        <select value={mapping.sourceField} onChange={(event) => onChange({ sourceField: event.target.value })} className="min-w-0 rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs">
+          {Array.from(new Set([...columns, mapping.sourceField])).map((column) => <option key={column} value={column}>{column}</option>)}
         </select>
         <select value={mapping.targetClass} onChange={(event) => onChange({ targetClass: event.target.value })} className="rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs">
           {classes.map((cls) => <option key={cls.name} value={cls.name}>{cls.displayName || cls.name}</option>)}
@@ -2368,15 +2504,25 @@ function RelationshipEditor({
   classes,
   columns,
   onChange,
+  onDelete,
 }: {
   rule: TransformProposal["relationshipRules"][number];
   classes: TargetClass[];
   columns: string[];
   onChange: (patch: Partial<TransformProposal["relationshipRules"][number]>) => void;
+  onDelete?: () => void;
 }) {
   const classNames = classes.map((cls) => cls.name);
   return (
     <div className="rounded-md bg-gray-950 p-2">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-gray-400">{rule.fromClass} {rule.type} {rule.toClass}</span>
+        {onDelete && (
+          <button onClick={onDelete} className="rounded p-1 text-gray-500 hover:bg-rose-500/10 hover:text-rose-300" aria-label="Delete relationship rule">
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
       <div className="grid grid-cols-3 gap-2">
         <select value={rule.fromClass} onChange={(event) => onChange({ fromClass: event.target.value })} className="rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs">
           {Array.from(new Set([...classNames, rule.fromClass])).map((name) => <option key={name} value={name}>{name}</option>)}
@@ -2392,6 +2538,221 @@ function RelationshipEditor({
         {Array.from(new Set([...columns, rule.sourceField])).map((column) => <option key={column} value={column}>{column}</option>)}
       </select>
       <RationalePanel confidence={rule.confidence} rationale={rule.rationale} evidence={rule.evidence} />
+    </div>
+  );
+}
+
+function ClassRouteEditor({
+  route,
+  classes,
+  onChange,
+  onDelete,
+}: {
+  route: TransformProposal["classRoutes"][number];
+  classes: TargetClass[];
+  onChange: (patch: Partial<TransformProposal["classRoutes"][number]>) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="rounded-md bg-gray-950 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-gray-400">{route.sourcePattern || "route"} to {route.targetClass}</span>
+        <button onClick={onDelete} className="rounded p-1 text-gray-500 hover:bg-rose-500/10 hover:text-rose-300" aria-label="Delete class route">
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <input value={route.sourcePattern} onChange={(event) => onChange({ sourcePattern: event.target.value })} className="rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs outline-none focus:border-cyan-500" />
+        <select value={route.targetClass} onChange={(event) => onChange({ targetClass: event.target.value })} className="rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs">
+          {Array.from(new Set([...classes.map((cls) => cls.name), route.targetClass])).map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </div>
+      <textarea value={route.rationale} onChange={(event) => onChange({ rationale: event.target.value })} className="mt-2 h-16 w-full resize-none rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs outline-none focus:border-cyan-500" />
+      <label className="mt-2 block text-[11px] text-gray-500">Confidence {pct(route.confidence)}</label>
+      <input type="range" min="0" max="1" step="0.01" value={route.confidence} onChange={(event) => onChange({ confidence: Number(event.target.value) })} className="w-full" />
+    </div>
+  );
+}
+
+function ReconciliationEditor({
+  rule,
+  classes,
+  onChange,
+  onDelete,
+}: {
+  rule: TransformProposal["reconciliationRules"][number];
+  classes: TargetClass[];
+  onChange: (patch: Partial<TransformProposal["reconciliationRules"][number]>) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="rounded-md bg-gray-950 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-gray-400">{rule.targetClass} by {rule.matchKeys.join(", ") || "no keys"}</span>
+        <button onClick={onDelete} className="rounded p-1 text-gray-500 hover:bg-rose-500/10 hover:text-rose-300" aria-label="Delete reconciliation rule">
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <select value={rule.targetClass} onChange={(event) => onChange({ targetClass: event.target.value })} className="rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs">
+          {Array.from(new Set([...classes.map((cls) => cls.name), rule.targetClass])).map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+        <select value={rule.strategy} onChange={(event) => onChange({ strategy: event.target.value })} className="rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs">
+          {["create_or_update", "update", "review"].map((strategy) => <option key={strategy} value={strategy}>{strategy}</option>)}
+        </select>
+      </div>
+      <input
+        value={rule.matchKeys.join(", ")}
+        onChange={(event) => onChange({ matchKeys: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })}
+        className="mt-2 w-full rounded border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+        placeholder="name, ipAddress"
+      />
+    </div>
+  );
+}
+
+function PipelineNodeWindow({
+  node,
+  proposal,
+  classes,
+  sourceFields,
+  edgeProfiles,
+  onClose,
+  onUpdateNode,
+  onAddClassRoute,
+  onUpdateClassRoute,
+  onDeleteClassRoute,
+  onAddMapping,
+  onUpdateMapping,
+  onDeleteMapping,
+  onAddRelationship,
+  onUpdateRelationship,
+  onDeleteRelationship,
+  onAddReconciliation,
+  onUpdateReconciliation,
+  onDeleteReconciliation,
+}: {
+  node: Node<DiscoveryFlowNodeData>;
+  proposal: TransformProposal | null;
+  classes: TargetClass[];
+  sourceFields: string[];
+  edgeProfiles: EdgeObservationProfile[];
+  onClose: () => void;
+  onUpdateNode: (patch: Partial<DiscoveryFlowNodeData>) => void;
+  onAddClassRoute: () => void;
+  onUpdateClassRoute: (index: number, patch: Partial<TransformProposal["classRoutes"][number]>) => void;
+  onDeleteClassRoute: (index: number) => void;
+  onAddMapping: () => void;
+  onUpdateMapping: (index: number, patch: Partial<TransformProposal["fieldMappings"][number]>) => void;
+  onDeleteMapping: (index: number) => void;
+  onAddRelationship: () => void;
+  onUpdateRelationship: (index: number, patch: Partial<TransformProposal["relationshipRules"][number]>) => void;
+  onDeleteRelationship: (index: number) => void;
+  onAddReconciliation: () => void;
+  onUpdateReconciliation: (index: number, patch: Partial<TransformProposal["reconciliationRules"][number]>) => void;
+  onDeleteReconciliation: (index: number) => void;
+}) {
+  const catalog = catalogFor(node.data.kind);
+  const Icon = catalog.icon;
+  return (
+    <div className="absolute inset-4 z-30 overflow-hidden rounded-lg border border-gray-700 bg-gray-950 shadow-2xl">
+      <div className="flex items-center justify-between border-b border-gray-800 bg-gray-900 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-gray-950" style={{ color: node.data.color }}>
+            <Icon className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-gray-100">{node.data.title}</div>
+            <div className="truncate text-xs text-gray-500">Right-click node detail · {node.data.kind}</div>
+          </div>
+        </div>
+        <button onClick={onClose} className="rounded-md p-2 text-gray-400 hover:bg-gray-800 hover:text-gray-100" aria-label="Close node details">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="grid h-[calc(100%-58px)] min-h-0 grid-cols-1 xl:grid-cols-[320px_1fr]">
+        <div className="border-b border-gray-800 p-4 xl:border-b-0 xl:border-r">
+          <label className="block text-xs text-gray-500">Title</label>
+          <input value={node.data.title} onChange={(event) => onUpdateNode({ title: event.target.value })} className="mt-1 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
+          <label className="mt-3 block text-xs text-gray-500">Behavior note</label>
+          <textarea value={node.data.detail} onChange={(event) => onUpdateNode({ detail: event.target.value })} className="mt-1 h-28 w-full resize-none rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
+          <div className="mt-4 rounded-md border border-gray-800 bg-gray-900 p-3 text-xs leading-5 text-gray-400">
+            Use this window for full pipeline editing. The sidebar remains a preview/status surface.
+          </div>
+        </div>
+
+        <div className="min-h-0 overflow-auto p-4">
+          {!proposal ? (
+            <div className="rounded-lg border border-dashed border-gray-800 p-8 text-center text-sm text-gray-500">Draft a transform before editing routes, mappings, relationships, or reconciliation.</div>
+          ) : node.data.kind === "profile" ? (
+            <div className="space-y-3">
+              {(proposal.entityPlan || []).map((entity, index) => (
+                <div key={`${entity.sourceEntity}-${index}`} className="rounded-md border border-gray-800 bg-gray-900 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-gray-100">{entity.sourceEntity}</span>
+                    <span className="rounded bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">{entity.treatment}</span>
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500">{entity.target || "no target"}{entity.cardinality ? ` · ${entity.cardinality}` : ""}</div>
+                  <p className="mt-2 text-sm leading-5 text-gray-400">{entity.rationale}</p>
+                </div>
+              ))}
+              {edgeProfiles.map((profile) => (
+                <div key={profile.entityType} className="rounded-md border border-gray-800 bg-gray-900 p-3">
+                  <div className="text-sm font-medium text-gray-100">{profile.entityType}</div>
+                  <div className="mt-1 text-xs text-gray-500">{profile.recordCount} records · {profile.columns.length} fields</div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {profile.columns.slice(0, 24).map((column) => <span key={column} className="rounded bg-gray-950 px-2 py-1 text-[11px] text-gray-400">{column}</span>)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : node.data.kind === "router" ? (
+            <EditorSection title="Class Routes" onAdd={onAddClassRoute} addLabel="Add class route">
+              {proposal.classRoutes.map((route, index) => (
+                <ClassRouteEditor key={`${route.targetClass}-${index}`} route={route} classes={classes} onChange={(patch) => onUpdateClassRoute(index, patch)} onDelete={() => onDeleteClassRoute(index)} />
+              ))}
+            </EditorSection>
+          ) : node.data.kind === "transform" ? (
+            <EditorSection title="Field Mappings" onAdd={onAddMapping} addLabel="Add field mapping">
+              {proposal.fieldMappings.map((mapping, index) => (
+                <MappingEditor key={`${mapping.sourceField}-${index}`} mapping={mapping} classes={classes} columns={sourceFields} onChange={(patch) => onUpdateMapping(index, patch)} onDelete={() => onDeleteMapping(index)} />
+              ))}
+            </EditorSection>
+          ) : node.data.kind === "linker" ? (
+            <EditorSection title="Relationship Rules" onAdd={onAddRelationship} addLabel="Add relationship rule">
+              {proposal.relationshipRules.map((rule, index) => (
+                <RelationshipEditor key={`${rule.fromClass}-${rule.type}-${rule.toClass}-${index}`} rule={rule} classes={classes} columns={sourceFields} onChange={(patch) => onUpdateRelationship(index, patch)} onDelete={() => onDeleteRelationship(index)} />
+              ))}
+            </EditorSection>
+          ) : node.data.kind === "reconcile" ? (
+            <EditorSection title="Reconciliation Rules" onAdd={onAddReconciliation} addLabel="Add reconciliation rule">
+              {proposal.reconciliationRules.map((rule, index) => (
+                <ReconciliationEditor key={`${rule.targetClass}-${index}`} rule={rule} classes={classes} onChange={(patch) => onUpdateReconciliation(index, patch)} onDelete={() => onDeleteReconciliation(index)} />
+              ))}
+            </EditorSection>
+          ) : (
+            <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm leading-6 text-gray-400">
+              This node does not have a specialized pipeline editor yet. Use the left panel for node metadata and the sidebar for preview/run controls.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditorSection({ title, children, onAdd, addLabel }: { title: string; children: ReactNode; onAdd: () => void; addLabel: string }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-gray-100">{title}</h3>
+        <button onClick={onAdd} className="flex items-center gap-2 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/20">
+          <Plus className="h-4 w-4" />
+          {addLabel}
+        </button>
+      </div>
+      {children}
     </div>
   );
 }
