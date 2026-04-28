@@ -223,7 +223,7 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
         <div className="mb-2 flex justify-center">
           <div className="flex items-center gap-2 rounded-full border border-white/10 bg-gray-950/80 px-3 py-1.5 text-[11px] font-medium text-gray-400 shadow-lg shadow-black/30 backdrop-blur-xl">
             <span className="hidden sm:inline-flex items-center gap-1">
-              <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-gray-300">Ctrl+K</kbd>
+              <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-gray-300">Ctrl+Shift+K</kbd>
               Apps
             </span>
             <span className="hidden sm:block h-3 w-px bg-white/10" />

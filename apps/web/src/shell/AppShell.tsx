@@ -303,6 +303,24 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
   useEffect(() => {
     if (!ready) return;
 
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isLauncherShortcut = event.key.toLowerCase() === "k"
+        && event.shiftKey
+        && !event.altKey
+        && !event.repeat
+        && (event.ctrlKey || event.metaKey);
+      if (!isLauncherShortcut || isEditableTarget(event.target)) return;
+      event.preventDefault();
+      dispatch({ type: "TOGGLE_LAUNCHER" });
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+
     const closeActiveApp = () => {
       const focusedWindow = state.focusedWindowId
         ? state.instances.find((instance) => instance.instanceId === state.focusedWindowId)
