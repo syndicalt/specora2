@@ -1228,6 +1228,29 @@ LIMIT 50`;
       }
       return result.rows[0];
     },
+    async updateProfile(_parent: any, args: { name: string }, context: any) {
+      if (!context.user?.id) {
+        throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
+      }
+      const name = String(args.name || "").trim();
+      if (name.length < 2 || name.length > 120) {
+        throw new GraphQLError("Display name must be between 2 and 120 characters", { extensions: { code: "BAD_USER_INPUT" } });
+      }
+      let result = await context.pg.query(
+        "UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name, email, preferences, role",
+        [name, context.user.id]
+      );
+      if (!result.rows.length && context.user?.email) {
+        result = await context.pg.query(
+          "UPDATE users SET name = $1, updated_at = NOW() WHERE email = $2 RETURNING id, name, email, preferences, role",
+          [name, context.user.email]
+        );
+      }
+      if (!result.rows.length) {
+        throw new GraphQLError("User not found", { extensions: { code: "NOT_FOUND" } });
+      }
+      return result.rows[0];
+    },
     async submitMarketplaceApp(_parent: any, args: { id: string; name: string; description?: string; url: string; icon?: string; version?: string; permissions?: string[]; reactVersion?: string; author: string; authorUrl?: string }, context: any) {
       await checkPermission(context, "app", "install");
       const result = await context.pg.query(

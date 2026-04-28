@@ -841,6 +841,24 @@ describe("Mutation.updatePreferences", () => {
   });
 });
 
+describe("Mutation.updateProfile", () => {
+  it("updates the authenticated user's display name", async () => {
+    const pg = mockPg([{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice Specora", email: "alice@specora.dev", preferences: {}, role: "admin" }]);
+    const result = await resolvers.Mutation.updateProfile(null, { name: " Alice Specora " }, mockContextWithPg(mockNeo4jSession(), pg));
+    expect(result.name).toBe("Alice Specora");
+    expect(pg.query).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE users SET name = $1"),
+      ["Alice Specora", "550e8400-e29b-41d4-a716-446655440001"]
+    );
+  });
+
+  it("rejects invalid display names", async () => {
+    await expect(
+      resolvers.Mutation.updateProfile(null, { name: "A" }, mockContextWithPg(mockNeo4jSession(), mockPg()))
+    ).rejects.toThrow("Display name must be between 2 and 120 characters");
+  });
+});
+
 describe("Saved view resolvers", () => {
   it("returns only the authenticated user's saved views", async () => {
     const pg = mockPg([{

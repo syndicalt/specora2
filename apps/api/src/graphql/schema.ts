@@ -293,6 +293,7 @@ const typeDefs = `
     updateDiscoverySource(id: ID!, name: String!, type: String!, config: JSON): DiscoverySource!
     deleteDiscoverySource(id: ID!): Boolean!
     updatePreferences(preferences: JSON!): User!
+    updateProfile(name: String!): User!
     submitMarketplaceApp(id: ID!, name: String!, description: String, url: String!, icon: String, version: String, permissions: [String!], reactVersion: String, author: String!, authorUrl: String): MarketplaceApp!
     approveMarketplaceApp(id: ID!): MarketplaceApp!
     rejectMarketplaceApp(id: ID!): MarketplaceApp!

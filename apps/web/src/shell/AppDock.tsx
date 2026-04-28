@@ -5,9 +5,26 @@ import { useShell } from "./AppContext";
 import type { RegistryEntry } from "@/sdk/types";
 import { APP_ICONS, LogOut, X, MessageSquare, PinOff, Pin } from "@/lib/icons";
 import { removeToken } from "@/lib/auth";
+import { graphqlClient } from "@/lib/api";
+
+const ME_QUERY = `query { me { id name email } }`;
+
+type DockUser = {
+  id: string;
+  name?: string | null;
+  email?: string | null;
+};
+
+function initialsFor(name?: string | null, email?: string | null) {
+  const source = (name || email || "User").trim();
+  const parts = source.split(/[\s.@_-]+/).filter(Boolean);
+  const initials = parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join("");
+  return initials || "U";
+}
 
 export function UserProfileBadge() {
   const [open, setOpen] = useState(false);
+  const [user, setUser] = useState<DockUser | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const { dispatch } = useShell();
 
@@ -19,6 +36,27 @@ export function UserProfileBadge() {
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    graphqlClient.request(ME_QUERY)
+      .then((data: any) => {
+        if (mounted) setUser(data?.me || null);
+      })
+      .catch(() => {
+        if (mounted) setUser(null);
+      });
+
+    const profileHandler = (event: Event) => {
+      const detail = (event as CustomEvent<DockUser>).detail;
+      if (detail) setUser(detail);
+    };
+    window.addEventListener("specora:user-profile-updated", profileHandler);
+    return () => {
+      mounted = false;
+      window.removeEventListener("specora:user-profile-updated", profileHandler);
+    };
   }, []);
 
   const handleLogout = () => {
@@ -36,15 +74,17 @@ export function UserProfileBadge() {
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center justify-center w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/40 hover:scale-105 transition-all duration-200"
+        title={user?.name || user?.email || "User"}
       >
-        U
+        {initialsFor(user?.name, user?.email)}
       </button>
 
       {open && (
         <div className="absolute bottom-full right-0 mb-2 w-48 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl overflow-hidden z-[60]">
           <div className="px-3 py-2.5 border-b border-gray-800">
             <p className="text-xs text-gray-500">Signed in as</p>
-            <p className="text-sm font-medium text-gray-200">User</p>
+            <p className="truncate text-sm font-medium text-gray-200">{user?.name || user?.email || "User"}</p>
+            {user?.name && user?.email && <p className="truncate text-xs text-gray-500">{user.email}</p>}
           </div>
           <button
             onClick={openSettings}
