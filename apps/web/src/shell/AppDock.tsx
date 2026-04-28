@@ -220,6 +220,24 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
 
       {/* Dock */}
       <div ref={dockRef} className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
+        <div className="mb-2 flex justify-center">
+          <div className="flex items-center gap-2 rounded-full border border-white/10 bg-gray-950/80 px-3 py-1.5 text-[11px] font-medium text-gray-400 shadow-lg shadow-black/30 backdrop-blur-xl">
+            <span className="hidden sm:inline-flex items-center gap-1">
+              <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-gray-300">Ctrl+K</kbd>
+              Apps
+            </span>
+            <span className="hidden sm:block h-3 w-px bg-white/10" />
+            <span className="inline-flex items-center gap-1">
+              <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-gray-300">Ctrl+/</kbd>
+              Chat
+            </span>
+            <span className="h-3 w-px bg-white/10" />
+            <span className="inline-flex items-center gap-1">
+              <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-gray-300">Ctrl+Shift+X</kbd>
+              Close
+            </span>
+          </div>
+        </div>
         <div className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-800/95 backdrop-blur-2xl border border-white/15 rounded-[2rem] shadow-[0_12px_40px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.1)] min-w-[280px]">
           {/* All Apps */}
           <button

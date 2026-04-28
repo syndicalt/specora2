@@ -46,6 +46,11 @@ const CREATE_FORM_TABLE_BY_APP: Record<string, string> = {
 
 const FALLBACK_CREATE_FORM = { appId: "incident-manager", tableId: "pg.incidents" };
 
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
 interface HistoryState {
   activeCanvasId: string | null;
 }
@@ -294,6 +299,36 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [ready, registry, state.activeCanvasId]);
+
+  useEffect(() => {
+    if (!ready) return;
+
+    const closeActiveApp = () => {
+      const focusedWindow = state.focusedWindowId
+        ? state.instances.find((instance) => instance.instanceId === state.focusedWindowId)
+        : null;
+      const activeCanvas = state.activeCanvasId
+        ? state.instances.find((instance) => instance.mode === "canvas" && instance.id === state.activeCanvasId)
+        : null;
+      const target = focusedWindow || activeCanvas;
+      if (!target) return;
+      dispatch({ type: "CLOSE_APP", instanceId: target.instanceId });
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isCloseShortcut = event.key.toLowerCase() === "x"
+        && event.shiftKey
+        && !event.altKey
+        && !event.repeat
+        && (event.ctrlKey || event.metaKey);
+      if (!isCloseShortcut || isEditableTarget(event.target)) return;
+      event.preventDefault();
+      closeActiveApp();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [ready, state.activeCanvasId, state.focusedWindowId, state.instances]);
 
   const eventStream = useEventStream();
 
