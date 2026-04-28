@@ -142,7 +142,20 @@ function parseEvidenceRecords(rawText: string): { records: EvidenceRecord[]; err
 
 function naturalKeyForEvidence(record: EvidenceRecord) {
   const facts = record.facts || {};
-  return String(facts.uuid || facts.hostname || facts.name || facts.address || facts.port || record.subject?.id || "unknown");
+  const entityType = entityTypeForEvidence(record);
+  if (entityType === "host") return String(facts.uuid || facts.hostname || record.subject?.id || "unknown");
+  return String(record.subject?.id || facts.id || facts.name || facts.address || facts.port || "unknown");
+}
+
+function entityTypeForEvidence(record: EvidenceRecord) {
+  const subjectType = String(record.subject?.type || "").trim();
+  if (subjectType && subjectType !== "host") return subjectType;
+  const queryName = String(record.metadata?.query_name || "").trim();
+  if (queryName === "packages") return "software_package";
+  if (queryName === "services") return "service";
+  if (queryName === "interfaces") return "network_interface";
+  if (queryName === "listening_ports") return "listening_port";
+  return subjectType || "unknown";
 }
 
 function base64Std(input: Buffer) {
@@ -263,10 +276,11 @@ async function ingestEvidenceDocument(fastify: FastifyInstance, document: any) {
 
   await fastify.pg.query("DELETE FROM discovery_observations WHERE document_id = $1", [document.id]);
   for (const record of parsed.records) {
+    const entityType = entityTypeForEvidence(record);
     await fastify.pg.query(
       `INSERT INTO discovery_observations
          (collector_id, document_id, run_id, source_type, source_id, subject_type, subject_id, entity_type, natural_key, observed_at, facts, relationships, confidence, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $6, $8, $9, $10, $11, $12, $13)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         document.collector_id,
         document.id,
@@ -275,6 +289,7 @@ async function ingestEvidenceDocument(fastify: FastifyInstance, document: any) {
         record.source?.id,
         record.subject?.type,
         record.subject?.id,
+        entityType,
         naturalKeyForEvidence(record),
         record.observed_at,
         JSON.stringify(record.facts || {}),
