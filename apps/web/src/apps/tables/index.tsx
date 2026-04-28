@@ -1490,7 +1490,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             </div>
           )}
           <div className="ml-auto flex items-center gap-2">
-            <div className="relative">
+            <div className="relative z-50">
               <button onClick={() => setExportMenuOpen((open) => open === "loaded" ? null : "loaded")} disabled={!selected || records.length === 0 || bulkBusy} className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-40">
                 <Download className="h-4 w-4" />
                 Export
@@ -1523,13 +1523,13 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
               <option value="comfortable">Comfortable</option>
               <option value="spacious">Spacious</option>
             </select>
-            <div className="relative">
+            <div className="relative z-50">
               <button onClick={() => setPickerOpen((open) => !open)} className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 hover:text-white">
                 <Columns3 className="h-4 w-4" />
                 Columns
               </button>
               {pickerOpen && (
-                <div className="absolute right-0 z-20 mt-2 w-72 rounded-lg border border-gray-700 bg-gray-900 p-2 shadow-2xl">
+                <div className="absolute right-0 z-50 mt-2 w-72 rounded-lg border border-gray-700 bg-gray-900 p-2 shadow-2xl">
                   <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Visible Columns</div>
                   <div className="scrollbar-thin max-h-72 space-y-1 overflow-y-auto">
                     {availableColumns.map((column) => (
