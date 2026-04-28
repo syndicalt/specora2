@@ -147,7 +147,7 @@ type PipelineSchedule = {
 };
 
 type PipelineDefinition = {
-  source?: { id?: string; name?: string; type?: string };
+  source?: { id?: string; name?: string; type?: string; collectorId?: string };
   sourceName?: string;
   sample?: { columns?: string[]; rows?: Record<string, unknown>[] };
   proposal?: TransformProposal | null;
@@ -207,6 +207,10 @@ web01,10.20.1.15,Ubuntu,Billing Portal,sql01,Production,Finance Apps
 web02,10.20.1.16,Ubuntu,Billing Portal,sql01,Production,Finance Apps
 api01,10.20.2.21,RHEL,Claims API,pg01,Production,Claims Platform`;
 
+const EDGE_HOST_SAMPLE = `hostname,ip_addr,os,os_version,collector_id,status,last_seen_at,capabilities
+edge-host-01,192.168.1.20,Linux,Ubuntu 24.04,edge-collector,up,2026-04-28T00:00:00Z,collector.query.osquery
+edge-host-02,192.168.1.21,Linux,Ubuntu 24.04,edge-collector,up,2026-04-28T00:00:00Z,collector.query.osquery`;
+
 const DISCOVERY_QUERY = `query DiscoveryBuilderData {
   discoverySources { id name type config credentialRef lastTestedAt lastStatus lastError createdAt updatedAt }
   discoveryJobs { id sourceId filePath status stats createdAt updatedAt }
@@ -244,6 +248,27 @@ function parseCsv(text: string): { columns: string[]; rows: Record<string, strin
 
 function rowsToCsv(columns: string[], rows: Record<string, unknown>[]): string {
   return [columns.join(","), ...rows.map((row) => columns.map((column) => String(row[column] ?? "")).join(","))].join("\n");
+}
+
+function edgeCollectorSample(collector: DiscoveryCollector | null): string {
+  if (!collector) return EDGE_HOST_SAMPLE;
+  const lastSeenAt = collector.lastHeartbeatAt || new Date().toISOString();
+  const capabilities = Array.isArray(collector.labels?.capabilities)
+    ? collector.labels.capabilities.join("|")
+    : "collector.query.osquery";
+  return rowsToCsv(
+    ["hostname", "ip_addr", "os", "os_version", "collector_id", "status", "last_seen_at", "capabilities"],
+    [{
+      hostname: `${collector.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "edge"}-host`,
+      ip_addr: collector.lastSeenIp || "",
+      os: "Linux",
+      os_version: collector.version || "",
+      collector_id: collector.id,
+      status: collector.status === "healthy" ? "up" : collector.status || "registered",
+      last_seen_at: lastSeenAt,
+      capabilities,
+    }]
+  );
 }
 
 function sourceConfigFromForm(form: SourceForm) {
@@ -535,6 +560,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   const profile = useMemo(() => parseCsv(sample), [sample]);
   const selectedSource = useMemo(() => sources.find((source) => source.id === selectedSourceId) || null, [sources, selectedSourceId]);
+  const selectedCollectorId = selectedSourceId.startsWith("collector:") ? selectedSourceId.slice("collector:".length) : "";
+  const selectedCollector = useMemo(() => collectors.find((collector) => collector.id === selectedCollectorId) || null, [collectors, selectedCollectorId]);
   const credentialRefOptions = useMemo(() => {
     const activeRefs = credentialRefs.map((credential) => credential.ref);
     return sourceForm.credentialRef && !activeRefs.includes(sourceForm.credentialRef)
@@ -663,12 +690,16 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   }
 
   const definition = useCallback((): PipelineDefinition => ({
-    source: selectedSource ? { id: selectedSource.id, name: selectedSource.name, type: selectedSource.type } : { name: sourceName, type: "manual" },
+    source: selectedSource
+      ? { id: selectedSource.id, name: selectedSource.name, type: selectedSource.type, collectorId: String(selectedSource.config?.collectorId || "") || undefined }
+      : selectedCollector
+        ? { id: `collector:${selectedCollector.id}`, collectorId: selectedCollector.id, name: selectedCollector.name, type: "edge" }
+        : { name: sourceName, type: "manual" },
     sourceName,
     sample: profile,
     proposal,
     flow: { nodes, edges },
-  }), [selectedSource, sourceName, profile, proposal, nodes, edges]);
+  }), [selectedSource, selectedCollector, sourceName, profile, proposal, nodes, edges]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -928,7 +959,18 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     } else if (Array.isArray(config.rows)) {
       const columns = Array.isArray(config.columns) ? config.columns.map(String) : Object.keys(config.rows[0] || {});
       setSample(rowsToCsv(columns, config.rows as Record<string, unknown>[]));
+    } else if (source.type === "edge") {
+      setSample(edgeCollectorSample(collectors.find((collector) => collector.id === config.collectorId) || null));
     }
+    setProposal(null);
+    setPreview(null);
+    setStaged(null);
+  }
+
+  function applyCollector(collector: DiscoveryCollector) {
+    setSelectedSourceId(`collector:${collector.id}`);
+    setSourceName(collector.name);
+    setSample(edgeCollectorSample(collector));
     setProposal(null);
     setPreview(null);
     setStaged(null);
@@ -1635,14 +1677,37 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
               <select
                 value={selectedSourceId}
                 onChange={(event) => {
-                  const source = sources.find((item) => item.id === event.target.value);
+                  const value = event.target.value;
+                  if (value.startsWith("collector:")) {
+                    const collector = collectors.find((item) => item.id === value.slice("collector:".length));
+                    if (collector) applyCollector(collector);
+                    return;
+                  }
+                  const source = sources.find((item) => item.id === value);
                   if (source) applySource(source);
-                  else setSelectedSourceId("");
+                  else {
+                    setSelectedSourceId("");
+                    setSourceName("server-app-inventory.csv");
+                    setSample(SAMPLE);
+                  }
                 }}
                 className="mb-3 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-cyan-500"
               >
                 <option value="">Manual sample</option>
-                {sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
+                {collectors.length > 0 && (
+                  <optgroup label="Registered edge collectors">
+                    {collectors.map((collector) => (
+                      <option key={collector.id} value={`collector:${collector.id}`}>
+                        {collector.name} · {collector.status}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {sources.length > 0 && (
+                  <optgroup label="Configured sources">
+                    {sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
+                  </optgroup>
+                )}
               </select>
               <textarea
                 value={sample}
