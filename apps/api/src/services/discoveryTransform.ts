@@ -2,8 +2,11 @@ import OpenAI from "openai";
 
 export type SourceProfile = {
   sourceName: string;
+  entityType?: string;
+  recordCount?: number;
   columns: string[];
   sampleRows: Record<string, unknown>[];
+  fieldStats?: Array<{ name: string; fillRate: number; distinctCount?: number; examples?: string[] }>;
 };
 
 export type TargetClass = {
@@ -283,7 +286,7 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
   const matchKeys = ["serialNumber", "name", "ipAddress"].filter((field) => fieldMappings.some((m) => m.targetField === field));
   return {
     title: `${profile.sourceName || "Source"} transform draft`,
-    summary: `Drafted ${fieldMappings.length} mappings into ${routes.map((r) => r.name).join(", ")} with ${relationshipRules.length} relationship rules.`,
+    summary: `Drafted ${fieldMappings.length} mappings into ${routes.map((r) => r.name).join(", ")} with ${relationshipRules.length} relationship rules${profile.entityType ? ` from ${profile.recordCount || profile.sampleRows.length} ${profile.entityType} observations` : ""}.`,
     confidence: Math.min(0.92, 0.55 + routes[0].score * 0.08 + matchKeys.length * 0.05),
     sourceProfile: { ...profile, columns },
     classRoutes: routes.map((r) => ({
@@ -300,7 +303,9 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
       strategy: matchKeys.length > 1 ? "create_or_update" : "review",
     })),
     assumptions: [
-      "The proposal is based on column names and sample rows, not a committed import.",
+      profile.fieldStats?.length
+        ? "The proposal uses edge observation profile field quality plus representative sample rows."
+        : "The proposal is based on column names and sample rows, not a committed import.",
       "Low-confidence relationship rules should be reviewed before execution.",
     ],
     risks: matchKeys.length ? [] : ["No durable reconciliation key was detected; imports may create duplicates."],

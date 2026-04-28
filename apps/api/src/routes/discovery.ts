@@ -686,6 +686,67 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     };
   });
 
+  fastify.get("/discovery/collectors/:id/profile", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const { id } = request.params as { id: string };
+    const result = await fastify.pg.query(
+      `SELECT entity_type, natural_key, observed_at, facts
+       FROM discovery_observations
+       WHERE collector_id = $1
+       ORDER BY observed_at DESC, created_at DESC
+       LIMIT 5000`,
+      [id]
+    );
+    const groups = new Map<string, Array<Record<string, any>>>();
+    for (const row of result.rows) {
+      const facts = typeof row.facts === "string" ? JSON.parse(row.facts || "{}") : row.facts || {};
+      const sampleRow = {
+        entity_type: row.entity_type,
+        natural_key: row.natural_key,
+        observed_at: row.observed_at,
+        ...facts,
+      };
+      const rows = groups.get(row.entity_type) || [];
+      rows.push(sampleRow);
+      groups.set(row.entity_type, rows);
+    }
+    const preferred = ["host", "software_package", "service", "network_interface", "listening_port"];
+    const profiles = Array.from(groups.entries()).map(([entityType, rows]) => {
+      const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+      const fieldStats = columns.map((column) => {
+        const values = rows
+          .map((row) => row[column])
+          .filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
+        const examples = Array.from(new Set(values.map((value) => String(value)).filter(Boolean))).slice(0, 5);
+        return {
+          name: column,
+          fillRate: rows.length ? values.length / rows.length : 0,
+          distinctCount: new Set(values.map((value) => String(value))).size,
+          examples,
+        };
+      });
+      return {
+        entityType,
+        recordCount: rows.length,
+        columns,
+        sampleRows: rows.slice(0, 25),
+        fieldStats,
+        recentObservedAt: rows[0]?.observed_at || null,
+      };
+    }).sort((a, b) => {
+      const preferredDelta = preferred.indexOf(a.entityType) - preferred.indexOf(b.entityType);
+      if (preferredDelta !== 0 && preferred.indexOf(a.entityType) !== -1 && preferred.indexOf(b.entityType) !== -1) return preferredDelta;
+      if (preferred.indexOf(a.entityType) !== -1) return -1;
+      if (preferred.indexOf(b.entityType) !== -1) return 1;
+      return b.recordCount - a.recordCount || a.entityType.localeCompare(b.entityType);
+    });
+    return {
+      collectorId: id,
+      totalObservations: result.rows.length,
+      profiles,
+    };
+  });
+
   fastify.post("/discovery/collectors/:id/jobs/host-inventory", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
     const { id } = request.params as { id: string };
@@ -1260,6 +1321,9 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     const body = request.body as {
       sourceName?: string;
       columns?: string[];
+      entityType?: string;
+      recordCount?: number;
+      fieldStats?: Array<{ name: string; fillRate: number; distinctCount?: number; examples?: string[] }>;
       sampleRows?: Record<string, unknown>[];
       targetClasses?: Array<{ name: string; displayName?: string; attributes?: Array<{ name: string; isMandatory?: boolean; isKeyAttribute?: boolean }> }>;
     };
@@ -1269,8 +1333,11 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     return proposeTransform(
       {
         sourceName: body.sourceName || "Discovery source",
+        entityType: body.entityType,
+        recordCount: body.recordCount,
         columns: body.columns,
         sampleRows: (body.sampleRows || []).slice(0, 20),
+        fieldStats: body.fieldStats,
       },
       body.targetClasses || []
     );

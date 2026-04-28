@@ -103,12 +103,13 @@ type DiscoveryCollector = {
   lastSeenIp?: string | null;
 };
 
-type DiscoveryObservation = {
-  id: string;
+type EdgeObservationProfile = {
   entityType: string;
-  naturalKey: string;
-  observedAt: string;
-  facts: Record<string, unknown>;
+  recordCount: number;
+  columns: string[];
+  sampleRows: Record<string, unknown>[];
+  fieldStats: Array<{ name: string; fillRate: number; distinctCount?: number; examples?: string[] }>;
+  recentObservedAt?: string | null;
 };
 
 type SourceForm = { name: string; type: string; sample: string; endpoint: string; credentialRef: string; collectorId: string };
@@ -155,7 +156,7 @@ type PipelineSchedule = {
 };
 
 type PipelineDefinition = {
-  source?: { id?: string; name?: string; type?: string; collectorId?: string };
+  source?: { id?: string; name?: string; type?: string; collectorId?: string; entityType?: string };
   sourceName?: string;
   sample?: { columns?: string[]; rows?: Record<string, unknown>[] };
   proposal?: TransformProposal | null;
@@ -279,16 +280,9 @@ function edgeCollectorSample(collector: DiscoveryCollector | null): string {
   );
 }
 
-function observationsToCsv(observations: DiscoveryObservation[]): string | null {
-  const rows = observations.slice(0, 25).map((observation) => ({
-    entity_type: observation.entityType,
-    natural_key: observation.naturalKey,
-    observed_at: observation.observedAt,
-    ...observation.facts,
-  }));
-  if (!rows.length) return null;
-  const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
-  return rowsToCsv(columns, rows);
+function profileToCsv(profile: EdgeObservationProfile): string {
+  const columns = profile.columns.length ? profile.columns : Array.from(new Set(profile.sampleRows.flatMap((row) => Object.keys(row))));
+  return rowsToCsv(columns, profile.sampleRows);
 }
 
 function sourceConfigFromForm(form: SourceForm) {
@@ -561,6 +555,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [sources, setSources] = useState<DiscoverySource[]>([]);
   const [credentialRefs, setCredentialRefs] = useState<DiscoveryCredentialReference[]>([]);
   const [collectors, setCollectors] = useState<DiscoveryCollector[]>([]);
+  const [edgeProfiles, setEdgeProfiles] = useState<EdgeObservationProfile[]>([]);
+  const [selectedEdgeEntityType, setSelectedEdgeEntityType] = useState("");
   const [classes, setClasses] = useState<TargetClass[]>([]);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [mappingProfiles, setMappingProfiles] = useState<MappingProfile[]>([]);
@@ -588,6 +584,10 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const selectedSource = useMemo(() => sources.find((source) => source.id === selectedSourceId) || null, [sources, selectedSourceId]);
   const selectedCollectorId = selectedSourceId.startsWith("collector:") ? selectedSourceId.slice("collector:".length) : "";
   const selectedCollector = useMemo(() => collectors.find((collector) => collector.id === selectedCollectorId) || null, [collectors, selectedCollectorId]);
+  const selectedEdgeProfile = useMemo(
+    () => edgeProfiles.find((item) => item.entityType === selectedEdgeEntityType) || edgeProfiles[0] || null,
+    [edgeProfiles, selectedEdgeEntityType]
+  );
   const credentialRefOptions = useMemo(() => {
     const activeRefs = credentialRefs.map((credential) => credential.ref);
     return sourceForm.credentialRef && !activeRefs.includes(sourceForm.credentialRef)
@@ -719,13 +719,13 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     source: selectedSource
       ? { id: selectedSource.id, name: selectedSource.name, type: selectedSource.type, collectorId: String(selectedSource.config?.collectorId || "") || undefined }
       : selectedCollector
-        ? { id: `collector:${selectedCollector.id}`, collectorId: selectedCollector.id, name: selectedCollector.name, type: "edge" }
+        ? { id: `collector:${selectedCollector.id}`, collectorId: selectedCollector.id, name: selectedCollector.name, type: "edge", entityType: selectedEdgeProfile?.entityType }
         : { name: sourceName, type: "manual" },
     sourceName,
     sample: profile,
     proposal,
     flow: { nodes, edges },
-  }), [selectedSource, selectedCollector, sourceName, profile, proposal, nodes, edges]);
+  }), [selectedSource, selectedCollector, selectedEdgeProfile, sourceName, profile, proposal, nodes, edges]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -825,6 +825,9 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sourceName,
+          entityType: selectedEdgeProfile?.entityType,
+          recordCount: selectedEdgeProfile?.recordCount,
+          fieldStats: selectedEdgeProfile?.fieldStats,
           columns: profile.columns,
           sampleRows: profile.rows,
           targetClasses: classes.slice(0, 80),
@@ -929,6 +932,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setCurrentPipelineId(null);
     setSchedule({ enabled: false, interval: "manual", next_run_at: null });
     setSelectedSourceId("");
+    setEdgeProfiles([]);
+    setSelectedEdgeEntityType("");
     setSourceName("server-app-inventory.csv");
     setSample(SAMPLE);
     setProposal(null);
@@ -944,6 +949,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     const columns = savedSample.columns || Object.keys(savedSample.rows?.[0] || {});
     setCurrentPipelineId(pipeline.id);
     setSelectedSourceId(saved.source?.id || "");
+    setEdgeProfiles([]);
+    setSelectedEdgeEntityType("");
     setSourceName(saved.sourceName || pipeline.name);
     setSample(rowsToCsv(columns, savedSample.rows || []));
     skipGeneratedFlowSyncRef.current = true;
@@ -965,6 +972,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     rememberFlow();
     const exampleFlow = proposalToFlow(null, "server-app-inventory.csv");
     setSelectedSourceId("");
+    setEdgeProfiles([]);
+    setSelectedEdgeEntityType("");
     setSourceName("server-app-inventory.csv");
     setSample(SAMPLE);
     setProposal(null);
@@ -978,6 +987,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   function applySource(source: DiscoverySource) {
     setSelectedSourceId(source.id);
+    setEdgeProfiles([]);
+    setSelectedEdgeEntityType("");
     setSourceName(source.name);
     const config = source.config || {};
     if (typeof config.sample === "string") {
@@ -993,16 +1004,33 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setStaged(null);
   }
 
+  function applyEdgeProfile(collector: DiscoveryCollector, profile: EdgeObservationProfile) {
+    setSelectedEdgeEntityType(profile.entityType);
+    setSourceName(`${collector.name} · ${profile.entityType}`);
+    setSample(profileToCsv(profile));
+    setProposal(null);
+    setPreview(null);
+    setStaged(null);
+  }
+
   async function applyCollector(collector: DiscoveryCollector) {
     setSelectedSourceId(`collector:${collector.id}`);
     setSourceName(collector.name);
+    setEdgeProfiles([]);
+    setSelectedEdgeEntityType("");
     try {
-      const res = await shell.fetch(`/discovery/collectors/${collector.id}/observations`);
-      if (!res.ok) throw new Error(`Observation request failed: ${res.status}`);
+      const res = await shell.fetch(`/discovery/collectors/${collector.id}/profile`);
+      if (!res.ok) throw new Error(`Profile request failed: ${res.status}`);
       const data = await res.json();
-      const observationSample = observationsToCsv(data.observations || []);
-      setSample(observationSample || edgeCollectorSample(collector));
-      if (!observationSample) shell.notify("No edge observations staged yet; using collector schema sample", "info");
+      const profiles = (data.profiles || []) as EdgeObservationProfile[];
+      setEdgeProfiles(profiles);
+      if (profiles.length) {
+        applyEdgeProfile(collector, profiles[0]);
+        shell.notify(`Profiled ${data.totalObservations || 0} edge observations across ${profiles.length} entity types`, "success");
+      } else {
+        setSample(edgeCollectorSample(collector));
+        shell.notify("No edge observations staged yet; using collector schema sample", "info");
+      }
     } catch {
       setSample(edgeCollectorSample(collector));
       shell.notify("Edge observations could not be loaded; using collector schema sample", "error");
@@ -1779,6 +1807,37 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 spellCheck={false}
                 className="h-48 w-full resize-none rounded-md border border-gray-800 bg-gray-900 p-3 font-mono text-xs leading-5 text-gray-200 outline-none focus:border-cyan-500"
               />
+              {selectedCollector && edgeProfiles.length > 0 && (
+                <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
+                  <label className="text-xs font-medium uppercase tracking-wide text-gray-500">Edge entity profile</label>
+                  <select
+                    value={selectedEdgeProfile?.entityType || ""}
+                    onChange={(event) => {
+                      const next = edgeProfiles.find((item) => item.entityType === event.target.value);
+                      if (next) applyEdgeProfile(selectedCollector, next);
+                    }}
+                    className="mt-2 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                  >
+                    {edgeProfiles.map((item) => (
+                      <option key={item.entityType} value={item.entityType}>
+                        {item.entityType} · {item.recordCount} observations
+                      </option>
+                    ))}
+                  </select>
+                  {selectedEdgeProfile && (
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded-md bg-gray-900 p-2">
+                        <span className="text-gray-500">Entity rows</span>
+                        <div className="text-lg font-semibold">{selectedEdgeProfile.recordCount}</div>
+                      </div>
+                      <div className="rounded-md bg-gray-900 p-2">
+                        <span className="text-gray-500">Profile fields</span>
+                        <div className="text-lg font-semibold">{selectedEdgeProfile.columns.length}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                 <div className="rounded-md bg-gray-900 p-2"><span className="text-gray-500">Columns</span><div className="text-lg font-semibold">{profile.columns.length}</div></div>
                 <div className="rounded-md bg-gray-900 p-2"><span className="text-gray-500">Sample rows</span><div className="text-lg font-semibold">{profile.rows.length}</div></div>
@@ -1791,6 +1850,24 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                   <span key={column} className="rounded-md border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300">{column}</span>
                 ))}
               </div>
+              {selectedEdgeProfile && (
+                <div className="mt-4">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Field Quality</div>
+                  <div className="space-y-2">
+                    {selectedEdgeProfile.fieldStats.slice(0, 10).map((field) => (
+                      <div key={field.name} className="rounded-md border border-gray-800 bg-gray-900 p-2">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate font-medium text-gray-300">{field.name}</span>
+                          <span className="text-gray-500">{Math.round(field.fillRate * 100)}%</span>
+                        </div>
+                        <div className="mt-1 h-1.5 overflow-hidden rounded bg-gray-800">
+                          <div className="h-full rounded bg-cyan-400" style={{ width: `${Math.round(field.fillRate * 100)}%` }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <button onClick={loadExample} className="mt-4 flex w-full items-center justify-center gap-2 rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-900">
                 <Upload className="h-4 w-4" />
                 Load Example
