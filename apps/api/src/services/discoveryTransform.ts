@@ -99,8 +99,16 @@ const CANDIDATE_FIELDS = {
   name: ["name", "hostname", "host", "server", "application", "app_name", "service", "service_name", "database", "db_name"],
   environment: ["env", "environment", "stage", "tier"],
   ipAddress: ["ip", "ip_addr", "ip_address", "address"],
-  serialNumber: ["serial", "serial_number", "asset_tag", "asset"],
+  ipAddresses: ["ip_addresses", "ipaddresses"],
+  serialNumber: ["serial", "serial_number", "hardware_serial", "board_serial", "asset_tag", "asset"],
+  manufacturer: ["manufacturer", "hardware_vendor", "board_vendor", "vendor"],
+  model: ["model", "hardware_model", "board_model"],
+  hardwareVersion: ["hardware_version", "board_version"],
+  physicalMemory: ["physical_memory", "memory"],
+  cpuType: ["cpu_type", "cpu"],
+  uuid: ["uuid"],
   operatingSystem: ["os", "operating_system", "platform"],
+  osVersion: ["os_version", "version"],
   owner: ["owner", "owned_by", "business_owner", "support_group", "assignment_group"],
 };
 
@@ -127,6 +135,13 @@ function scoreClass(columns: string[], className: string): number {
 
 function bestTargetField(column: string): string {
   const normalized = normalize(column);
+  if (normalized === "name") return "name";
+  if (normalized === "hardware_serial") return "serialNumber";
+  if (normalized === "board_serial") return "serialNumber";
+  if (normalized === "hardware_vendor") return "manufacturer";
+  if (normalized === "board_vendor") return "manufacturer";
+  if (normalized === "hardware_model") return "model";
+  if (normalized === "board_model") return "model";
   for (const [target, aliases] of Object.entries(CANDIDATE_FIELDS)) {
     if (aliases.some((alias) => normalized === alias || normalized.includes(alias))) return target;
   }
@@ -150,7 +165,26 @@ function isHostDeviceClass(targetClass: string) {
 }
 
 function hostDeviceName(row: Record<string, unknown>) {
-  return String(row.hostname || row.host || row.natural_key || "").trim();
+  return String(row.hostname || row.computer_name || row.local_hostname || row.host || row.natural_key || "").trim();
+}
+
+function enrichHostDeviceAttributes(row: Record<string, unknown>, attributes: Record<string, unknown>) {
+  attributes.os = attributes.os || row.operatingSystem || row.os || row.name || row.platform;
+  attributes.osVersion = attributes.osVersion || row.osVersion || row.version;
+  attributes.uuid = attributes.uuid || row.uuid;
+  attributes.cpuType = attributes.cpuType || row.cpu_type || row.cpuType;
+  attributes.physicalMemory = attributes.physicalMemory || row.physical_memory || row.physicalMemory;
+  attributes.memoryGB = attributes.memoryGB || memoryGb(row.physical_memory || row.physicalMemory);
+  attributes.serialNumber = attributes.serialNumber || firstValue(row, ["hardware_serial", "serialNumber", "board_serial", "serial", "serial_number"]);
+  attributes.manufacturer = attributes.manufacturer || firstValue(row, ["hardware_vendor", "manufacturer", "board_vendor", "vendor"]);
+  attributes.model = attributes.model || firstValue(row, ["hardware_model", "model", "board_model"]);
+  attributes.hardwareVersion = attributes.hardwareVersion || firstValue(row, ["hardware_version", "hardwareVersion", "board_version"]);
+  if (row.ipAddress && !attributes.ipAddress) attributes.ipAddress = String(row.ipAddress);
+  if (row.ipAddresses && !attributes.ipAddresses) {
+    attributes.ipAddresses = Array.isArray(row.ipAddresses)
+      ? row.ipAddresses
+      : String(row.ipAddresses).split(",").map((value) => value.trim()).filter(Boolean);
+  }
 }
 
 function sampleEvidence(profile: SourceProfile, sourceField: string): string[] {
@@ -465,15 +499,7 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
 
       if (targetClass === "Server" || targetClass === "Computer") {
         name = String(hostRow.hostname || hostRow.natural_key || name || key);
-        attributes.os = attributes.os || hostRow.name || hostRow.platform;
-        attributes.osVersion = attributes.osVersion || hostRow.version;
-        attributes.cpuType = attributes.cpuType || hostRow.cpu_type;
-        attributes.physicalMemory = attributes.physicalMemory || hostRow.physical_memory;
-        attributes.memoryGB = attributes.memoryGB || memoryGb(hostRow.physical_memory);
-        attributes.serialNumber = attributes.serialNumber || firstValue(hostRow, ["hardware_serial", "board_serial", "serial", "serial_number"]);
-        attributes.manufacturer = attributes.manufacturer || firstValue(hostRow, ["hardware_vendor", "board_vendor", "manufacturer", "vendor"]);
-        attributes.model = attributes.model || firstValue(hostRow, ["hardware_model", "board_model", "model"]);
-        attributes.hardwareVersion = attributes.hardwareVersion || firstValue(hostRow, ["hardware_version", "board_version"]);
+        enrichHostDeviceAttributes(hostRow, attributes);
         if (targetClass === "Computer" && !attributes.deviceType) attributes.deviceType = "workstation";
         const ip = preferredIp(networkRows);
         if (ip && !attributes.ipAddress) attributes.ipAddress = ip;
@@ -602,7 +628,8 @@ export function previewPipeline(definition: PipelineDefinition, targetClasses: T
         const durableName = hostDeviceName(row);
         const sourceName = String(row.name || "").trim().toLowerCase();
         if (durableName && (!name || (sourceName && name.toLowerCase() === sourceName))) name = durableName;
-        if (row.ipAddress) attributes.ipAddress = String(row.ipAddress);
+        enrichHostDeviceAttributes(row, attributes);
+        if (targetClass === "Computer" && !attributes.deviceType) attributes.deviceType = "workstation";
       }
 
       const classDef = classMap.get(targetClass);
@@ -680,12 +707,14 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
   const primaryClass = routes[0].name;
 
   const mappedNames = new Set<string>();
-  const fieldMappings = columns.slice(0, 18).map((sourceField) => {
+  const fieldMappings = columns.slice(0, 48).map((sourceField) => {
     const initialTargetField = bestTargetField(sourceField);
     let targetField = initialTargetField;
     if (mappedNames.has(initialTargetField)) {
       const normalizedSource = normalize(sourceField);
-      if (initialTargetField === "name" && normalizedSource === "name" && columns.some((column) => ["hostname", "host"].includes(normalize(column)))) {
+      if (["hardware_serial", "hardware_vendor", "hardware_model"].includes(normalizedSource)) {
+        targetField = initialTargetField;
+      } else if (initialTargetField === "name" && normalizedSource === "name" && columns.some((column) => ["hostname", "host"].includes(normalize(column)))) {
         targetField = "operatingSystem";
       } else if (initialTargetField === "ipAddress") {
         targetField = normalizedSource === "ipaddresses" ? "ipAddresses" : fallbackTargetField(sourceField);

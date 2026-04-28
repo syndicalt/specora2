@@ -247,6 +247,62 @@ describe("buildDeterministicProposal", () => {
     expect(preview.records).not.toContainEqual(expect.objectContaining({ targetClass: "Server", name: "nb-lenovo" }));
   });
 
+  it("maps flattened edge host hardware facts into canonical computer attributes", () => {
+    const row = {
+      entity_type: "host",
+      natural_key: "nb-lenovo",
+      observed_at: "2026-04-28T14:52:15.923Z",
+      uuid: "af6082bb-8d8d-11ed-80f3-e880883eb64b",
+      cpu_type: "x86_64",
+      hostname: "nb-lenovo",
+      board_model: "LNVNB161216",
+      board_serial: "PF47W7CH",
+      board_vendor: "LENOVO",
+      computer_name: "nb-lenovo",
+      hardware_model: "Lenovo Slim 7 ProX 14IAH7",
+      local_hostname: "nb-lenovo",
+      hardware_serial: "PF47W7CH",
+      hardware_vendor: "LENOVO",
+      physical_memory: "33359740928",
+      hardware_version: "82V1",
+      name: "Pop!_OS",
+      major: "24",
+      minor: "4",
+      patch: "0",
+      version: "24.04 LTS",
+      platform: "pop",
+      ipAddress: "10.74.214.87",
+      ipAddresses: "fe80::1,10.74.214.87",
+    };
+    const columns = Object.keys(row);
+    const proposal = buildDeterministicProposal(
+      { sourceName: "edge collector", entityType: "host", recordCount: 1, columns, sampleRows: [row] },
+      [{ name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] }, { name: "Server" }]
+    );
+
+    expect(proposal.fieldMappings).toContainEqual(expect.objectContaining({ sourceField: "hardware_model", targetField: "model" }));
+    expect(proposal.fieldMappings).toContainEqual(expect.objectContaining({ sourceField: "hardware_vendor", targetField: "manufacturer" }));
+    expect(proposal.fieldMappings).toContainEqual(expect.objectContaining({ sourceField: "ipAddress", targetField: "ipAddress" }));
+
+    const preview = previewPipeline({ sample: { rows: [row] }, proposal }, [
+      { name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] },
+      { name: "Server" },
+    ]);
+    expect(preview.records[0]).toMatchObject({
+      targetClass: "Computer",
+      name: "nb-lenovo",
+      attributes: expect.objectContaining({
+        ipAddress: "10.74.214.87",
+        serialNumber: "PF47W7CH",
+        manufacturer: "LENOVO",
+        model: "Lenovo Slim 7 ProX 14IAH7",
+        hardwareVersion: "82V1",
+        memoryGB: 31.1,
+        operatingSystem: "Pop!_OS",
+      }),
+    });
+  });
+
   it("suppresses unsafe model-generated edge relationship rules", () => {
     const entityProfiles = [
       {

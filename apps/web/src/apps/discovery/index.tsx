@@ -119,6 +119,7 @@ type TransformProposal = {
   title: string;
   summary: string;
   confidence: number;
+  sourceProfile?: { entityProfiles?: EdgeObservationProfile[] };
   entityPlan?: Array<{ sourceEntity: string; treatment: string; target?: string; parentEntity?: string; cardinality?: string; rationale: string; confidence: number }>;
   classRoutes: Array<{ sourcePattern: string; targetClass: string; confidence: number; rationale: string }>;
   fieldMappings: Array<{ sourceField: string; targetClass: string; targetField: string; transform: string; confidence: number; rationale?: string; evidence?: string[]; alternatives?: string[] }>;
@@ -962,10 +963,11 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     const saved = pipeline.definition || {};
     const savedSample = saved.sample || {};
     const columns = savedSample.columns || Object.keys(savedSample.rows?.[0] || {});
+    const savedEdgeProfiles = saved.entityProfiles || saved.proposal?.sourceProfile?.entityProfiles || [];
     setCurrentPipelineId(pipeline.id);
     setSelectedSourceId(saved.source?.id || "");
-    setEdgeProfiles([]);
-    setSelectedEdgeEntityType("");
+    setEdgeProfiles(savedEdgeProfiles);
+    setSelectedEdgeEntityType(saved.source?.entityType || savedEdgeProfiles[0]?.entityType || "");
     setSourceName(saved.sourceName || pipeline.name);
     setSample(rowsToCsv(columns, savedSample.rows || []));
     skipGeneratedFlowSyncRef.current = true;
