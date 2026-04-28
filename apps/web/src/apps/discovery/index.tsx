@@ -1258,6 +1258,20 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function queueHostInventory(collector: DiscoveryCollector) {
+    try {
+      setLoading(true);
+      const res = await shell.fetch(`/discovery/collectors/${collector.id}/jobs/host-inventory`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      shell.notify(`Queued ${data.jobs?.length || 0} host inventory jobs for ${collector.name}`, "success");
+    } catch (err: any) {
+      shell.notify(`Failed to queue host inventory: ${err.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function testSource(source: DiscoverySource) {
     try {
       const res = await shell.fetch(`/discovery/sources/${source.id}/test`, { method: "POST" });
@@ -1537,6 +1551,13 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 <div className="mt-2 text-xs text-gray-500">
                   {collector.lastHeartbeatAt ? `Last heartbeat ${new Date(collector.lastHeartbeatAt).toLocaleString()}` : "No heartbeat received"}
                 </div>
+                <button
+                  onClick={() => queueHostInventory(collector)}
+                  disabled={loading}
+                  className="mt-3 rounded-md border border-cyan-500/40 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50"
+                >
+                  Queue host inventory
+                </button>
               </div>
             )) : (
               <div className="rounded-lg border border-dashed border-gray-800 p-5 text-center text-sm text-gray-500">No edge collectors registered.</div>

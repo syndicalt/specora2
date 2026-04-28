@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { mkdirSync } from "fs";
 import { join, resolve } from "path";
-import { createHash, randomUUID } from "crypto";
+import { createHash, createPrivateKey, randomBytes, randomUUID, sign as cryptoSign } from "crypto";
 import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
 import { enqueueJob } from "../services/jobQueue";
@@ -14,6 +14,8 @@ import { redactCredentialConfig, validateDiscoveryCredential } from "../services
 
 const UPLOAD_DIR = resolve(process.env.UPLOAD_DIR || "./uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const EDGE_JOB_SIGNING_KEY_ID = process.env.EDGE_JOB_SIGNING_KEY_ID || "specora-dev-edge-key";
 
 function mappingProfileRow(row: any) {
   return {
@@ -143,6 +145,122 @@ function naturalKeyForEvidence(record: EvidenceRecord) {
   const facts = record.facts || {};
   return String(facts.uuid || facts.hostname || facts.name || facts.address || facts.port || record.subject?.id || "unknown");
 }
+
+function base64Std(input: Buffer) {
+  return input.toString("base64");
+}
+
+function payloadText(payload: unknown) {
+  return JSON.stringify(payload || {});
+}
+
+function edgeJobSigningMessage(job: Record<string, any>, payload: unknown) {
+  const payloadSum = createHash("sha256").update(payloadText(payload)).digest("hex");
+  const envelope = {
+    version: "specora.job.v1",
+    algorithm: "Ed25519",
+    id: job.id,
+    tenant_id: job.tenant_id || "default",
+    relay_id: job.collector_id,
+    capability: job.capability,
+    collector_id: job.edge_collector_id,
+    collector_version: job.collector_version,
+    timeout_seconds: Number(job.timeout_seconds || 30),
+    priority: Number(job.priority || 10),
+    credential_scope_id: job.credential_scope_id || "",
+    network_scope_id: job.network_scope_id || "",
+    expected_schema: job.expected_schema || "specora.evidence.v1",
+    issued_at: new Date(job.issued_at).toISOString(),
+    expires_at: new Date(job.expires_at).toISOString(),
+    nonce: job.nonce,
+    payload_sha256: payloadSum,
+  };
+  return createHash("sha256").update(JSON.stringify(envelope)).digest();
+}
+
+function edgeJobPrivateKey() {
+  const raw = process.env.EDGE_JOB_SIGNING_PRIVATE_KEY;
+  if (!raw) return null;
+  if (raw.includes("BEGIN")) return createPrivateKey(raw.replace(/\\n/g, "\n"));
+  const key = Buffer.from(raw, "base64");
+  if (key.length === 48 || key.length === 64) {
+    const prefix = Buffer.from("302e020100300506032b657004220420", "hex");
+    return createPrivateKey({ key: key.length === 64 ? Buffer.concat([prefix, key.subarray(0, 32)]) : key, format: "der", type: "pkcs8" });
+  }
+  return createPrivateKey(raw);
+}
+
+function signEdgeJob(job: Record<string, any>) {
+  const privateKey = edgeJobPrivateKey();
+  if (!privateKey) return null;
+  const payload = typeof job.payload === "string" ? JSON.parse(job.payload || "{}") : job.payload || {};
+  return base64Std(cryptoSign(null, edgeJobSigningMessage(job, payload), privateKey));
+}
+
+function edgeJobResponse(row: any) {
+  const payload = typeof row.payload === "string" ? JSON.parse(row.payload || "{}") : row.payload || {};
+  return {
+    id: row.id,
+    tenant_id: row.tenant_id || "default",
+    relay_id: row.collector_id,
+    capability: row.capability,
+    collector_id: row.edge_collector_id,
+    collector_version: row.collector_version,
+    timeout_seconds: Number(row.timeout_seconds || 30),
+    priority: Number(row.priority || 10),
+    credential_scope_id: row.credential_scope_id || "",
+    network_scope_id: row.network_scope_id || "",
+    expected_schema: row.expected_schema || "specora.evidence.v1",
+    payload,
+    signature: row.signature || "",
+    signing_key_id: row.signing_key_id || EDGE_JOB_SIGNING_KEY_ID,
+    issued_at: row.issued_at,
+    expires_at: row.expires_at,
+    nonce: row.nonce,
+  };
+}
+
+const HOST_INVENTORY_JOBS = [
+  {
+    capability: "collector.query.osquery",
+    edgeCollectorId: "osquery",
+    collectorVersion: "1.0.0",
+    timeoutSeconds: 30,
+    priority: 10,
+    payload: {
+      queries: [
+        { name: "system_info", sql: "select hostname, uuid, cpu_type, physical_memory from system_info;" },
+        { name: "os_version", sql: "select name, version, major, minor, patch, platform from os_version;" },
+      ],
+    },
+  },
+  {
+    capability: "collector.query.osquery",
+    edgeCollectorId: "osquery",
+    collectorVersion: "1.0.0",
+    timeoutSeconds: 45,
+    priority: 20,
+    payload: {
+      queries: [
+        { name: "interfaces", sql: "select interface, address, mask, broadcast, type from interface_addresses;" },
+        { name: "listening_ports", sql: "select port, protocol, address, pid from listening_ports limit 128;" },
+      ],
+    },
+  },
+  {
+    capability: "collector.query.osquery",
+    edgeCollectorId: "osquery",
+    collectorVersion: "1.0.0",
+    timeoutSeconds: 60,
+    priority: 30,
+    payload: {
+      queries: [
+        { name: "packages", sql: "select name, version, source from deb_packages union all select name, version, source from rpm_packages limit 128;" },
+        { name: "services", sql: "select id, active_state, sub_state, unit_file_state from systemd_units where id like '%.service' limit 128;" },
+      ],
+    },
+  },
+];
 
 async function ingestEvidenceDocument(fastify: FastifyInstance, document: any) {
   const parsed = parseEvidenceRecords(document.raw_text || "");
@@ -335,6 +453,92 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     return { accepted: true, policy_version: process.env.EDGE_POLICY_VERSION || "policy-v1" };
   });
 
+  fastify.post("/edge/jobs/poll", async (request, reply) => {
+    const body = request.body as { tenant_id?: string; relay_id?: string; capabilities?: string[]; max_jobs?: number };
+    const relayId = body.relay_id?.trim();
+    if (!relayId) return reply.status(400).send({ error: "relay_id is required" });
+    const capabilities = Array.isArray(body.capabilities) ? body.capabilities : [];
+    const maxJobs = Math.min(Math.max(Number(body.max_jobs || 1), 1), 10);
+    const privateKey = edgeJobPrivateKey();
+    if (!privateKey) return reply.status(503).send({ error: "Edge job signing key is not configured" });
+
+    const result = await fastify.pg.query(
+      `UPDATE edge_discovery_jobs
+       SET issued_at = NOW(),
+           expires_at = NOW() + INTERVAL '10 minutes',
+           nonce = COALESCE(nonce, $4),
+           signing_key_id = $5,
+           updated_at = NOW()
+       WHERE id IN (
+         SELECT id
+         FROM edge_discovery_jobs
+         WHERE collector_id = $1
+           AND status = 'queued'
+           AND ($2::text[] = '{}'::text[] OR capability = ANY($2::text[]))
+         ORDER BY priority ASC, created_at ASC
+         LIMIT $3
+       )
+       RETURNING id, tenant_id, collector_id, capability, edge_collector_id, collector_version, timeout_seconds, priority,
+                 credential_scope_id, network_scope_id, expected_schema, payload, issued_at, expires_at, nonce, signing_key_id`,
+      [relayId, capabilities, maxJobs, randomBytes(16).toString("hex"), EDGE_JOB_SIGNING_KEY_ID]
+    );
+    const signedRows = result.rows.map((row: any) => ({ ...row, signature: signEdgeJob(row) || "" }));
+    for (const row of signedRows) {
+      await fastify.pg.query(
+        `UPDATE edge_discovery_jobs SET signature = $2, updated_at = NOW() WHERE id = $1`,
+        [row.id, row.signature]
+      );
+    }
+    return { jobs: signedRows.map(edgeJobResponse) };
+  });
+
+  fastify.post("/edge/jobs/:id/claim", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { tenant_id?: string; relay_id?: string; attempt?: number };
+    const relayId = body.relay_id?.trim();
+    if (!relayId) return reply.status(400).send({ error: "relay_id is required" });
+    const attempt = Math.max(Number(body.attempt || 1), 1);
+    const result = await fastify.pg.query(
+      `UPDATE edge_discovery_jobs
+       SET status = 'claimed',
+           attempt = $3,
+           lease_deadline = NOW() + INTERVAL '5 minutes',
+           updated_at = NOW()
+       WHERE id = $1
+         AND collector_id = $2
+         AND status IN ('queued', 'claimed')
+       RETURNING attempt, lease_deadline`,
+      [id, relayId, attempt]
+    );
+    if (!result.rows.length) {
+      return { accepted: false, attempt, lease_deadline: null, rejection_reason: "job_not_available" };
+    }
+    return { accepted: true, attempt: result.rows[0].attempt, lease_deadline: result.rows[0].lease_deadline, rejection_reason: "" };
+  });
+
+  fastify.post("/edge/jobs/:id/status", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { tenant_id?: string; relay_id?: string; attempt?: number; status?: string; failure_code?: string; detail?: string };
+    const relayId = body.relay_id?.trim();
+    if (!relayId) return reply.status(400).send({ error: "relay_id is required" });
+    const status = ["succeeded", "failed", "timed_out", "executor_failed", "invalid_evidence"].includes(body.status || "")
+      ? body.status as string
+      : "failed";
+    const result = await fastify.pg.query(
+      `UPDATE edge_discovery_jobs
+       SET status = $3,
+           attempt = GREATEST(attempt, $4),
+           failure_code = $5,
+           detail = $6,
+           updated_at = NOW()
+       WHERE id = $1 AND collector_id = $2
+       RETURNING id, status`,
+      [id, relayId, status, Number(body.attempt || 1), body.failure_code || null, body.detail || null]
+    );
+    if (!result.rows.length) return reply.status(404).send({ error: "Job not found" });
+    return { accepted: true, status: result.rows[0].status };
+  });
+
   fastify.post("/edge/uploads/session", async (request, reply) => {
     const body = request.body as { tenant_id?: string; relay_id?: string; upload_id?: string; run_id?: string; digest?: string; byte_count?: number };
     const relayId = body.relay_id?.trim();
@@ -482,6 +686,43 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
         createdAt: row.created_at,
       })),
     };
+  });
+
+  fastify.post("/discovery/collectors/:id/jobs/host-inventory", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const { id } = request.params as { id: string };
+    const collector = await fastify.pg.query("SELECT id FROM discovery_collectors WHERE id = $1", [id]);
+    if (!collector.rows.length) return reply.status(404).send({ error: "Collector not found" });
+
+    const created = [];
+    for (const job of HOST_INVENTORY_JOBS) {
+      const result = await fastify.pg.query(
+        `INSERT INTO edge_discovery_jobs
+           (tenant_id, collector_id, capability, edge_collector_id, collector_version, timeout_seconds, priority, expected_schema, payload, status, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'specora.evidence.v1', $8, 'queued', $9)
+         RETURNING id, status, capability, priority`,
+        [
+          process.env.SPECORA_TENANT_ID || process.env.PROVARA_TENANT_ID || "default",
+          id,
+          job.capability,
+          job.edgeCollectorId,
+          job.collectorVersion,
+          job.timeoutSeconds,
+          job.priority,
+          JSON.stringify(job.payload),
+          (request.user as any)?.id || null,
+        ]
+      );
+      created.push(result.rows[0]);
+    }
+    await recordRouteAudit(fastify, request, {
+      action: "edge.host_inventory_jobs_queued",
+      entityType: "DiscoveryCollector",
+      entityId: id,
+      newValues: { jobs: created },
+      metadata: { source: "api.discovery", surface: "discovery", jobCount: created.length },
+    });
+    return { jobs: created };
   });
 
   fastify.post("/discovery/collectors", { onRequest: [fastify.authenticate] }, async (request, reply) => {

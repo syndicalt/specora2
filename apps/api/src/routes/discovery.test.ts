@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
+import { generateKeyPairSync } from "crypto";
 import { discoveryRoutes } from "./discovery";
 
 describe("discoveryRoutes", () => {
@@ -13,6 +14,7 @@ describe("discoveryRoutes", () => {
       query: vi.fn(async (sql: string) => {
         if (sql.includes("FROM app_permissions")) return { rows: [{ ok: 1 }] };
         if (sql.includes("SELECT entry_hash FROM audit_log") || sql.includes("INSERT INTO audit_log")) return { rows: [], rowCount: 1 };
+        if (sql.includes("SET signature =")) return { rows: [], rowCount: 1 };
         if (queuedResults.length) return queuedResults.shift();
         return { rows: [{ id: "dj-1" }] };
       }),
@@ -266,6 +268,75 @@ describe("discoveryRoutes", () => {
       "2026-04-27T12:00:00Z",
     ]));
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["edge.evidence_uploaded", "EdgeEvidenceDocument", "doc-1"]));
+  });
+
+  it("polls signed edge jobs and accepts claim/status updates", async () => {
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const previousKey = process.env.EDGE_JOB_SIGNING_PRIVATE_KEY;
+    process.env.EDGE_JOB_SIGNING_PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const app = await buildApp();
+    const issuedAt = "2026-04-27T12:00:00.000Z";
+    const expiresAt = "2026-04-27T12:10:00.000Z";
+    (app as any).pg.queuedResults.push(
+      {
+        rows: [{
+          id: "job-1",
+          tenant_id: "default",
+          collector_id: "collector-1",
+          capability: "collector.query.osquery",
+          edge_collector_id: "osquery",
+          collector_version: "1.0.0",
+          timeout_seconds: 30,
+          priority: 10,
+          credential_scope_id: "",
+          network_scope_id: "",
+          expected_schema: "specora.evidence.v1",
+          payload: { queries: [{ name: "system_info", sql: "select hostname from system_info;" }] },
+          issued_at: issuedAt,
+          expires_at: expiresAt,
+          nonce: "nonce-1",
+          signing_key_id: "specora-dev-edge-key",
+        }],
+      },
+      { rows: [{ attempt: 1, lease_deadline: "2026-04-27T12:05:00.000Z" }] },
+      { rows: [{ id: "job-1", status: "succeeded" }] }
+    );
+
+    const poll = await app.inject({
+      method: "POST",
+      url: "/edge/jobs/poll",
+      payload: { tenant_id: "default", relay_id: "collector-1", capabilities: ["collector.query.osquery"], max_jobs: 1 },
+    });
+    expect(poll.statusCode).toBe(200);
+    const jobs = JSON.parse(poll.body).jobs;
+    expect(jobs[0]).toMatchObject({
+      id: "job-1",
+      tenant_id: "default",
+      relay_id: "collector-1",
+      capability: "collector.query.osquery",
+      collector_id: "osquery",
+      expected_schema: "specora.evidence.v1",
+      signing_key_id: "specora-dev-edge-key",
+    });
+    expect(jobs[0].signature).toEqual(expect.any(String));
+    expect(jobs[0].signature.length).toBeGreaterThan(20);
+
+    const claim = await app.inject({
+      method: "POST",
+      url: "/edge/jobs/job-1/claim",
+      payload: { tenant_id: "default", relay_id: "collector-1", attempt: 1 },
+    });
+    expect(claim.statusCode).toBe(200);
+    expect(JSON.parse(claim.body)).toMatchObject({ accepted: true, attempt: 1 });
+
+    const status = await app.inject({
+      method: "POST",
+      url: "/edge/jobs/job-1/status",
+      payload: { tenant_id: "default", relay_id: "collector-1", attempt: 1, status: "succeeded" },
+    });
+    expect(status.statusCode).toBe(200);
+    expect(JSON.parse(status.body)).toEqual({ accepted: true, status: "succeeded" });
+    process.env.EDGE_JOB_SIGNING_PRIVATE_KEY = previousKey;
   });
 
   it("lists normalized collector observations", async () => {
