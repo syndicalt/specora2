@@ -143,7 +143,7 @@ function parseEvidenceRecords(rawText: string): { records: EvidenceRecord[]; err
 function naturalKeyForEvidence(record: EvidenceRecord) {
   const facts = record.facts || {};
   const entityType = entityTypeForEvidence(record);
-  if (entityType === "host") return String(facts.uuid || facts.hostname || record.subject?.id || "unknown");
+  if (entityType === "host") return String(record.subject?.id || facts.hostname || facts.uuid || "unknown");
   return String(record.subject?.id || facts.id || facts.name || facts.address || facts.port || "unknown");
 }
 
@@ -712,7 +712,7 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
        LIMIT 5000`,
       [id]
     );
-    const groups = new Map<string, Array<Record<string, any>>>();
+    const groups = new Map<string, Map<string, Record<string, any>>>();
     for (const row of result.rows) {
       const facts = typeof row.facts === "string" ? JSON.parse(row.facts || "{}") : row.facts || {};
       const sampleRow = {
@@ -721,12 +721,14 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
         observed_at: row.observed_at,
         ...facts,
       };
-      const rows = groups.get(row.entity_type) || [];
-      rows.push(sampleRow);
+      const rows = groups.get(row.entity_type) || new Map<string, Record<string, any>>();
+      const existing = rows.get(row.natural_key);
+      rows.set(row.natural_key, existing ? { ...sampleRow, ...existing, observed_at: existing.observed_at || sampleRow.observed_at } : sampleRow);
       groups.set(row.entity_type, rows);
     }
     const preferred = ["host", "software_package", "service", "network_interface", "listening_port"];
-    const profiles = Array.from(groups.entries()).map(([entityType, rows]) => {
+    const profiles = Array.from(groups.entries()).map(([entityType, rowMap]) => {
+      const rows = Array.from(rowMap.values());
       const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
       const fieldStats = columns.map((column) => {
         const values = rows
