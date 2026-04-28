@@ -308,7 +308,10 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
     }
 
     for (const rule of proposal.relationshipRules) {
+      if (rule.fromClass === "ApplicationService" && rule.toClass === "Server" && rule.type === "HOSTED_ON") continue;
+      if (rule.sourceField.startsWith("network_interface.")) continue;
       const targetHint = String(readProfileValue(hostRow, entityRows, rule.sourceField) || "").trim();
+      if (!targetHint) continue;
       relationships.push({
         row: rowIndex + 1,
         fromClass: rule.fromClass,
@@ -468,17 +471,7 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
   const softwareProfile = entityProfiles.find((entity) => entity.entityType === "software_package");
   const serviceProfile = entityProfiles.find((entity) => entity.entityType === "service");
   const portProfile = entityProfiles.find((entity) => entity.entityType === "listening_port");
-  if (profile.entityType === "host" && classNames.includes("NetworkGear") && networkProfile?.columns.some((column) => normalize(column) === "address")) {
-    relationshipRules.push({
-      fromClass: primaryClass,
-      toClass: "NetworkGear",
-      type: "DEPENDS_ON",
-      sourceField: "network_interface.address",
-      confidence: 0.56,
-      rationale: "Edge collector includes network interface observations; IP addresses should enrich or relate to the host during reconciliation.",
-      evidence: (networkProfile.sampleRows || []).map((row) => String(row.address || "")).filter(Boolean).slice(0, 3),
-    });
-  }
+  const hasNetworkAddresses = profile.entityType === "host" && !!networkProfile?.columns.some((column) => normalize(column) === "address");
   if (hasHostProfile && softwareProfile && classNames.includes("SoftwareInstallation")) {
     relationshipRules.push({
       fromClass: "Server",
@@ -526,6 +519,7 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
         ? "The proposal uses edge observation profile field quality plus representative sample rows."
         : "The proposal is based on column names and sample rows, not a committed import.",
       ...(entityProfiles.length ? ["The edge source profile includes related entity samples so host mappings can account for interfaces, software, services, and ports."] : []),
+      ...(hasNetworkAddresses ? ["Network interface addresses enrich Server attributes; they are not staged as NetworkGear dependencies without a discovered network device target."] : []),
       "Low-confidence relationship rules should be reviewed before execution.",
     ],
     risks: matchKeys.length ? [] : ["No durable reconciliation key was detected; imports may create duplicates."],

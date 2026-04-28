@@ -941,7 +941,7 @@ describe("discoveryRoutes", () => {
     const body = JSON.parse(response.body);
     expect(body.summary).toContain("2 edge entity profiles");
     expect(body.sourceProfile.entityProfiles).toHaveLength(2);
-    expect(body.relationshipRules).toContainEqual(expect.objectContaining({ sourceField: "network_interface.address" }));
+    expect(body.assumptions).toContain("Network interface addresses enrich Server attributes; they are not staged as NetworkGear dependencies without a discovered network device target.");
   });
 
   it("rejects transform proposals without columns", async () => {

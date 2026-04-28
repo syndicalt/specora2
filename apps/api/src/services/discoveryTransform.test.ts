@@ -156,6 +156,50 @@ describe("buildDeterministicProposal", () => {
     }));
     expect(preview.records).toContainEqual(expect.objectContaining({ targetClass: "ApplicationService", name: "docker.service" }));
     expect(preview.relationships).toContainEqual(expect.objectContaining({ fromClass: "ApplicationService", toClass: "Server", targetHint: "nb-lenovo" }));
+    expect(preview.relationships).not.toContainEqual(expect.objectContaining({ toClass: "NetworkGear" }));
+    expect(preview.relationships).not.toContainEqual(expect.objectContaining({ sourceField: "service.name", targetHint: "docker.service" }));
+  });
+
+  it("suppresses unsafe model-generated edge relationship rules", () => {
+    const entityProfiles = [
+      {
+        entityType: "host",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "hostname"],
+        sampleRows: [{ entity_type: "host", natural_key: "nb-lenovo", hostname: "nb-lenovo" }],
+      },
+      {
+        entityType: "network_interface",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "interface", "address"],
+        sampleRows: [{ entity_type: "network_interface", natural_key: "nb-lenovo:veth550dc8f", interface: "veth550dc8f", address: "fe80::389b:a0ff:fe54:42e2%veth550dc8f" }],
+      },
+    ];
+    const proposal = {
+      title: "AI edge draft",
+      summary: "AI draft",
+      confidence: 0.8,
+      sourceProfile: { sourceName: "edge", entityType: "host", columns: entityProfiles[0].columns, sampleRows: entityProfiles[0].sampleRows, entityProfiles },
+      classRoutes: [{ sourcePattern: "edge", targetClass: "Server", confidence: 0.9, rationale: "host" }],
+      fieldMappings: [{ sourceField: "hostname", targetClass: "Server", targetField: "name", transform: "trim_lowercase", confidence: 0.9 }],
+      relationshipRules: [
+        { fromClass: "Server", toClass: "NetworkGear", type: "DEPENDS_ON", sourceField: "network_interface.address", confidence: 0.8 },
+        { fromClass: "ApplicationService", toClass: "Server", type: "HOSTED_ON", sourceField: "service.name", confidence: 0.8 },
+      ],
+      reconciliationRules: [{ targetClass: "Server", matchKeys: ["name"], strategy: "create_or_update" as const }],
+      assumptions: [],
+      risks: [],
+      aiGenerated: true,
+    };
+
+    const preview = previewPipeline({ sample: { rows: entityProfiles[0].sampleRows }, entityProfiles, proposal }, [{ name: "Server" }, { name: "NetworkGear" }, { name: "ApplicationService" }]);
+
+    expect(preview.summary).toMatchObject({ stagedRecords: 1, relationshipCandidates: 0, warnings: 0 });
+    expect(preview.records[0]).toMatchObject({
+      targetClass: "Server",
+      name: "nb-lenovo",
+      attributes: expect.objectContaining({ ipAddress: "fe80::389b:a0ff:fe54:42e2%veth550dc8f" }),
+    });
   });
 
   it("flags preview records that are missing mandatory values", () => {
