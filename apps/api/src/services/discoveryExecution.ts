@@ -83,6 +83,16 @@ function plannedTargetExists(preview: PipelinePreview, relationship: PipelinePre
   ));
 }
 
+function neo4jPropertyMap(attributes: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(attributes).filter(([, value]) => (
+      value === null
+      || ["string", "number", "boolean"].includes(typeof value)
+      || (Array.isArray(value) && value.every((item) => item === null || ["string", "number", "boolean"].includes(typeof item)))
+    ))
+  );
+}
+
 async function findExistingRelationshipTargets(fastify: FastifyInstance, preview: PipelinePreview) {
   const candidates = preview.relationships
     .map((relationship, index) => ({
@@ -289,7 +299,7 @@ export async function commitStagedDiscoveryJob(fastify: FastifyInstance, jobId: 
         class: record.target_class,
         environment: record.environment || null,
         attributes: JSON.stringify(attrs),
-        ...attrs,
+        ...neo4jPropertyMap(attrs),
       };
       const result = await session.run(
         `MERGE (n:ConfigurationItem {id: $id})
@@ -305,7 +315,7 @@ export async function commitStagedDiscoveryJob(fastify: FastifyInstance, jobId: 
           className: record.target_class,
           environment: record.environment || null,
           attributes: JSON.stringify(attrs),
-          attributesMap: attrs,
+          attributesMap: neo4jPropertyMap(attrs),
         }
       );
       result.records[0]?.get("n");

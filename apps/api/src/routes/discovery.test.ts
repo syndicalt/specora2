@@ -856,6 +856,52 @@ describe("discoveryRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.job_committed", "DiscoveryJob", "dj-1"]));
   });
 
+  it("commits staged records with nested enrichment attributes as JSON only", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push(
+      { rows: [{ id: "dj-1", status: "staged", stats: {} }] },
+      {
+        rows: [{
+          id: "sr-1",
+          row_number: 1,
+          action: "create",
+          target_class: "Computer",
+          ci_id: "disc-computer-nb-lenovo",
+          name: "nb-lenovo",
+          environment: null,
+          attributes: {
+            ipAddress: "192.168.50.146",
+            ipAddresses: ["192.168.50.146", "172.17.0.1"],
+            networkInterfaces: [{ interface: "wlp0s20f3", address: "192.168.50.146" }],
+            installedSoftware: [{ name: "docker", version: "24.0" }],
+          },
+          match_keys: ["name"],
+          errors: [],
+          warnings: [],
+          status: "staged",
+        }],
+      },
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [] }
+    );
+
+    const response = await app.inject({ method: "POST", url: "/discovery/jobs/dj-1/commit" });
+
+    expect(response.statusCode).toBe(200);
+    const session = (app as any).neo4j.session.mock.results[0].value;
+    expect(session.run).toHaveBeenCalledWith(
+      expect.stringContaining("n += $attributesMap"),
+      expect.objectContaining({
+        attributesMap: {
+          ipAddress: "192.168.50.146",
+          ipAddresses: ["192.168.50.146", "172.17.0.1"],
+        },
+      })
+    );
+  });
+
   it("lists rollback records for a discovery job", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push({ rows: [{ id: "rb-1", discovery_job_id: "dj-1", status: "available", summary: { created: 1 } }] });
