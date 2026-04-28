@@ -18,6 +18,18 @@ interface AttrDef {
   defaultValue?: string | null;
 }
 
+type ReferenceOption = {
+  id: string;
+  label: string;
+  sublabel?: string;
+};
+
+type ReferenceClassMeta = {
+  displayField?: string | null;
+  secondaryDisplayFields?: string[];
+  attributes?: AttrDef[];
+};
+
 interface CIEditModalProps {
   ci: {
     id: string;
@@ -32,12 +44,48 @@ interface CIEditModalProps {
   onClose: () => void;
 }
 
+const REFERENCE_OPTIONS_LIMIT = 100;
+
 function cleanAttributes(attrs: Record<string, any>) {
   const cleaned: Record<string, any> = {};
   for (const [key, value] of Object.entries(attrs)) {
     if (value !== undefined && value !== null && value !== "") cleaned[key] = value;
   }
   return cleaned;
+}
+
+function displayValueForRecord(record: any, field?: string | null) {
+  if (!field) return undefined;
+  if (field === "id" || field === "name" || field === "environment" || field === "class") return record[field];
+  return record.attributes?.[field] ?? record[field];
+}
+
+function firstDisplayValue(record: any, fields: Array<string | null | undefined>) {
+  for (const field of fields) {
+    const value = displayValueForRecord(record, field);
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value);
+  }
+  return undefined;
+}
+
+function referenceOptionForCI(meta: ReferenceClassMeta | undefined, record: any): ReferenceOption {
+  const attrs = record.attributes || {};
+  const keyAttrs = meta?.attributes?.filter((attr) => attr.isKeyAttribute).map((attr) => attr.name) || [];
+  const mandatoryStringAttrs = meta?.attributes?.filter((attr) => attr.isMandatory && attr.attrType === "string").map((attr) => attr.name) || [];
+  const legacyFields = ["code", "departmentCode", "email"];
+  const label = firstDisplayValue(record, [meta?.displayField, "name", ...keyAttrs, ...mandatoryStringAttrs, ...legacyFields, "id"]) || String(record.id);
+  const configuredSecondary = (meta?.secondaryDisplayFields || [])
+    .map((field) => displayValueForRecord(record, field))
+    .filter((item) => item !== undefined && item !== null && String(item).trim() !== "" && String(item) !== label)
+    .map((item) => String(item));
+  const fallbackSecondary = [attrs.code, attrs.departmentCode, attrs.email, record.environment, record.id]
+    .filter((item) => item !== undefined && item !== null && String(item).trim() !== "" && String(item) !== label)
+    .map((item) => String(item))[0];
+  return {
+    id: String(record.id),
+    label,
+    sublabel: configuredSecondary.length > 0 ? configuredSecondary.join(" | ") : fallbackSecondary,
+  };
 }
 
 function Section({
@@ -70,6 +118,107 @@ function Section({
   );
 }
 
+function ReferenceTypeahead({
+  referenceClass,
+  value,
+  options,
+  onChange,
+}: {
+  referenceClass?: string;
+  value: string;
+  options: ReferenceOption[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const selected = options.find((option) => option.id === value);
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    const matches = needle
+      ? options.filter((option) => [option.label, option.sublabel, option.id].some((item) => String(item || "").toLowerCase().includes(needle)))
+      : options;
+    return matches.slice(0, 50);
+  }, [options, search]);
+  const displayValue = open ? search : selected ? selected.label : "";
+  const placeholder = referenceClass ? `Search ${referenceClass}` : "Search reference";
+
+  function choose(option: ReferenceOption) {
+    onChange(option.id);
+    setSearch("");
+    setOpen(false);
+  }
+
+  return (
+    <div className="relative">
+      <div className="relative">
+        <input
+          value={displayValue}
+          onFocus={() => {
+            setOpen(true);
+            setSearch("");
+          }}
+          onChange={(event) => {
+            setOpen(true);
+            setSearch(event.target.value);
+          }}
+          onBlur={() => {
+            window.setTimeout(() => {
+              setOpen(false);
+              setSearch("");
+            }, 120);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setOpen(false);
+              setSearch("");
+            } else if (event.key === "Enter" && open && filtered[0]) {
+              event.preventDefault();
+              choose(filtered[0]);
+            } else if (event.key === "Backspace" && !open && value) {
+              onChange("");
+            }
+          }}
+          placeholder={placeholder}
+          className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 pr-9 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+        />
+        {value && (
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              onChange("");
+              setSearch("");
+              setOpen(false);
+            }}
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 hover:text-gray-200"
+            aria-label="Clear reference"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-gray-700 bg-gray-950 py-1 shadow-xl shadow-black/40">
+          {filtered.length > 0 ? filtered.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => choose(option)}
+              className={`block w-full px-3 py-2 text-left text-sm hover:bg-indigo-600/20 ${option.id === value ? "text-indigo-200" : "text-gray-200"}`}
+            >
+              <div className="truncate">{option.label}</div>
+              {option.sublabel && <div className="truncate text-xs text-gray-500">{option.sublabel}</div>}
+            </button>
+          )) : (
+            <div className="px-3 py-3 text-sm text-gray-500">No matching records.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CIEditModal({ ci, onSave, onClose }: CIEditModalProps) {
   const [name, setName] = useState(ci?.name || "");
   const [environment, setEnvironment] = useState(ci?.environment || "");
@@ -84,6 +233,7 @@ export function CIEditModal({ ci, onSave, onClose }: CIEditModalProps) {
   const [saveError, setSaveError] = useState("");
   const [saved, setSaved] = useState(false);
   const [initialSnapshot, setInitialSnapshot] = useState("");
+  const [referenceOptions, setReferenceOptions] = useState<Record<string, ReferenceOption[]>>({});
 
   useEffect(() => {
     if (!ci) return;
@@ -148,6 +298,54 @@ export function CIEditModal({ ci, onSave, onClose }: CIEditModalProps) {
       })
       .finally(() => setLoading(false));
   }, [ci?.id, ci?.class, ci?.classDisplayName]);
+
+  useEffect(() => {
+    const classes = Array.from(new Set(attrDefs
+      .filter((def) => def.attrType === "reference" && def.referenceClass)
+      .map((def) => def.referenceClass!))).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    if (classes.length === 0) {
+      setReferenceOptions({});
+      return;
+    }
+    let mounted = true;
+    Promise.all(classes.map(async (className) => {
+      try {
+        const data = await graphqlClient.request(
+          `query($className: String!, $limit: Int!) {
+            ciClass(name: $className) {
+              displayField
+              secondaryDisplayFields
+              attributes {
+                name
+                displayName
+                attrType
+                isMandatory
+                isKeyAttribute
+              }
+            }
+            cis(filter: { class: $className }, limit: $limit) {
+              id
+              name
+              class
+              environment
+              attributes
+            }
+          }`,
+          { className, limit: REFERENCE_OPTIONS_LIMIT }
+        );
+        const cls = (data as any).ciClass as ReferenceClassMeta | undefined;
+        const records = Array.isArray((data as any).cis) ? (data as any).cis : [];
+        return [className, records.map((record: any) => referenceOptionForCI(cls, record))] as const;
+      } catch {
+        return [className, []] as const;
+      }
+    })).then((entries) => {
+      if (mounted) setReferenceOptions(Object.fromEntries(entries));
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [attrDefs]);
 
   const groupedDefs = useMemo(() => {
     const required = attrDefs.filter((def) => def.isMandatory);
@@ -239,6 +437,17 @@ export function CIEditModal({ ci, onSave, onClose }: CIEditModalProps) {
           <option value="">—</option>
           {def.enumValues.map((ev) => <option key={ev} value={ev}>{ev}</option>)}
         </select>
+      ) : def.attrType === "reference" ? (
+        <ReferenceTypeahead
+          referenceClass={def.referenceClass}
+          value={String(attrValues[def.name] ?? "")}
+          options={
+            referenceOptions[def.referenceClass || ""]?.some((option) => option.id === String(attrValues[def.name] ?? "")) || !attrValues[def.name]
+              ? referenceOptions[def.referenceClass || ""] || []
+              : [{ id: String(attrValues[def.name]), label: String(attrValues[def.name]) }, ...(referenceOptions[def.referenceClass || ""] || [])]
+          }
+          onChange={(value) => updateValue(def.name, value)}
+        />
       ) : def.attrType === "boolean" ? (
         <select
           value={String(attrValues[def.name] ?? "")}
