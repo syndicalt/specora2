@@ -68,14 +68,16 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 
 ## Technical Debt
 
-- Web dev server crashes with `ELIFECYCLE` when run via `turbo run dev`; use `pnpm dev:stable` as the first-class workaround.
-- Local Next dev sessions can still get stale after heavy iteration; shell bootstrap now has bounded waits and fallback behavior, but clean alternate-port runs or clearing `.next` remain the reliable local recovery path.
-- Vitest coverage parser cannot parse some TSX under the current Rolldown path; tests pass, coverage remains non-blocking.
-- `GraphExplorer.tsx` remains in `components/` but appears unused; delete after migration confirmation.
-- Keep Provara and OpenAI fallback routing covered by tests as the chat/tool-call path evolves.
-- Replace websocket app-layer JSON ping with protocol-level `ping()` / `pong`.
-- Add enterprise IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.
-- Connect audit head anchoring to environment-specific immutable external stores for high-compliance deployments.
+Detailed debt planning lives in [`docs/technical-debt-roadmap.md`](docs/technical-debt-roadmap.md).
+
+- **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
+- **API coverage to 80%** — Current API coverage is materially below 80 on statements/branches/lines; focus Admin, GraphQL, Tables, Auth, Discovery, Chat, and app-tool services.
+- **Web coverage scope expansion** — Current web coverage is strong for `src/lib/**/*.ts`, but should expand into shell/components and critical app TSX surfaces.
+- **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
+- **Per-tab state isolation** — Move transient app context currently stored in `localStorage` to `sessionStorage` where it should not bleed across tabs.
+- **Web dev stability** — `pnpm dev:stable` remains the supported workaround for local Turbo/Next instability; periodically retest and remove when stable.
+- **Enterprise identity maturity** — Add IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.
+- **Audit anchoring maturity** — Connect audit head anchoring to environment-specific immutable external stores for high-compliance deployments.
 
 ## Decisions Log
 

@@ -11,6 +11,12 @@ export default defineConfig({
       reporter: ["text", "json", "html"],
       include: ["src/lib/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.d.ts"],
+      thresholds: {
+        lines: 80,
+        functions: 80,
+        branches: 80,
+        statements: 80,
+      },
     },
     mockReset: true,
     restoreMocks: true,
