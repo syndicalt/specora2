@@ -1,8 +1,8 @@
 import { FastifyInstance } from "fastify";
-import { SocketStream } from "@fastify/websocket";
+import type { WebSocket } from "ws";
 
 interface ClientConnection {
-  socket: SocketStream;
+  socket: WebSocket;
   userId: string;
   subscriptions: Set<string>;
   lastPong: number;
@@ -27,7 +27,7 @@ export function broadcast(type: string, payload: Record<string, unknown>) {
   for (const client of connections) {
     if (client.subscriptions.has(type) || client.subscriptions.has("*")) {
       try {
-        client.socket.socket.send(message);
+        client.socket.send(message);
       } catch {
         connections.delete(client);
       }
@@ -39,7 +39,7 @@ export function broadcast(type: string, payload: Record<string, unknown>) {
 export function closeAllConnections() {
   for (const client of connections) {
     try {
-      client.socket.socket.close();
+      client.socket.close();
     } catch {
       // ignore
     }
@@ -53,7 +53,7 @@ export function getConnectionCount(): number {
 }
 
 export async function websocketRoutes(fastify: FastifyInstance) {
-  fastify.get("/api/events/live", { websocket: true }, (connection, req) => {
+  (fastify as any).get("/api/events/live", { websocket: true }, (socket: WebSocket, req: any) => {
     // Auth via short-lived ticket exchanged over HTTP POST /api/ws-ticket.
     // Parse from raw URL because @fastify/websocket may not populate req.query.
     const rawUrl = (req as any).raw?.url || req.url || "";
@@ -70,12 +70,12 @@ export async function websocketRoutes(fastify: FastifyInstance) {
       userId = decoded.id;
     } catch (err: any) {
       fastify.log.warn({ err: err.message }, "WebSocket auth failed");
-      connection.socket.close(1008, "Invalid ticket");
+      socket.close(1008, "Invalid ticket");
       return;
     }
 
     const client: ClientConnection = {
-      socket: connection,
+      socket,
       userId: userId!,
       subscriptions: new Set(),
       lastPong: Date.now(),
@@ -84,46 +84,46 @@ export async function websocketRoutes(fastify: FastifyInstance) {
     fastify.log.info({ userId, connections: connections.size }, "WebSocket client connected");
 
     // Heartbeat: server sends protocol-level ping every 30s, expects pong within 10s
-    connection.socket.on("pong", () => {
+    socket.on("pong", () => {
       client.lastPong = Date.now();
     });
 
     const pingInterval = setInterval(() => {
       if (Date.now() - client.lastPong > 40000) {
         fastify.log.warn({ userId }, "WebSocket client heartbeat timeout");
-        connection.socket.close(1001, "Heartbeat timeout");
+        socket.close(1001, "Heartbeat timeout");
         return;
       }
       try {
-        connection.socket.ping();
+        socket.ping();
       } catch {
         clearInterval(pingInterval);
         connections.delete(client);
       }
     }, 30000);
 
-    connection.socket.on("message", (raw: Buffer) => {
+    socket.on("message", (raw: Buffer) => {
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.action === "subscribe" && Array.isArray(msg.types)) {
           for (const t of msg.types) client.subscriptions.add(t);
-          connection.socket.send(JSON.stringify({ type: "subscribed", types: msg.types }));
+          socket.send(JSON.stringify({ type: "subscribed", types: msg.types }));
         } else if (msg.action === "unsubscribe" && Array.isArray(msg.types)) {
           for (const t of msg.types) client.subscriptions.delete(t);
-          connection.socket.send(JSON.stringify({ type: "unsubscribed", types: msg.types }));
+          socket.send(JSON.stringify({ type: "unsubscribed", types: msg.types }));
         }
       } catch {
         // ignore malformed messages
       }
     });
 
-    connection.socket.on("close", () => {
+    socket.on("close", () => {
       clearInterval(pingInterval);
       connections.delete(client);
       fastify.log.info({ userId, connections: connections.size }, "WebSocket client disconnected");
     });
 
-    connection.socket.on("error", (err: any) => {
+    socket.on("error", (err: any) => {
       fastify.log.warn({ err: err.message, userId }, "WebSocket error");
     });
   });
