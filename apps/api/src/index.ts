@@ -122,6 +122,7 @@ async function main() {
   startDiscoveryScheduler(fastify);
 
   fastify.get("/health", async () => ({ status: "ok" }));
+  fastify.get("/healthz", async () => ({ status: "ok" }));
   fastify.get("/ready", async (_request: any, reply: any) => {
     const readiness = await buildReadiness(fastify);
     if (readiness.status === "fail") return reply.status(503).send(readiness);

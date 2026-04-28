@@ -142,6 +142,71 @@ describe("discoveryRoutes", () => {
     expect(JSON.parse(heartbeat.body).collector).toMatchObject({ id: "collector-1", status: "healthy" });
   });
 
+  it("supports the specora-edge enrollment compatibility contract", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push(
+      { rows: [{ id: "token-1", name: "Austin enrollment", site: "Austin", labels: { zone: "prod" }, uses: 0, max_uses: 1, collector_id: null }] },
+      { rows: [{ id: "collector-1", name: "Austin enrollment", status: "healthy", site: "Austin", version: "dev", labels: { zone: "prod" }, config: {}, last_heartbeat_at: "2026-04-27", created_at: "2026-04-27", updated_at: "2026-04-27" }] },
+      { rows: [], rowCount: 1 }
+    );
+
+    const enrolled = await app.inject({
+      method: "POST",
+      url: "/edge/enroll",
+      payload: { registration_token: "se_test", version: "dev", capabilities: ["collector.query.osquery"] },
+    });
+
+    expect(enrolled.statusCode).toBe(200);
+    expect(JSON.parse(enrolled.body)).toEqual({
+      tenant_id: "default",
+      relay_id: "collector-1",
+      key_id: "collector-1",
+      policy_version: "policy-v1",
+      collector_token: "collector-token-collector-1",
+    });
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO discovery_collectors"), expect.arrayContaining([
+      "Austin enrollment",
+      "Austin",
+      "dev",
+      JSON.stringify({ zone: "prod" }),
+      JSON.stringify({ enrollmentTokenId: "token-1", capabilities: ["collector.query.osquery"], lastStats: {} }),
+    ]));
+  });
+
+  it("accepts specora-edge heartbeats for up/down status", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push({
+      rows: [{ id: "collector-1", name: "Austin enrollment", status: "healthy", site: "Austin", version: "dev", labels: { zone: "prod" }, config: {}, last_heartbeat_at: "2026-04-27", created_at: "2026-04-27", updated_at: "2026-04-27" }],
+    });
+
+    const heartbeat = await app.inject({
+      method: "POST",
+      url: "/edge/heartbeat",
+      payload: {
+        tenant_id: "default",
+        relay_id: "collector-1",
+        version: "dev",
+        capabilities: ["collector.query.osquery"],
+        queue_depth: 0,
+        uptime_seconds: 123,
+        healthy: true,
+      },
+    });
+
+    expect(heartbeat.statusCode).toBe(200);
+    expect(JSON.parse(heartbeat.body)).toEqual({ accepted: true, policy_version: "policy-v1" });
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("UPDATE discovery_collectors"), expect.arrayContaining([
+      "collector-1",
+      "healthy",
+      "dev",
+      JSON.stringify({
+        capabilities: ["collector.query.osquery"],
+        lastStats: { queueDepth: 0, uptimeSeconds: 123, healthy: true },
+        tenantId: "default",
+      }),
+    ]));
+  });
+
   it("lists only active discovery-scoped credential references", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push({

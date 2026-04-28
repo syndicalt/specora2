@@ -1500,6 +1500,67 @@ function enrollmentTokenRow(row: any) {
   };
 }
 
+function adminCollectorRow(row: any) {
+  const lastHeartbeatAt = timestampString(row.last_heartbeat_at);
+  const heartbeatAgeMinutes = lastHeartbeatAt ? Math.round((Date.now() - new Date(lastHeartbeatAt).getTime()) / 60000) : null;
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    site: row.site || "",
+    version: row.version || "",
+    labels: typeof row.labels === "string" ? JSON.parse(row.labels || "{}") : row.labels || {},
+    lastHeartbeatAt,
+    heartbeatAgeMinutes,
+    lastSeenIp: row.last_seen_ip || null,
+    sourceCount: Number(row.source_count || 0),
+    createdAt: timestampString(row.created_at),
+    updatedAt: timestampString(row.updated_at),
+  };
+}
+
+async function createEnrollmentToken(fastify: FastifyInstance, request: any, reply: any) {
+  try {
+    const actor = request.user as { id?: string } | null;
+    const body = request.body as { name?: string; site?: string; labels?: Record<string, unknown>; expiresInHours?: number; maxUses?: number };
+    const name = body.name?.trim();
+    if (!name) return reply.status(400).send({ error: "name is required" });
+    const expiresInHours = Math.min(Math.max(Number(body.expiresInHours || 24), 1), 24 * 30);
+    const maxUses = Math.min(Math.max(Number(body.maxUses || 1), 1), 25);
+    const token = `se_${randomBytes(32).toString("base64url")}`;
+    const tokenPrefix = token.slice(0, 10);
+    const result = await fastify.pg.query(
+      `INSERT INTO discovery_collector_enrollment_tokens
+         (name, token_prefix, token_hash, site, labels, expires_at, max_uses, created_by)
+       VALUES ($1, $2, $3, $4, $5, NOW() + ($6::text || ' hours')::interval, $7, $8)
+       RETURNING id, name, token_prefix, site, labels, expires_at, max_uses, uses, collector_id, revoked_at, created_by, created_at`,
+      [
+        name.slice(0, 160),
+        tokenPrefix,
+        hashEnrollmentToken(token),
+        body.site?.trim() || null,
+        JSON.stringify(body.labels || {}),
+        expiresInHours,
+        maxUses,
+        actor?.id || null,
+      ]
+    );
+    const row = enrollmentTokenRow(result.rows[0]);
+    await recordAuditEvent(fastify, {
+      actorId: actor?.id,
+      action: "edge.enrollment_token.created",
+      entityType: "DiscoveryEnrollmentToken",
+      entityId: row.id,
+      newValues: { ...row, token: undefined },
+      metadata: { source: "api.admin", surface: "edge-enrollment" },
+    });
+    return { token, enrollmentToken: row };
+  } catch (err: any) {
+    fastify.log.error(err);
+    return reply.status(500).send({ error: err.message || "Failed to create edge enrollment token" });
+  }
+}
+
 export async function adminRoutes(fastify: FastifyInstance) {
   fastify.get("/api/admin/edge-enrollment/tokens", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "read")] }, async (_request, reply) => {
     try {
@@ -1518,47 +1579,26 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
-  fastify.post("/api/admin/edge-enrollment/tokens", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => {
+  fastify.get("/api/admin/edge-enrollment/collectors", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "read")] }, async (_request, reply) => {
     try {
-      const actor = (request as any).user as { id?: string } | null;
-      const body = request.body as { name?: string; site?: string; labels?: Record<string, unknown>; expiresInHours?: number; maxUses?: number };
-      const name = body.name?.trim();
-      if (!name) return reply.status(400).send({ error: "name is required" });
-      const expiresInHours = Math.min(Math.max(Number(body.expiresInHours || 24), 1), 24 * 30);
-      const maxUses = Math.min(Math.max(Number(body.maxUses || 1), 1), 25);
-      const token = `se_${randomBytes(32).toString("base64url")}`;
-      const tokenPrefix = token.slice(0, 10);
       const result = await fastify.pg.query(
-        `INSERT INTO discovery_collector_enrollment_tokens
-           (name, token_prefix, token_hash, site, labels, expires_at, max_uses, created_by)
-         VALUES ($1, $2, $3, $4, $5, NOW() + ($6::text || ' hours')::interval, $7, $8)
-         RETURNING id, name, token_prefix, site, labels, expires_at, max_uses, uses, collector_id, revoked_at, created_by, created_at`,
-        [
-          name.slice(0, 160),
-          tokenPrefix,
-          hashEnrollmentToken(token),
-          body.site?.trim() || null,
-          JSON.stringify(body.labels || {}),
-          expiresInHours,
-          maxUses,
-          actor?.id || null,
-        ]
+        `SELECT c.id, c.name, c.status, c.site, c.version, c.labels, c.last_heartbeat_at, c.last_seen_ip, c.created_at, c.updated_at,
+                COUNT(s.id)::int AS source_count
+         FROM discovery_collectors c
+         LEFT JOIN discovery_sources s ON s.collector_id = c.id
+         GROUP BY c.id
+         ORDER BY COALESCE(c.last_heartbeat_at, c.created_at) DESC, c.name`
       );
-      const row = enrollmentTokenRow(result.rows[0]);
-      await recordAuditEvent(fastify, {
-        actorId: actor?.id,
-        action: "edge.enrollment_token.created",
-        entityType: "DiscoveryEnrollmentToken",
-        entityId: row.id,
-        newValues: { ...row, token: undefined },
-        metadata: { source: "api.admin", surface: "edge-enrollment" },
-      });
-      return { token, enrollmentToken: row };
+      return { collectors: result.rows.map(adminCollectorRow) };
     } catch (err: any) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to create edge enrollment token" });
+      return reply.status(500).send({ error: err.message || "Failed to fetch edge collectors" });
     }
   });
+
+  fastify.post("/api/admin/edge-enrollment/tokens", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => createEnrollmentToken(fastify, request, reply));
+  fastify.post("/discovery/collectors/enrollment-tokens", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => createEnrollmentToken(fastify, request, reply));
+  fastify.post("/discovery/enrollment-tokens", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => createEnrollmentToken(fastify, request, reply));
 
   fastify.post("/api/admin/edge-enrollment/tokens/:id/revoke", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => {
     try {

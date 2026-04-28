@@ -230,6 +230,21 @@ interface EdgeEnrollmentToken {
   status: "active" | "used" | "expired" | "revoked" | string;
 }
 
+interface EdgeCollector {
+  id: string;
+  name: string;
+  status: string;
+  site: string;
+  version: string;
+  labels: Record<string, unknown>;
+  lastHeartbeatAt: string | null;
+  heartbeatAgeMinutes: number | null;
+  lastSeenIp: string | null;
+  sourceCount: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
 interface RbacGroup {
   id: string;
   name: string;
@@ -591,6 +606,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [userDraft, setUserDraft] = useState({ email: "", name: "", role: "operator", password: "" });
   const [userEditDraft, setUserEditDraft] = useState({ name: "", role: "" });
   const [edgeEnrollmentTokens, setEdgeEnrollmentTokens] = useState<EdgeEnrollmentToken[]>([]);
+  const [edgeCollectors, setEdgeCollectors] = useState<EdgeCollector[]>([]);
   const [edgeEnrollmentDraft, setEdgeEnrollmentDraft] = useState({ name: "", site: "", labels: "", expiresInHours: "24", maxUses: "1" });
   const [issuedEnrollmentToken, setIssuedEnrollmentToken] = useState("");
   const [rbacGroups, setRbacGroups] = useState<RbacGroup[]>([]);
@@ -661,12 +677,13 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, userRes, edgeEnrollmentRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, userRes, edgeEnrollmentRes, edgeCollectorRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/users`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/edge-enrollment/tokens`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/edge-enrollment/collectors`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/credentials`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -689,6 +706,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const panelData = panelRes.ok ? await panelRes.json() : { panels: [] };
       const userData = userRes.ok ? await userRes.json() : { users: [] };
       const edgeEnrollmentData = edgeEnrollmentRes.ok ? await edgeEnrollmentRes.json() : { tokens: [] };
+      const edgeCollectorData = edgeCollectorRes.ok ? await edgeCollectorRes.json() : { collectors: [] };
       const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const credentialData = credentialRes.ok ? await credentialRes.json() : { credentials: [] };
@@ -708,6 +726,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setManagedUsers(userData.users || []);
       setSelectedUserId((current) => current || userData.users?.[0]?.id || "");
       setEdgeEnrollmentTokens(edgeEnrollmentData.tokens || []);
+      setEdgeCollectors(edgeCollectorData.collectors || []);
       setNumberSequences(sequenceData.sequences || []);
       setNumberSequenceOptions(sequenceOptionsData.options || []);
       setCredentials(credentialData.credentials || []);
@@ -917,6 +936,25 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setError(err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function copyIssuedEnrollmentToken() {
+    if (!issuedEnrollmentToken) return;
+    try {
+      await navigator.clipboard.writeText(issuedEnrollmentToken);
+      shell.dispatch?.({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "Enrollment token copied", type: "success" } });
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = issuedEnrollmentToken;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      shell.dispatch?.({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "Enrollment token copied", type: "success" } });
     }
   }
 
@@ -2127,21 +2165,30 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
             <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
               <div className="text-sm font-medium text-gray-100">specora-edge enrollment flow</div>
               <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950 p-3 font-mono text-xs leading-6 text-gray-300">
-                POST {API_URL}/discovery/collectors/enroll<br />
+                POST {API_URL}/edge/enroll<br />
                 {"{"}<br />
-                &nbsp;&nbsp;"token": "se_...",<br />
-                &nbsp;&nbsp;"name": "Austin edge collector",<br />
-                &nbsp;&nbsp;"version": "0.1.0",<br />
-                &nbsp;&nbsp;"labels": {"{"}"zone": "prod"{"}"}<br />
+                &nbsp;&nbsp;"registration_token": "se_...",<br />
+                &nbsp;&nbsp;"version": "dev",<br />
+                &nbsp;&nbsp;"capabilities": ["collector.query.osquery"]<br />
                 {"}"}
               </div>
               <div className="mt-3 text-sm leading-6 text-gray-500">
-                The exchange returns a collector-scoped bearer token. Store it on the edge server and use it for collector heartbeats. Enrollment tokens are shown only once.
+                The runtime exchange returns the tenant, relay, key, and policy identifiers specora-edge stores locally. Enrollment tokens are shown only once.
               </div>
               {issuedEnrollmentToken && (
                 <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
                   <div className="text-xs uppercase tracking-wide text-amber-200">Copy this token now</div>
-                  <div className="mt-2 break-all rounded border border-amber-500/30 bg-gray-950 p-2 font-mono text-sm text-amber-100">{issuedEnrollmentToken}</div>
+                  <div className="mt-2 flex items-stretch gap-2">
+                    <div className="min-w-0 flex-1 break-all rounded border border-amber-500/30 bg-gray-950 p-2 font-mono text-sm text-amber-100">{issuedEnrollmentToken}</div>
+                    <button
+                      type="button"
+                      onClick={copyIssuedEnrollmentToken}
+                      className="flex shrink-0 items-center gap-2 rounded-lg border border-amber-400/40 px-3 py-2 text-sm font-medium text-amber-100 hover:bg-amber-500/10"
+                    >
+                      <Clipboard className="h-4 w-4" />
+                      Copy
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -2188,6 +2235,57 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     </tr>
                   ))}
                   {!edgeEnrollmentTokens.length && <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-500">No enrollment tokens have been issued.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-gray-800 bg-gray-900">
+            <div className="border-b border-gray-800 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
+                <Radio className="h-4 w-4 text-cyan-300" />
+                Enrolled edge servers
+              </div>
+              <div className="mt-1 text-xs text-gray-500">Collector posture, heartbeat freshness, source bindings, and network origin.</div>
+            </div>
+            <div className="overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-gray-950 text-xs uppercase tracking-wide text-gray-500">
+                  <tr>
+                    <th className="px-4 py-3">Server</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Site</th>
+                    <th className="px-4 py-3">Version</th>
+                    <th className="px-4 py-3">Heartbeat</th>
+                    <th className="px-4 py-3">Sources</th>
+                    <th className="px-4 py-3">Last IP</th>
+                    <th className="px-4 py-3">Labels</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {edgeCollectors.map((collector) => (
+                    <tr key={collector.id} className="border-t border-gray-800/70">
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-gray-100">{collector.name}</div>
+                        <div className="font-mono text-xs text-gray-600">{collector.id}</div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`rounded-full border px-2 py-1 text-xs ${collector.status === "healthy" ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : collector.status === "degraded" ? "border-amber-400/30 bg-amber-500/10 text-amber-100" : "border-gray-700 bg-gray-950 text-gray-400"}`}>{collector.status}</span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-400">{collector.site || "-"}</td>
+                      <td className="px-4 py-3 text-gray-400">{collector.version || "-"}</td>
+                      <td className="px-4 py-3">
+                        <div className="text-gray-300">{collector.heartbeatAgeMinutes === null ? "Never" : `${collector.heartbeatAgeMinutes}m ago`}</div>
+                        <div className="text-xs text-gray-600">{formatDateTime(collector.lastHeartbeatAt)}</div>
+                      </td>
+                      <td className="px-4 py-3 text-gray-400">{collector.sourceCount}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{collector.lastSeenIp || "-"}</td>
+                      <td className="px-4 py-3">
+                        <div className="max-w-xs truncate font-mono text-xs text-gray-500">{JSON.stringify(collector.labels || {})}</div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!edgeCollectors.length && <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-500">No edge servers have enrolled yet.</td></tr>}
                 </tbody>
               </table>
             </div>
