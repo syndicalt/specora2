@@ -229,6 +229,9 @@ describe("buildDeterministicProposal", () => {
     );
 
     expect(proposal.classRoutes[0].targetClass).toBe("Computer");
+    expect(proposal.classRoutes.map((route) => route.targetClass)).toEqual(["Computer"]);
+    expect(proposal.reconciliationRules.map((rule) => rule.targetClass)).toEqual(["Computer"]);
+    expect(proposal.relationshipRules).toHaveLength(0);
     expect(proposal.assumptions).toContain("Endpoint/workstation signals were present, so the host profile is routed to Computer instead of Server.");
 
     const preview = previewPipeline({ sample: { rows: entityProfiles[0].sampleRows }, entityProfiles, proposal }, [
@@ -395,8 +398,10 @@ describe("buildDeterministicProposal", () => {
     );
 
     expect(proposal.classRoutes[0].targetClass).toBe("Computer");
+    expect(proposal.classRoutes).toHaveLength(1);
     expect(proposal.fieldMappings[0].targetClass).toBe("Computer");
     expect(proposal.reconciliationRules[0].targetClass).toBe("Computer");
+    expect(proposal.reconciliationRules).toHaveLength(1);
     expect(proposal.relationshipRules).toHaveLength(0);
   });
 });

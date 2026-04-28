@@ -241,6 +241,46 @@ function buildEntityPlan(profile: SourceProfile, primaryClass: string) {
   });
 }
 
+function ciTargetsFromEntityPlan(entityPlan: TransformProposal["entityPlan"] | undefined, fallback: string) {
+  const targets = (entityPlan || [])
+    .filter((entity) => entity.treatment === "ci" && entity.target)
+    .map((entity) => entity.target as string);
+  return Array.from(new Set(targets.length ? targets : [fallback]));
+}
+
+function sanitizeProposalForEntityPlan(proposal: TransformProposal, fallbackPrimary: string): TransformProposal {
+  if (!(proposal.sourceProfile.entityProfiles || []).length) return proposal;
+  const allowedClasses = new Set(ciTargetsFromEntityPlan(proposal.entityPlan, fallbackPrimary));
+  const primary = Array.from(allowedClasses)[0] || fallbackPrimary;
+  const classRoutes = proposal.classRoutes.filter((route) => allowedClasses.has(route.targetClass));
+  if (!classRoutes.length) {
+    classRoutes.push({
+      sourcePattern: "entity plan",
+      targetClass: primary,
+      confidence: 0.86,
+      rationale: "Entity plan selected this as the only CI-producing route.",
+    });
+  }
+  const reconciliationRules = proposal.reconciliationRules.filter((rule) => allowedClasses.has(rule.targetClass));
+  if (!reconciliationRules.length) {
+    reconciliationRules.push({
+      targetClass: primary,
+      matchKeys: ["name"],
+      strategy: "review",
+    });
+  }
+  return {
+    ...proposal,
+    classRoutes,
+    fieldMappings: proposal.fieldMappings.map((mapping) => ({
+      ...mapping,
+      targetClass: allowedClasses.has(mapping.targetClass) ? mapping.targetClass : primary,
+    })),
+    relationshipRules: proposal.relationshipRules.filter((rule) => allowedClasses.has(rule.fromClass) && allowedClasses.has(rule.toClass)),
+    reconciliationRules,
+  };
+}
+
 function fieldRationale(sourceField: string, targetField: string, transform: string) {
   const normalized = normalize(sourceField);
   const aliasMatch = Object.entries(CANDIDATE_FIELDS).find(([target, aliases]) =>
@@ -632,7 +672,10 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
     if (computer) computer.score = Math.max(computer.score, (ranked[0]?.score || 1) + 1);
     ranked.sort((a, b) => b.score - a.score);
   }
-  const selected = ranked.filter((r) => r.score > 0).slice(0, 3);
+  const endpointHost = profile.entityType === "host" && classNames.includes("Computer") && sourceHasEndpointSignals(profile);
+  const selected = endpointHost
+    ? ranked.filter((r) => r.name === "Computer")
+    : ranked.filter((r) => r.score > 0).slice(0, 3);
   const routes = selected.length ? selected : [{ name: classNames[0] || "ConfigurationItem", score: 1 }];
   const primaryClass = routes[0].name;
 
@@ -706,7 +749,7 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
   }
 
   const matchKeys = ["serialNumber", "name", "ipAddress"].filter((field) => fieldMappings.some((m) => m.targetField === field));
-  return {
+  const proposal: TransformProposal = {
     title: `${profile.sourceName || "Source"} transform draft`,
     summary: `Drafted ${fieldMappings.length} mappings into ${routes.map((r) => r.name).join(", ")} with ${relationshipRules.length} relationship rules${profile.entityType ? ` from ${profile.recordCount || profile.sampleRows.length} ${profile.entityType} observations` : ""}${entityProfiles.length ? ` using ${entityProfiles.length} edge entity profiles` : ""}.`,
     confidence: Math.min(0.92, 0.55 + routes[0].score * 0.08 + matchKeys.length * 0.05),
@@ -723,7 +766,7 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
     reconciliationRules: routes.map((r) => ({
       targetClass: r.name,
       matchKeys: matchKeys.length ? matchKeys : ["name"],
-      strategy: matchKeys.length > 1 ? "create_or_update" : "review",
+      strategy: matchKeys.length > 1 ? "create_or_update" as const : "review" as const,
     })),
     assumptions: [
       profile.fieldStats?.length
@@ -737,6 +780,7 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
     risks: matchKeys.length ? [] : ["No durable reconciliation key was detected; imports may create duplicates."],
     aiGenerated: false,
   };
+  return sanitizeProposalForEntityPlan(proposal, primaryClass);
 }
 
 function getAiConfig(): AiConfig | null {
@@ -756,9 +800,11 @@ function getAiConfig(): AiConfig | null {
 
 function coerceParsedProposal(proposal: TransformProposal, fallback: TransformProposal): TransformProposal {
   const fallbackPrimary = fallback.classRoutes[0]?.targetClass;
-  if (fallbackPrimary !== "Computer") return proposal;
-  return {
+  const withFallbackPlan = { ...proposal, entityPlan: proposal.entityPlan || fallback.entityPlan };
+  if (fallbackPrimary !== "Computer") return sanitizeProposalForEntityPlan(withFallbackPlan, fallbackPrimary || proposal.classRoutes[0]?.targetClass || "ConfigurationItem");
+  const coerced = {
     ...proposal,
+    entityPlan: proposal.entityPlan || fallback.entityPlan,
     classRoutes: proposal.classRoutes.map((route, index) => ({
       ...route,
       targetClass: index === 0 || route.targetClass === "Server" ? "Computer" : route.targetClass,
@@ -778,6 +824,7 @@ function coerceParsedProposal(proposal: TransformProposal, fallback: TransformPr
       "Endpoint/workstation signals were present, so the host profile is routed to Computer instead of Server.",
     ])),
   };
+  return sanitizeProposalForEntityPlan(coerced, "Computer");
 }
 
 function parseProposal(content: string, fallback: TransformProposal): TransformProposal {
