@@ -40,6 +40,19 @@ function parseNode(node: any) {
   return { ...node, attributes: attrs };
 }
 
+function mapEnvironmentChoice(row: any) {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    active: row.active,
+    sortOrder: row.sort_order,
+    isProductionLike: row.is_production_like,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 async function getClassDefinition(pg: any, className: string) {
   const classResult = await pg.query("SELECT * FROM ci_classes WHERE name = $1", [className]);
   if (!classResult.rows.length) return null;
@@ -225,10 +238,26 @@ export const resolvers = {
     async ciEnvironments(_parent: any, _args: any, context: any) {
       const session = context.neo4j.session();
       try {
-        const result = await session.run(
-          `MATCH (n:ConfigurationItem) WHERE n.environment IS NOT NULL RETURN DISTINCT n.environment as env ORDER BY env`
-        );
-        return result.records.map((r: any) => r.get("env")).filter(Boolean);
+        const [choiceResult, result] = await Promise.all([
+          context.pg.query(
+            `SELECT name
+             FROM ci_environment_choices
+             WHERE active = true
+             ORDER BY sort_order, name`
+          ).catch(() => ({ rows: [] })),
+          session.run(
+            `MATCH (n:ConfigurationItem) WHERE n.environment IS NOT NULL RETURN DISTINCT n.environment as env ORDER BY env`
+          ),
+        ]);
+        const values = new Set<string>();
+        for (const row of choiceResult.rows || []) {
+          if (row.name) values.add(row.name);
+        }
+        for (const record of result.records) {
+          const env = record.get("env");
+          if (env) values.add(env);
+        }
+        return Array.from(values).sort((a, b) => a.localeCompare(b));
       } finally {
         await session.close();
       }
@@ -256,6 +285,15 @@ export const resolvers = {
     async ciClass(_parent: any, args: { name: string }, context: any) {
       await checkPermission(context, "cmdb", "read");
       return getClassDefinition(context.pg, args.name);
+    },
+    async ciEnvironmentChoices(_parent: any, args: { activeOnly?: boolean }, context: any) {
+      await checkPermission(context, "cmdb", "read");
+      let sql = `SELECT id, code, name, active, sort_order, is_production_like, created_at, updated_at
+                 FROM ci_environment_choices`;
+      if (args.activeOnly !== false) sql += " WHERE active = true";
+      sql += " ORDER BY sort_order, name";
+      const result = await context.pg.query(sql);
+      return result.rows.map(mapEnvironmentChoice);
     },
     async serviceMap(_parent: any, args: { rootId: string; classFilter?: string[]; environmentFilter?: string[]; relationshipFilter?: string[] }, context: any) {
       const session = context.neo4j.session();
@@ -1488,6 +1526,38 @@ LIMIT 50`;
       } finally {
         client.release();
       }
+    },
+    async upsertCIEnvironmentChoice(_parent: any, args: { input: any }, context: any) {
+      await checkPermission(context, "cmdb", "admin");
+      const code = String(args.input.code || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+      const name = String(args.input.name || "").trim();
+      if (!code || !name) {
+        throw new GraphQLError("Environment code and name are required", { extensions: { code: "BAD_USER_INPUT" } });
+      }
+      const result = await context.pg.query(
+        `INSERT INTO ci_environment_choices (code, name, active, sort_order, is_production_like)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (code) DO UPDATE SET
+           name = EXCLUDED.name,
+           active = EXCLUDED.active,
+           sort_order = EXCLUDED.sort_order,
+           is_production_like = EXCLUDED.is_production_like,
+           updated_at = NOW()
+         RETURNING id, code, name, active, sort_order, is_production_like, created_at, updated_at`,
+        [
+          code,
+          name,
+          args.input.active ?? true,
+          args.input.sortOrder ?? 0,
+          args.input.isProductionLike ?? false,
+        ]
+      );
+      return mapEnvironmentChoice(result.rows[0]);
+    },
+    async deleteCIEnvironmentChoice(_parent: any, args: { id: string }, context: any) {
+      await checkPermission(context, "cmdb", "admin");
+      const result = await context.pg.query("DELETE FROM ci_environment_choices WHERE id = $1 RETURNING id", [args.id]);
+      return result.rows.length > 0;
     },
   },
 };

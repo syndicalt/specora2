@@ -32,7 +32,7 @@ const BUILT_IN_CLASSES = [
       { name: "os", displayName: "Operating System", attrType: "string", isMandatory: false, isHealthRequired: true, isKeyAttribute: true, sortOrder: 2 },
       { name: "osVersion", displayName: "OS Version", attrType: "string", isMandatory: false, isHealthRequired: true, isKeyAttribute: false, sortOrder: 3 },
       { name: "deviceType", displayName: "Device Type", attrType: "enum", isMandatory: false, isHealthRequired: true, isKeyAttribute: true, enumValues: ["laptop", "desktop", "workstation", "tablet", "thin_client", "unknown"], sortOrder: 4 },
-      { name: "assignedUser", displayName: "Assigned User", attrType: "string", isMandatory: false, isHealthRequired: true, isKeyAttribute: false, sortOrder: 5 },
+      { name: "assignedUser", displayName: "Assigned User", attrType: "reference", isMandatory: false, isHealthRequired: true, isKeyAttribute: false, referenceClass: "User", sortOrder: 5 },
       { name: "serialNumber", displayName: "Serial Number", attrType: "string", isMandatory: false, isHealthRequired: true, isKeyAttribute: false, sortOrder: 6 },
       { name: "assetTag", displayName: "Asset Tag", attrType: "string", isMandatory: false, isHealthRequired: true, isKeyAttribute: false, sortOrder: 7 },
       { name: "memoryGB", displayName: "Memory (GB)", attrType: "number", isMandatory: false, isHealthRequired: true, isKeyAttribute: false, sortOrder: 8 },

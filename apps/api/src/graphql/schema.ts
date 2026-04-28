@@ -157,6 +157,25 @@ const typeDefs = `
     updatedAt: String!
   }
 
+  type CIEnvironmentChoice {
+    id: ID!
+    code: String!
+    name: String!
+    active: Boolean!
+    sortOrder: Int!
+    isProductionLike: Boolean!
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  input CIEnvironmentChoiceInput {
+    code: String!
+    name: String!
+    active: Boolean
+    sortOrder: Int
+    isProductionLike: Boolean
+  }
+
   input CIClassAttributeInput {
     name: String!
     displayName: String!
@@ -230,6 +249,7 @@ const typeDefs = `
     auditLogForCI(ciId: ID!, limit: Int): [AuditLogEntry!]!
     ciClasses: [CIClass!]!
     ciClass(name: String!): CIClass
+    ciEnvironmentChoices(activeOnly: Boolean): [CIEnvironmentChoice!]!
   }
 
   type Mutation {
@@ -253,6 +273,8 @@ const typeDefs = `
     createCIClass(input: CreateCIClassInput!): CIClass!
     updateCIClass(id: ID!, input: CreateCIClassInput!): CIClass!
     deleteCIClass(id: ID!): Boolean!
+    upsertCIEnvironmentChoice(input: CIEnvironmentChoiceInput!): CIEnvironmentChoice!
+    deleteCIEnvironmentChoice(id: ID!): Boolean!
   }
 `;
 

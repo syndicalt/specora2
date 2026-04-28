@@ -152,9 +152,28 @@ function scoreBg(score: number | null) {
   return "bg-red-500";
 }
 
-function formatValue(value: unknown) {
+function formatValue(value: unknown): string {
   if (value === undefined || value === null || value === "") return "-";
-  if (typeof value === "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "-";
+    if (value.every((item) => item === null || ["string", "number", "boolean"].includes(typeof item))) {
+      return value.map((item) => String(item)).join(", ");
+    }
+    return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const healthParts = [
+      typeof record.running === "number" ? `${record.running} running` : null,
+      typeof record.failed === "number" ? `${record.failed} failed` : null,
+      typeof record.total === "number" ? `${record.total} total` : null,
+    ].filter(Boolean);
+    if (healthParts.length > 0) return healthParts.join(" / ");
+    return Object.entries(record)
+      .slice(0, 4)
+      .map(([key, item]) => `${key}: ${formatValue(item)}`)
+      .join(" / ");
+  }
   return String(value);
 }
 
