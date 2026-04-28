@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Save, X } from "lucide-react";
 import { graphqlClient } from "@/lib/api";
+import { ReferenceTypeahead, type ReferenceOption } from "@/components/ReferenceTypeahead";
 import { CLASS_STYLES } from "./ServiceMapNode";
 
 interface AttrDef {
@@ -17,12 +18,6 @@ interface AttrDef {
   referenceClass?: string;
   defaultValue?: string | null;
 }
-
-type ReferenceOption = {
-  id: string;
-  label: string;
-  sublabel?: string;
-};
 
 type ReferenceClassMeta = {
   displayField?: string | null;
@@ -115,107 +110,6 @@ function Section({
       </button>
       {open && <div className="space-y-3 border-t border-gray-800 px-4 py-4">{children}</div>}
     </section>
-  );
-}
-
-function ReferenceTypeahead({
-  referenceClass,
-  value,
-  options,
-  onChange,
-}: {
-  referenceClass?: string;
-  value: string;
-  options: ReferenceOption[];
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const selected = options.find((option) => option.id === value);
-  const filtered = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    const matches = needle
-      ? options.filter((option) => [option.label, option.sublabel, option.id].some((item) => String(item || "").toLowerCase().includes(needle)))
-      : options;
-    return matches.slice(0, 50);
-  }, [options, search]);
-  const displayValue = open ? search : selected ? selected.label : "";
-  const placeholder = referenceClass ? `Search ${referenceClass}` : "Search reference";
-
-  function choose(option: ReferenceOption) {
-    onChange(option.id);
-    setSearch("");
-    setOpen(false);
-  }
-
-  return (
-    <div className="relative">
-      <div className="relative">
-        <input
-          value={displayValue}
-          onFocus={() => {
-            setOpen(true);
-            setSearch("");
-          }}
-          onChange={(event) => {
-            setOpen(true);
-            setSearch(event.target.value);
-          }}
-          onBlur={() => {
-            window.setTimeout(() => {
-              setOpen(false);
-              setSearch("");
-            }, 120);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              setOpen(false);
-              setSearch("");
-            } else if (event.key === "Enter" && open && filtered[0]) {
-              event.preventDefault();
-              choose(filtered[0]);
-            } else if (event.key === "Backspace" && !open && value) {
-              onChange("");
-            }
-          }}
-          placeholder={placeholder}
-          className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 pr-9 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
-        />
-        {value && (
-          <button
-            type="button"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => {
-              onChange("");
-              setSearch("");
-              setOpen(false);
-            }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 hover:text-gray-200"
-            aria-label="Clear reference"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-      {open && (
-        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-gray-700 bg-gray-950 py-1 shadow-xl shadow-black/40">
-          {filtered.length > 0 ? filtered.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => choose(option)}
-              className={`block w-full px-3 py-2 text-left text-sm hover:bg-indigo-600/20 ${option.id === value ? "text-indigo-200" : "text-gray-200"}`}
-            >
-              <div className="truncate">{option.label}</div>
-              {option.sublabel && <div className="truncate text-xs text-gray-500">{option.sublabel}</div>}
-            </button>
-          )) : (
-            <div className="px-3 py-3 text-sm text-gray-500">No matching records.</div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -447,6 +341,7 @@ export function CIEditModal({ ci, onSave, onClose }: CIEditModalProps) {
               : [{ id: String(attrValues[def.name]), label: String(attrValues[def.name]) }, ...(referenceOptions[def.referenceClass || ""] || [])]
           }
           onChange={(value) => updateValue(def.name, value)}
+          inputClassName="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 pr-9 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500"
         />
       ) : def.attrType === "boolean" ? (
         <select

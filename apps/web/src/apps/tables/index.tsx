@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import type { ShellAPI } from "@/sdk/types";
+import { ReferenceTypeahead, type ReferenceOption } from "@/components/ReferenceTypeahead";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -171,12 +172,6 @@ type ImportDecision = {
   recordName?: string | null;
   reason?: string;
 };
-type ReferenceOption = {
-  id: string;
-  label: string;
-  sublabel?: string;
-};
-
 const PAGE_SIZE = 100;
 const IMPORT_LIMIT = 250;
 const REFERENCE_OPTIONS_LIMIT = 500;
@@ -2691,7 +2686,6 @@ function Field({ label, hint, required, children }: { label: string; hint?: stri
 
 function AttributeInput({ attr, value, referenceOptions, onChange }: { attr: AttributeDef; value: string; referenceOptions: ReferenceOption[]; onChange: (value: string) => void }) {
   const label = attr.displayName || attr.name;
-  const [referenceSearch, setReferenceSearch] = useState("");
   if (!canReadAttr(attr)) {
     return (
       <Field label={label} required={attr.isMandatory} hint="Restricted by field-level RBAC.">
@@ -2730,8 +2724,6 @@ function AttributeInput({ attr, value, referenceOptions, onChange }: { attr: Att
         referenceClass={attr.referenceClass}
         value={value}
         options={options}
-        search={referenceSearch}
-        onSearch={setReferenceSearch}
         onChange={onChange}
       />
     );
@@ -2762,112 +2754,5 @@ function AttributeInput({ attr, value, referenceOptions, onChange }: { attr: Att
     <Field label={label} required={attr.isMandatory} hint={disabled ? "Read-only by field-level RBAC." : attr.isRestricted ? "Field-level RBAC managed." : undefined}>
       {input}
     </Field>
-  );
-}
-
-function ReferenceTypeahead({
-  disabled,
-  referenceClass,
-  value,
-  options,
-  search,
-  onSearch,
-  onChange,
-}: {
-  disabled: boolean;
-  referenceClass?: string;
-  value: string;
-  options: ReferenceOption[];
-  search: string;
-  onSearch: (value: string) => void;
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const selected = options.find((option) => option.id === value);
-  const filtered = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    const matches = needle
-      ? options.filter((option) => [option.label, option.sublabel, option.id].some((item) => String(item || "").toLowerCase().includes(needle)))
-      : options;
-    return matches.slice(0, 50);
-  }, [options, search]);
-  const displayValue = open ? search : selected ? selected.label : "";
-  const placeholder = referenceClass ? `Search ${referenceClass}` : "Search reference";
-
-  function choose(option: ReferenceOption) {
-    onChange(option.id);
-    onSearch("");
-    setOpen(false);
-  }
-
-  return (
-    <div className="relative">
-      <div className="relative">
-        <input
-          disabled={disabled}
-          value={displayValue}
-          onFocus={() => {
-            setOpen(true);
-            onSearch("");
-          }}
-          onChange={(event) => {
-            setOpen(true);
-            onSearch(event.target.value);
-          }}
-          onBlur={() => {
-            window.setTimeout(() => {
-              setOpen(false);
-              onSearch("");
-            }, 120);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              setOpen(false);
-              onSearch("");
-            } else if (event.key === "Enter" && open && filtered[0]) {
-              event.preventDefault();
-              choose(filtered[0]);
-            } else if (event.key === "Backspace" && !open && value) {
-              onChange("");
-            }
-          }}
-          placeholder={placeholder}
-          className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 pr-9 text-sm text-gray-100 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500"
-        />
-        {value && !disabled && (
-          <button
-            type="button"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => {
-              onChange("");
-              onSearch("");
-              setOpen(false);
-            }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 hover:text-gray-200"
-            aria-label="Clear reference"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-      {open && !disabled && (
-        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-gray-700 bg-gray-950 py-1 shadow-xl shadow-black/40">
-          {filtered.length > 0 ? filtered.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => choose(option)}
-              className={`block w-full px-3 py-2 text-left text-sm hover:bg-indigo-600/20 ${option.id === value ? "text-indigo-200" : "text-gray-200"}`}
-            >
-              <div className="truncate">{option.label}</div>
-              {option.sublabel && <div className="truncate text-xs text-gray-500">{option.sublabel}</div>}
-            </button>
-          )) : (
-            <div className="px-3 py-3 text-sm text-gray-500">No matching records.</div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
