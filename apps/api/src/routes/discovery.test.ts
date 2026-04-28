@@ -28,7 +28,15 @@ describe("discoveryRoutes", () => {
       })),
     });
     app.decorate("authenticate", async (request: any) => {
+      if (request.headers.authorization?.includes("collector-token")) throw new Error("not a user token");
       request.user = { id: "u1", role: "admin" };
+    });
+    app.decorate("jwt", {
+      sign: vi.fn(async (payload: any) => `collector-token-${payload.collectorId}`),
+      verify: vi.fn(async (token: string) => {
+        if (token === "collector-token-collector-1") return { typ: "collector", collectorId: "collector-1", scope: "discovery" };
+        throw new Error("invalid");
+      }),
     });
     await app.register(discoveryRoutes);
     return app;
@@ -104,6 +112,34 @@ describe("discoveryRoutes", () => {
     expect(JSON.parse(heartbeat.body).collector).toMatchObject({ id: "collector-1", status: "healthy", version: "1.0.1" });
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.collector_registered", "DiscoveryCollector", "collector-1"]));
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.collector_heartbeat", "DiscoveryCollector", "collector-1"]));
+  });
+
+  it("enrolls collectors with one-time enrollment tokens and allows collector heartbeats", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push(
+      { rows: [{ id: "token-1", name: "Austin enrollment", site: "Austin", labels: { zone: "prod" }, uses: 0, max_uses: 1, collector_id: null }] },
+      { rows: [{ id: "collector-1", name: "Austin Edge", status: "healthy", site: "Austin", version: "0.1.0", labels: { zone: "prod" }, config: {}, last_heartbeat_at: "2026-04-27", created_at: "2026-04-27", updated_at: "2026-04-27" }] },
+      { rows: [], rowCount: 1 },
+      { rows: [{ id: "collector-1", name: "Austin Edge", status: "healthy", site: "Austin", version: "0.1.1", labels: { zone: "prod" }, config: { lastStats: { hosts: 4 } }, last_heartbeat_at: "2026-04-27", created_at: "2026-04-27", updated_at: "2026-04-27" }] }
+    );
+
+    const enrolled = await app.inject({
+      method: "POST",
+      url: "/discovery/collectors/enroll",
+      payload: { token: "se_test", name: "Austin Edge", version: "0.1.0", labels: { zone: "prod" } },
+    });
+    expect(enrolled.statusCode).toBe(200);
+    expect(JSON.parse(enrolled.body)).toMatchObject({ tokenType: "Bearer", collector: { id: "collector-1", name: "Austin Edge" } });
+    expect((app as any).jwt.sign).toHaveBeenCalledWith(expect.objectContaining({ typ: "collector", collectorId: "collector-1" }), expect.any(Object));
+
+    const heartbeat = await app.inject({
+      method: "POST",
+      url: "/discovery/collectors/collector-1/heartbeat",
+      headers: { authorization: "Bearer collector-token-collector-1" },
+      payload: { status: "healthy", version: "0.1.1", stats: { hosts: 4 } },
+    });
+    expect(heartbeat.statusCode).toBe(200);
+    expect(JSON.parse(heartbeat.body).collector).toMatchObject({ id: "collector-1", status: "healthy" });
   });
 
   it("lists only active discovery-scoped credential references", async () => {

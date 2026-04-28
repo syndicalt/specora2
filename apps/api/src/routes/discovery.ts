@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { mkdirSync } from "fs";
 import { join, resolve } from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
 import { enqueueJob } from "../services/jobQueue";
@@ -46,7 +46,35 @@ function collectorRow(row: any) {
   };
 }
 
+function hashEnrollmentToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+async function authenticateCollectorOrUser(fastify: FastifyInstance, request: any, reply: any) {
+  try {
+    await fastify.authenticate(request, reply);
+    request.authKind = "user";
+    return;
+  } catch {
+    const header = request.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+    if (!token) return reply.status(401).send({ error: "Unauthorized" });
+    try {
+      const payload = await (fastify as any).jwt.verify(token);
+      if (payload?.typ !== "collector" || !payload.collectorId) {
+        return reply.status(401).send({ error: "Invalid collector token" });
+      }
+      request.user = { role: "collector", type: "collector" };
+      request.collector = payload;
+      request.authKind = "collector";
+    } catch {
+      return reply.status(401).send({ error: "Invalid collector token" });
+    }
+  }
+}
+
 async function requireDiscoveryPermission(fastify: FastifyInstance, request: any, reply: any, action: "read" | "write") {
+  if (request.authKind === "collector" && action === "write") return true;
   const role = await resolveUserRole(fastify.pg, request.user as any);
   if (!role || !(await hasPermission(fastify.pg, { role, resource: "discovery", action }))) {
     reply.status(403).send({ error: `Forbidden: cannot ${action} discovery` });
@@ -56,6 +84,69 @@ async function requireDiscoveryPermission(fastify: FastifyInstance, request: any
 }
 
 export async function discoveryRoutes(fastify: FastifyInstance) {
+  fastify.post("/discovery/collectors/enroll", async (request, reply) => {
+    const body = request.body as { token?: string; name?: string; version?: string; labels?: Record<string, unknown>; stats?: Record<string, unknown> };
+    const rawToken = body.token?.trim();
+    const name = body.name?.trim();
+    if (!rawToken || !name) return reply.status(400).send({ error: "token and name are required" });
+
+    const tokenResult = await fastify.pg.query(
+      `SELECT id, name, site, labels, uses, max_uses, collector_id
+       FROM discovery_collector_enrollment_tokens
+       WHERE token_hash = $1
+         AND revoked_at IS NULL
+         AND expires_at > NOW()
+         AND uses < max_uses
+       FOR UPDATE`,
+      [hashEnrollmentToken(rawToken)]
+    );
+    const enrollment = tokenResult.rows[0];
+    if (!enrollment) return reply.status(401).send({ error: "Enrollment token is invalid or expired" });
+    const enrollmentLabels = typeof enrollment.labels === "string" ? JSON.parse(enrollment.labels || "{}") : enrollment.labels || {};
+    const labels = { ...enrollmentLabels, ...(body.labels || {}) };
+    const collectorResult = await fastify.pg.query(
+      `INSERT INTO discovery_collectors (name, status, site, version, labels, config, created_by, updated_by, last_heartbeat_at, last_seen_ip)
+       VALUES ($1, 'healthy', $2, $3, $4, $5, NULL, NULL, NOW(), $6)
+       ON CONFLICT (name) DO UPDATE SET
+         status = 'healthy',
+         site = COALESCE(EXCLUDED.site, discovery_collectors.site),
+         version = COALESCE(EXCLUDED.version, discovery_collectors.version),
+         labels = discovery_collectors.labels || EXCLUDED.labels,
+         config = discovery_collectors.config || EXCLUDED.config,
+         last_heartbeat_at = NOW(),
+         last_seen_ip = EXCLUDED.last_seen_ip,
+         updated_at = NOW()
+       RETURNING id, name, status, site, version, labels, config, last_heartbeat_at, last_seen_ip, created_at, updated_at`,
+      [
+        name.slice(0, 160),
+        enrollment.site || null,
+        body.version?.trim() || null,
+        JSON.stringify(labels),
+        JSON.stringify({ enrollmentTokenId: enrollment.id, lastStats: body.stats || {} }),
+        request.ip,
+      ]
+    );
+    const collector = collectorRow(collectorResult.rows[0]);
+    await fastify.pg.query(
+      `UPDATE discovery_collector_enrollment_tokens
+       SET uses = uses + 1, collector_id = $2, updated_at = NOW()
+       WHERE id = $1`,
+      [enrollment.id, collector.id]
+    );
+    const collectorToken = await (fastify as any).jwt.sign(
+      { typ: "collector", collectorId: collector.id, collectorName: collector.name, scope: "discovery" },
+      { expiresIn: process.env.COLLECTOR_TOKEN_EXPIRES_IN || "30d" }
+    );
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.collector_enrolled",
+      entityType: "DiscoveryCollector",
+      entityId: collector.id,
+      newValues: collector,
+      metadata: { source: "api.discovery", surface: "edge-enrollment", enrollmentTokenId: enrollment.id },
+    });
+    return { collector, collectorToken, tokenType: "Bearer", expiresIn: process.env.COLLECTOR_TOKEN_EXPIRES_IN || "30d" };
+  });
+
   fastify.get("/discovery/collectors", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
     const result = await fastify.pg.query(
@@ -102,9 +193,12 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     return { collector };
   });
 
-  fastify.post("/discovery/collectors/:id/heartbeat", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/discovery/collectors/:id/heartbeat", { onRequest: [(request: any, reply: any) => authenticateCollectorOrUser(fastify, request, reply)] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
     const { id } = request.params as { id: string };
+    if ((request as any).authKind === "collector" && (request as any).collector?.collectorId !== id) {
+      return reply.status(403).send({ error: "Collector token cannot heartbeat another collector" });
+    }
     const body = request.body as { status?: string; version?: string; labels?: Record<string, unknown>; stats?: Record<string, unknown> };
     const status = ["healthy", "degraded", "offline"].includes(body.status || "") ? body.status as string : "healthy";
     const result = await fastify.pg.query(

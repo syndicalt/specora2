@@ -21,6 +21,7 @@ import {
   Eye,
   EyeOff,
   Plus,
+  Radio,
   Save,
   Search,
   Settings,
@@ -211,6 +212,22 @@ interface ManagedUserDetail {
   auditEvents: Array<{ id: string; action: string; entityType: string; entityId: string; metadata: any; createdAt?: string | null }>;
   impact: Record<string, number>;
   recommendations: Array<{ severity: string; title: string; rationale: string; action: string }>;
+}
+
+interface EdgeEnrollmentToken {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  site: string;
+  labels: Record<string, unknown>;
+  expiresAt: string | null;
+  maxUses: number;
+  uses: number;
+  collectorId: string | null;
+  collectorName: string | null;
+  revokedAt: string | null;
+  createdAt: string | null;
+  status: "active" | "used" | "expired" | "revoked" | string;
 }
 
 interface RbacGroup {
@@ -486,6 +503,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   Shield,
   ShieldCheck,
   Users,
+  Radio,
 };
 
 const PERMISSION_VALUE_SEPARATOR = "\u0000";
@@ -572,6 +590,9 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [userSearch, setUserSearch] = useState("");
   const [userDraft, setUserDraft] = useState({ email: "", name: "", role: "operator", password: "" });
   const [userEditDraft, setUserEditDraft] = useState({ name: "", role: "" });
+  const [edgeEnrollmentTokens, setEdgeEnrollmentTokens] = useState<EdgeEnrollmentToken[]>([]);
+  const [edgeEnrollmentDraft, setEdgeEnrollmentDraft] = useState({ name: "", site: "", labels: "", expiresInHours: "24", maxUses: "1" });
+  const [issuedEnrollmentToken, setIssuedEnrollmentToken] = useState("");
   const [rbacGroups, setRbacGroups] = useState<RbacGroup[]>([]);
   const [rbacTargets, setRbacTargets] = useState<RbacTarget[]>([]);
   const [rbacApps, setRbacApps] = useState<RbacApp[]>([]);
@@ -640,11 +661,12 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, userRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, userRes, edgeEnrollmentRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/users`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/edge-enrollment/tokens`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/credentials`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -666,6 +688,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const propData = await propRes.json();
       const panelData = panelRes.ok ? await panelRes.json() : { panels: [] };
       const userData = userRes.ok ? await userRes.json() : { users: [] };
+      const edgeEnrollmentData = edgeEnrollmentRes.ok ? await edgeEnrollmentRes.json() : { tokens: [] };
       const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const credentialData = credentialRes.ok ? await credentialRes.json() : { credentials: [] };
@@ -684,6 +707,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setPanels(panelData.panels || []);
       setManagedUsers(userData.users || []);
       setSelectedUserId((current) => current || userData.users?.[0]?.id || "");
+      setEdgeEnrollmentTokens(edgeEnrollmentData.tokens || []);
       setNumberSequences(sequenceData.sequences || []);
       setNumberSequenceOptions(sequenceOptionsData.options || []);
       setCredentials(credentialData.credentials || []);
@@ -828,6 +852,67 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       if (!res.ok) throw new Error(data.error || "Failed to revoke sessions");
       await fetchData();
       await fetchUserDetail(selectedUserId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function parseLabels(value: string) {
+    if (!value.trim()) return {};
+    try {
+      return JSON.parse(value);
+    } catch {
+      return Object.fromEntries(value.split(",").map((pair) => pair.trim()).filter(Boolean).map((pair) => {
+        const [key, ...rest] = pair.split("=");
+        return [key.trim(), rest.join("=").trim() || true];
+      }));
+    }
+  }
+
+  async function createEdgeEnrollmentToken(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    setIssuedEnrollmentToken("");
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/edge-enrollment/tokens`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({
+          name: edgeEnrollmentDraft.name,
+          site: edgeEnrollmentDraft.site,
+          labels: parseLabels(edgeEnrollmentDraft.labels),
+          expiresInHours: Number(edgeEnrollmentDraft.expiresInHours || 24),
+          maxUses: Number(edgeEnrollmentDraft.maxUses || 1),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to create enrollment token");
+      setIssuedEnrollmentToken(data.token || "");
+      setEdgeEnrollmentDraft({ name: "", site: "", labels: "", expiresInHours: "24", maxUses: "1" });
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function revokeEdgeEnrollmentToken(id: string) {
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/edge-enrollment/tokens/${id}/revoke`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token || ""}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to revoke enrollment token");
+      await fetchData();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1575,6 +1660,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const allTabs = useMemo(() => Array.from(new Map([
     { id: "overview", name: "Overview", icon: "LayoutDashboard", category: "Command" },
     { id: "users", name: "User Management", icon: "Users", category: "Governance" },
+    { id: "edge-enrollment", name: "Edge Enrollment", icon: "Radio", category: "Governance" },
     { id: "rbac", name: "Users & Access", icon: "ShieldCheck", category: "Governance" },
     { id: "credentials", name: "Credentials", icon: "KeyRound", category: "Governance" },
     { id: "identity", name: "Identity Providers", icon: "KeyRound", category: "Governance" },
@@ -2010,6 +2096,102 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
               </div>
             </div>
           )}
+        </div>
+      );
+    }
+
+    if (activeTab === "edge-enrollment") {
+      return (
+        <div className="space-y-5">
+          <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+            <form onSubmit={createEdgeEnrollmentToken} className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+              <div className="mb-4 flex items-center gap-2 text-sm font-medium text-gray-100">
+                <Radio className="h-4 w-4 text-cyan-300" />
+                Issue edge enrollment token
+              </div>
+              <div className="grid gap-3">
+                <FieldInput label="Token name" value={edgeEnrollmentDraft.name} onChange={(value) => setEdgeEnrollmentDraft((current) => ({ ...current, name: value }))} placeholder="Austin edge enrollment" autoComplete="off" />
+                <FieldInput label="Site" value={edgeEnrollmentDraft.site} onChange={(value) => setEdgeEnrollmentDraft((current) => ({ ...current, site: value }))} placeholder="Austin DC" autoComplete="off" />
+                <FieldInput label="Labels" value={edgeEnrollmentDraft.labels} onChange={(value) => setEdgeEnrollmentDraft((current) => ({ ...current, labels: value }))} placeholder='{"zone":"prod"} or zone=prod,tier=edge' help="Labels are attached to the enrolled collector." />
+                <div className="grid grid-cols-2 gap-3">
+                  <FieldInput label="Expires in hours" value={edgeEnrollmentDraft.expiresInHours} onChange={(value) => setEdgeEnrollmentDraft((current) => ({ ...current, expiresInHours: value }))} type="number" />
+                  <FieldInput label="Max uses" value={edgeEnrollmentDraft.maxUses} onChange={(value) => setEdgeEnrollmentDraft((current) => ({ ...current, maxUses: value }))} type="number" />
+                </div>
+              </div>
+              <button type="submit" disabled={saving} className="mt-4 flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500 disabled:opacity-50">
+                <Radio className="h-4 w-4" />
+                Generate token
+              </button>
+            </form>
+
+            <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+              <div className="text-sm font-medium text-gray-100">specora-edge enrollment flow</div>
+              <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950 p-3 font-mono text-xs leading-6 text-gray-300">
+                POST {API_URL}/discovery/collectors/enroll<br />
+                {"{"}<br />
+                &nbsp;&nbsp;"token": "se_...",<br />
+                &nbsp;&nbsp;"name": "Austin edge collector",<br />
+                &nbsp;&nbsp;"version": "0.1.0",<br />
+                &nbsp;&nbsp;"labels": {"{"}"zone": "prod"{"}"}<br />
+                {"}"}
+              </div>
+              <div className="mt-3 text-sm leading-6 text-gray-500">
+                The exchange returns a collector-scoped bearer token. Store it on the edge server and use it for collector heartbeats. Enrollment tokens are shown only once.
+              </div>
+              {issuedEnrollmentToken && (
+                <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                  <div className="text-xs uppercase tracking-wide text-amber-200">Copy this token now</div>
+                  <div className="mt-2 break-all rounded border border-amber-500/30 bg-gray-950 p-2 font-mono text-sm text-amber-100">{issuedEnrollmentToken}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-gray-800 bg-gray-900">
+            <div className="border-b border-gray-800 px-4 py-3">
+              <div className="text-sm font-medium text-gray-100">Enrollment tokens</div>
+              <div className="mt-1 text-xs text-gray-500">Hashed at rest, revocable, and tied to collectors after use.</div>
+            </div>
+            <div className="overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-gray-950 text-xs uppercase tracking-wide text-gray-500">
+                  <tr>
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Prefix</th>
+                    <th className="px-4 py-3">Site</th>
+                    <th className="px-4 py-3">Uses</th>
+                    <th className="px-4 py-3">Collector</th>
+                    <th className="px-4 py-3">Expires</th>
+                    <th className="px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {edgeEnrollmentTokens.map((token) => (
+                    <tr key={token.id} className="border-t border-gray-800/70">
+                      <td className="px-4 py-3 text-gray-100">{token.name}</td>
+                      <td className="px-4 py-3">
+                        <span className={`rounded-full border px-2 py-1 text-xs ${token.status === "active" ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border-gray-700 bg-gray-950 text-gray-400"}`}>{token.status}</span>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-400">{token.tokenPrefix}...</td>
+                      <td className="px-4 py-3 text-gray-400">{token.site || "-"}</td>
+                      <td className="px-4 py-3 text-gray-400">{token.uses}/{token.maxUses}</td>
+                      <td className="px-4 py-3 text-gray-400">{token.collectorName || token.collectorId || "-"}</td>
+                      <td className="px-4 py-3 text-gray-500">{formatDateTime(token.expiresAt)}</td>
+                      <td className="px-4 py-3 text-right">
+                        {token.status === "active" && (
+                          <button type="button" onClick={() => revokeEdgeEnrollmentToken(token.id)} className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-200 hover:bg-red-500/10">
+                            Revoke
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {!edgeEnrollmentTokens.length && <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-500">No enrollment tokens have been issued.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       );
     }
