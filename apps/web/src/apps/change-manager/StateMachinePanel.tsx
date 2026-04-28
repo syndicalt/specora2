@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { getToken } from "@/lib/auth";
+import { getApiBase } from "@/lib/runtimeApi";
 import { Save, Plus, Trash2, Loader2, GitBranch } from "lucide-react";
 
 interface Transition {
@@ -23,7 +24,7 @@ export default function ChangeStateMachinePanel({ shell: _shell }: { shell: any 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+  const API_URL = getApiBase();
 
   useEffect(() => {
     fetchConfig();

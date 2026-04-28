@@ -1,6 +1,8 @@
+import { getApiBase } from "./runtimeApi";
+
 const TOKEN_KEY = "specora_token";
 const REFRESH_TOKEN_KEY = "specora_refresh_token";
-const API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
+const API_BASE = getApiBase();
 
 type AuthTokens = {
   token?: string;

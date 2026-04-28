@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import type { ShellAPI } from "@/sdk/types";
 import { getToken } from "@/lib/auth";
+import { getApiBase } from "@/lib/runtimeApi";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
+const API_URL = getApiBase();
 
 interface AuditEntry {
   id: string;

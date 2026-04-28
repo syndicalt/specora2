@@ -3,11 +3,12 @@
 import { useState, useEffect } from "react";
 import type { ShellAPI } from "@/sdk/types";
 import { getToken } from "@/lib/auth";
+import { getGraphqlEndpoint } from "@/lib/runtimeApi";
 import {
   Layers, Plus, Trash2, Save, X, ChevronLeft, GripVertical, AlertTriangle, Shield, Info
 } from "lucide-react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/graphql";
+const API_URL = getGraphqlEndpoint();
 
 interface Attribute {
   id?: string;

@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import { authFetch, getToken } from "@/lib/auth";
+import { getApiBase } from "@/lib/runtimeApi";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
+const API_URL = getApiBase();
 const WS_URL = API_URL.replace(/^http/, "ws") + "/api/events/live";
 
 export type EventHandler = (payload: Record<string, unknown>) => void;

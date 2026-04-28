@@ -2,12 +2,13 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { authFetch } from "@/lib/auth";
+import { getApiBase } from "@/lib/runtimeApi";
 import { useShell } from "@/shell/AppContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Plus, Trash2, X, ChevronDown, ChevronRight, Calendar, Clock } from "lucide-react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
+const API_URL = getApiBase();
 
 interface ChatMessage {
   role: "user" | "assistant";

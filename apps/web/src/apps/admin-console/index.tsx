@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { getToken } from "@/lib/auth";
+import { getApiBase } from "@/lib/runtimeApi";
 import {
   Activity,
   AlertTriangle,
@@ -583,7 +584,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [showCredentialSecret, setShowCredentialSecret] = useState(false);
   const [newSequence, setNewSequence] = useState({ appId: "", tableName: "", recordType: "", prefix: "", nextValue: "1", padding: "6" });
 
-  const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000").replace("/graphql", "");
+  const API_URL = getApiBase();
 
   useEffect(() => {
     fetchData();

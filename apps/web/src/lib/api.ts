@@ -1,8 +1,9 @@
 import { GraphQLClient } from "graphql-request";
 import { authFetch, getToken } from "./auth";
+import { getApiBase, getGraphqlEndpoint } from "./runtimeApi";
 
-const endpoint = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/graphql";
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
+const endpoint = getGraphqlEndpoint();
+export const API_BASE = getApiBase();
 
 export const graphqlClient = new GraphQLClient(endpoint, {
   headers: () => {

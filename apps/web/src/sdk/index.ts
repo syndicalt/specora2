@@ -1,5 +1,6 @@
 import type { RegistryEntry, AppManifest } from "./types";
 import { authFetch, getToken } from "@/lib/auth";
+import { getApiBase } from "@/lib/runtimeApi";
 
 export * from "./types";
 
@@ -47,10 +48,6 @@ async function getRawRegistry(): Promise<RegistryEntry[]> {
 
 function sortRegistry(apps: RegistryEntry[]): RegistryEntry[] {
   return [...apps].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-}
-
-function getApiBase() {
-  return process.env.NEXT_PUBLIC_API_URL?.replace("/graphql", "") || "http://localhost:4000";
 }
 
 async function authFetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 5000): Promise<Response> {
