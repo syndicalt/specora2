@@ -40,6 +40,16 @@ function parseNode(node: any) {
   return { ...node, attributes: attrs };
 }
 
+function isNeo4jPropertyValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (["string", "number", "boolean"].includes(typeof value)) return true;
+  return Array.isArray(value) && value.every((item) => item !== null && ["string", "number", "boolean"].includes(typeof item));
+}
+
+function neo4jPropertyProps(attrs: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(attrs).filter(([, value]) => isNeo4jPropertyValue(value)));
+}
+
 function mapEnvironmentChoice(row: any) {
   return {
     id: row.id,
@@ -809,7 +819,7 @@ LIMIT 50`;
             class: validated.data.class,
             environment: validated.data.environment || null,
             attributes: JSON.stringify(attrProps),
-            topLevelProps,
+            topLevelProps: neo4jPropertyProps(topLevelProps),
           }
         );
         const node = parseNode(result.records[0].get("n").properties);
@@ -874,7 +884,7 @@ LIMIT 50`;
 
           if (Object.keys(topLevelProps).length > 0) {
             sets.push("n += $topLevelProps");
-            params.topLevelProps = topLevelProps;
+            params.topLevelProps = neo4jPropertyProps(topLevelProps);
           }
           sets.push("n.attributes = $attributes");
           params.attributes = JSON.stringify(attrProps);

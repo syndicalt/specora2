@@ -253,6 +253,16 @@ function serializePostgresValue(value: unknown, attrType?: string): unknown {
   return value;
 }
 
+function isNeo4jPropertyValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (["string", "number", "boolean"].includes(typeof value)) return true;
+  return Array.isArray(value) && value.every((item) => item !== null && ["string", "number", "boolean"].includes(typeof item));
+}
+
+function neo4jPropertyProps(attrs: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(attrs).filter(([, value]) => isNeo4jPropertyValue(value)));
+}
+
 async function getRole(fastify: FastifyInstance, user: { id?: string; role?: string } | null): Promise<string | null> {
   return resolveUserRole(fastify.pg, user);
 }
@@ -1008,7 +1018,7 @@ async function createCmdbRecord(
     className: table.className,
     environment: body.environment || null,
     attributes: JSON.stringify(attrs),
-    props: attrs,
+    props: neo4jPropertyProps(attrs),
   };
   const session = fastify.neo4j.session();
   try {
@@ -1050,7 +1060,7 @@ async function updateCmdbRecord(
         name: body.name?.trim() || null,
         environment: body.environment ?? null,
         attributes: hasAttributes ? JSON.stringify(attrs) : null,
-        props: hasAttributes ? attrs : {},
+        props: hasAttributes ? neo4jPropertyProps(attrs) : {},
       }
     );
     const node = result.records[0]?.get("n");
@@ -2126,7 +2136,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
           name: body.name?.trim() || null,
           environment: body.environment ?? null,
           attributes: hasAttributes ? JSON.stringify(attrs) : null,
-          props: hasAttributes ? attrs : {},
+          props: hasAttributes ? neo4jPropertyProps(attrs) : {},
         }
       );
       const record = result.records[0]?.get("n");
