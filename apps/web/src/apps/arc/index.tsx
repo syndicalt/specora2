@@ -65,10 +65,14 @@ export default function ArcApp() {
   useEffect(() => { fetchMarketplace(); fetchRegistry(); fetchUser(); }, [tab]);
 
   const handleInstall = async (app: MarketplaceApp) => {
-    await installApp({ id: app.id, name: app.name, icon: app.icon, version: app.version,
-      permissions: app.permissions, defaultMode: "canvas", url: app.url, reactVersion: app.reactVersion });
-    dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: app.name + " installed", type: "success" } });
-    fetchRegistry();
+    try {
+      await installApp({ id: app.id, name: app.name, icon: app.icon, version: app.version,
+        permissions: app.permissions, defaultMode: "canvas", url: app.url, reactVersion: app.reactVersion });
+      dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: app.name + " installed", type: "success" } });
+      fetchRegistry();
+    } catch {
+      dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: app.name + " could not be installed", type: "error" } });
+    }
   };
 
   const handleInstallOptional = async (id: string, name: string) => {

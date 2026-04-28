@@ -107,6 +107,18 @@ export async function syncServerRegistry(): Promise<RegistryEntry[]> {
 }
 
 export async function installApp(manifest: AppManifest): Promise<RegistryEntry> {
+  const token = getToken();
+  if (token) {
+    const response = await authFetch(`${getApiBase()}/api/apps/${manifest.id}/install`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error("App could not be installed");
+    const apps = await syncServerRegistry();
+    const installed = apps.find((app) => app.id === manifest.id);
+    if (installed) return installed;
+  }
+
   const db = await openDB();
   const entry: RegistryEntry = {
     ...manifest,
