@@ -16,7 +16,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { graphqlClient } from "@/lib/api";
 import type { ShellAPI } from "@/sdk/types";
-import { Search, MapPin, X, ChevronDown } from "lucide-react";
+import { Link2, Search, MapPin, X, ChevronDown } from "lucide-react";
 import dagre from "dagre";
 import { ContextMenu } from "./ContextMenu";
 import { CIEditModal } from "./CIEditModal";
@@ -51,6 +51,10 @@ export const REL_COLORS: Record<string, { stroke: string; bg: string }> = {
 
 function getRelColor(type: string) {
   return REL_COLORS[type] || REL_COLORS.DEPENDS_ON;
+}
+
+function relLabel(type: string) {
+  return type.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 
 function computeLayout(nodes: APINode[], edges: APIEdge[], classDisplayNames: Record<string, string>, highlightId?: string | null) {
@@ -119,7 +123,8 @@ function computeLayout(nodes: APINode[], edges: APIEdge[], classDisplayNames: Re
       seenEdges.add(key);
       const color = getRelColor(ed.type);
       flowEdges.push({
-        id: ed.id, source: ed.sourceId, target: ed.targetId, label: ed.type, type: "default",
+        id: ed.id, source: ed.sourceId, target: ed.targetId, label: relLabel(ed.type), type: "default",
+        data: { relationshipType: ed.type },
         style: { stroke: color.stroke, strokeWidth: 2 },
         labelStyle: { fill: color.stroke, fontSize: 10, fontWeight: 500 },
         labelBgStyle: { fill: "#111827", fillOpacity: 0.95 },
@@ -218,6 +223,8 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const [pathTraceMode, setPathTraceMode] = useState(false);
   const [pathTraceFrom, setPathTraceFrom] = useState<string | null>(null);
   const [pathTraceResult, setPathTraceResult] = useState<{ nodes: APINode[]; edges: APIEdge[] } | null>(null);
+  const [linkMode, setLinkMode] = useState(false);
+  const [linkSource, setLinkSource] = useState<string | null>(null);
 
   // Expand/collapse state (visual tracking for future use)
   const [, setExpandedNodes] = useState<Set<string>>(new Set());
@@ -580,6 +587,52 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     setPathTraceResult(null);
   }, []);
 
+  const clearLinkMode = useCallback(() => {
+    setLinkMode(false);
+    setLinkSource(null);
+  }, []);
+
+  const openRelationshipPicker = useCallback((sourceId: string, targetId: string) => {
+    if (sourceId === targetId) {
+      showToast("Source and target must be different");
+      return;
+    }
+    const exists = edges.some((edge) => edge.source === sourceId && edge.target === targetId);
+    if (exists) {
+      showToast("A relationship already exists between these nodes");
+      return;
+    }
+    const sourceNode = nodes.find((node) => node.id === sourceId);
+    const targetNode = nodes.find((node) => node.id === targetId);
+    if (!sourceNode || !targetNode) return;
+    setRelPicker({
+      sourceId,
+      targetId,
+      sourceName: sourceNode.data.name as string,
+      targetName: targetNode.data.name as string,
+    });
+  }, [edges, nodes, showToast]);
+
+  const beginLinkFrom = useCallback((nodeId: string) => {
+    setContextMenu(null);
+    setPathTraceMode(false);
+    setPathTraceFrom(null);
+    setPathTraceResult(null);
+    setLinkMode(true);
+    setLinkSource(nodeId);
+    const node = nodes.find((item) => item.id === nodeId);
+    showToast(`Link mode: choose target for ${node?.data.name || "this CI"}`);
+  }, [nodes, showToast]);
+
+  const handleLinkNodeClick = useCallback((node: FlowNode) => {
+    if (!linkSource) {
+      setLinkSource(node.id);
+      showToast(`Selected ${node.data.name} as source - click target`);
+      return;
+    }
+    openRelationshipPicker(linkSource, node.id);
+  }, [linkSource, openRelationshipPicker, showToast]);
+
   const fetchSavedViews = useCallback(async () => {
     try {
       const data = await graphqlClient.request(`query { savedViews { id name rootId classFilter environmentFilter relationshipFilter cameraX cameraY cameraZoom } }`);
@@ -681,7 +734,8 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
           .map((e: APIEdge) => {
             const color = getRelColor(e.type);
             return {
-              id: e.id, source: e.sourceId, target: e.targetId, label: e.type, type: "default",
+              id: e.id, source: e.sourceId, target: e.targetId, label: relLabel(e.type), type: "default",
+              data: { relationshipType: e.type },
               style: { stroke: color.stroke, strokeWidth: 2 },
               labelStyle: { fill: color.stroke, fontSize: 10, fontWeight: 500 },
               labelBgStyle: { fill: "#111827", fillOpacity: 0.95 },
@@ -859,25 +913,8 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   // React Flow event handlers
   const onConnect = useCallback(async (connection: Connection) => {
     if (!connection.source || !connection.target) return;
-
-    // Check for duplicates
-    const exists = edges.some((e) => e.source === connection.source && e.target === connection.target);
-    if (exists) {
-      showToast("A relationship already exists between these nodes");
-      return;
-    }
-
-    const sourceNode = nodes.find((n) => n.id === connection.source);
-    const targetNode = nodes.find((n) => n.id === connection.target);
-    if (!sourceNode || !targetNode) return;
-
-    setRelPicker({
-      sourceId: connection.source,
-      targetId: connection.target,
-      sourceName: sourceNode.data.name as string,
-      targetName: targetNode.data.name as string,
-    });
-  }, [nodes, edges, showToast]);
+    openRelationshipPicker(connection.source, connection.target);
+  }, [openRelationshipPicker]);
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: FlowNode) => {
     event.preventDefault();
@@ -888,6 +925,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         { label: "View Details", onClick: () => fetchCIDetails(node.id) },
         { label: "Edit CI", onClick: () => setEditCi(node.data as APINode) },
         { label: "Expand", onClick: () => expandNode(node.id) },
+        { label: "Create Relationship From This", onClick: () => beginLinkFrom(node.id) },
         ...(pathTraceMode ? [{ label: pathTraceFrom ? "Select as target" : "Select as source", onClick: () => {
           if (!pathTraceFrom) {
             setPathTraceFrom(node.id);
@@ -906,22 +944,23 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }},
       ],
     });
-  }, [fetchCIDetails, expandNode, pathTraceMode, pathTraceFrom, tracePath]);
+  }, [fetchCIDetails, expandNode, beginLinkFrom, pathTraceMode, pathTraceFrom, tracePath]);
 
   const onEdgeContextMenu = useCallback((event: React.MouseEvent, edge: FlowEdge) => {
     event.preventDefault();
+    const relationshipType = (edge.data as any)?.relationshipType || edge.label as string;
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
       items: [
         { label: "Change Type", onClick: () => {
-          setChangeRelEdge({ source: edge.source, target: edge.target, currentType: edge.label as string });
-          setChangeRelNewType(edge.label as string);
+          setChangeRelEdge({ source: edge.source, target: edge.target, currentType: relationshipType });
+          setChangeRelNewType(relationshipType);
           setChangeRelModalOpen(true);
         }},
         { label: "Delete Relationship", danger: true, onClick: () => {
           if (confirm("Delete this relationship?")) {
-            deleteRelationship(edge.source, edge.target, edge.label as string);
+            deleteRelationship(edge.source, edge.target, relationshipType);
           }
         }},
       ],
@@ -1008,7 +1047,11 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         <button
           onClick={() => {
             if (pathTraceMode) clearPathTrace();
-            else { setPathTraceMode(true); showToast("Click source node, then target node"); }
+            else {
+              clearLinkMode();
+              setPathTraceMode(true);
+              showToast("Click source node, then target node");
+            }
           }}
           className={`flex items-center gap-1.5 px-3 py-2 rounded-full border shadow-xl text-sm transition-colors ${
             pathTraceMode
@@ -1017,6 +1060,26 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
           }`}
         >
           {pathTraceMode ? "Cancel Trace" : "Trace Path"}
+        </button>
+
+        <button
+          onClick={() => {
+            if (linkMode) clearLinkMode();
+            else {
+              clearPathTrace();
+              setLinkMode(true);
+              setLinkSource(null);
+              showToast("Link mode: click source CI, then target CI");
+            }
+          }}
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-full border shadow-xl text-sm transition-colors ${
+            linkMode
+              ? "bg-cyan-600 border-cyan-500 text-white"
+              : "bg-gray-900 border-gray-700 text-gray-300 hover:bg-gray-800"
+          }`}
+        >
+          <Link2 className="h-4 w-4" />
+          {linkMode ? "Cancel Link" : "Link"}
         </button>
 
         {/* Clear path trace result */}
@@ -1204,6 +1267,14 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         </div>
       )}
 
+      {linkMode && (
+        <div className="absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded-full border border-cyan-500/40 bg-cyan-950/90 px-4 py-2 text-sm text-cyan-100 shadow-xl">
+          {linkSource
+            ? "Choose the target CI for the relationship."
+            : "Choose the source CI for the relationship."}
+        </div>
+      )}
+
       {/* Sidebar Panel */}
       {sidebarCi && (
         <SidebarPanel
@@ -1256,7 +1327,9 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
           onPaneClick={() => { setContextMenu(null); if (pathTraceMode) clearPathTrace(); }}
           onNodeClick={(_event, node) => {
             setContextMenu(null);
-            if (pathTraceMode) {
+            if (linkMode) {
+              handleLinkNodeClick(node);
+            } else if (pathTraceMode) {
               if (!pathTraceFrom) {
                 setPathTraceFrom(node.id);
                 showToast(`Selected ${node.data.name} as source — click target`);
@@ -1293,8 +1366,12 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
           onConfirm={(type) => {
             createRelationship(relPicker.sourceId, relPicker.targetId, type);
             setRelPicker(null);
+            clearLinkMode();
           }}
-          onCancel={() => setRelPicker(null)}
+          onCancel={() => {
+            setRelPicker(null);
+            clearLinkMode();
+          }}
         />
       )}
 

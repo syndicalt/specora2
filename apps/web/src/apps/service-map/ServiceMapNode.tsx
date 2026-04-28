@@ -130,10 +130,18 @@ export function ServiceMapNode({ data }: { data: NodeData }) {
   const health = data.health;
   const healthInfo = health ? getHealthColor(health.overall) : null;
   const env = data.environment ? getEnvironmentStyle(data.environment) : null;
+  const handleStyle = {
+    background: style.border,
+    width: 18,
+    height: 18,
+    border: "4px solid #1f2937",
+    zIndex: 30,
+    boxShadow: `0 0 0 3px ${style.border}35`,
+  };
 
   return (
     <div
-      className="relative w-full h-full rounded-lg overflow-hidden"
+      className="relative w-full h-full rounded-lg"
       style={{
         background: "#1f2937",
         border: `1px solid ${style.border}40`,
@@ -147,50 +155,26 @@ export function ServiceMapNode({ data }: { data: NodeData }) {
         style={{ background: style.bg }}
       />
 
-      {/* Handles on all 4 sides, positioned at actual borders */}
+      {/* Generous handle hit areas keep manual drag-to-link usable. */}
       <Handle
         type="target"
         position={Position.Top}
-        style={{
-          background: style.border,
-          width: 10,
-          height: 10,
-          border: "2px solid #1f2937",
-          top: -5,
-        }}
+        style={{ ...handleStyle, top: -9 }}
       />
       <Handle
         type="source"
         position={Position.Bottom}
-        style={{
-          background: style.border,
-          width: 10,
-          height: 10,
-          border: "2px solid #1f2937",
-          bottom: -5,
-        }}
+        style={{ ...handleStyle, bottom: -9 }}
       />
       <Handle
         type="target"
         position={Position.Left}
-        style={{
-          background: style.border,
-          width: 10,
-          height: 10,
-          border: "2px solid #1f2937",
-          left: -5,
-        }}
+        style={{ ...handleStyle, left: -9 }}
       />
       <Handle
         type="source"
         position={Position.Right}
-        style={{
-          background: style.border,
-          width: 10,
-          height: 10,
-          border: "2px solid #1f2937",
-          right: -5,
-        }}
+        style={{ ...handleStyle, right: -9 }}
       />
 
       {/* Content */}

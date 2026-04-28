@@ -13,6 +13,10 @@ const REL_TYPES = [
   "LOCATED_AT",
 ];
 
+function relLabel(type: string) {
+  return type.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
+
 interface RelTypePickerProps {
   sourceName: string;
   targetName: string;
@@ -63,7 +67,7 @@ export function RelTypePicker({ sourceName, targetName, onConfirm, onCancel }: R
                   style={{ backgroundColor: color?.stroke || "#6366f1" }}
                 />
                 <span className={selected === type ? "text-gray-100 font-medium" : ""}>
-                  {type}
+                  {relLabel(type)}
                 </span>
               </button>
             );
