@@ -978,6 +978,9 @@ describe("discoveryRoutes", () => {
     expect(session.run).toHaveBeenCalledWith(
       expect.stringContaining("n += $attributesMap"),
       expect.objectContaining({
+        lastDiscoveredAt: expect.any(String),
+        lastDiscoveryJobId: "dj-1",
+        lastDiscoverySource: "discovery_pipeline",
         attributesMap: {
           ipAddress: "192.168.50.146",
           ipAddresses: ["192.168.50.146", "172.17.0.1"],

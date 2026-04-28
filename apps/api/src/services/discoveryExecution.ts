@@ -284,6 +284,7 @@ export async function commitStagedDiscoveryJob(fastify: FastifyInstance, jobId: 
   const rollbackRelationships: DiscoveryRollbackRelationship[] = [];
   try {
     const commitRecords = staged.records.filter((record: any) => ["staged", "approved"].includes(record.status));
+    const discoveredAt = new Date().toISOString();
     for (const record of commitRecords) {
       const attrs = typeof record.attributes === "string" ? JSON.parse(record.attributes) : (record.attributes || {});
       const existing = await session.run("MATCH (n:ConfigurationItem {id: $id}) RETURN count(n) as count", { id: record.ci_id });
@@ -299,6 +300,9 @@ export async function commitStagedDiscoveryJob(fastify: FastifyInstance, jobId: 
         class: record.target_class,
         environment: record.environment || null,
         attributes: JSON.stringify(attrs),
+        lastDiscoveredAt: discoveredAt,
+        lastDiscoveryJobId: jobId,
+        lastDiscoverySource: "discovery_pipeline",
         ...neo4jPropertyMap(attrs),
       };
       const result = await session.run(
@@ -307,6 +311,9 @@ export async function commitStagedDiscoveryJob(fastify: FastifyInstance, jobId: 
              n.class = $className,
              n.environment = $environment,
              n.attributes = $attributes,
+             n.lastDiscoveredAt = $lastDiscoveredAt,
+             n.lastDiscoveryJobId = $lastDiscoveryJobId,
+             n.lastDiscoverySource = $lastDiscoverySource,
              n += $attributesMap
          RETURN n`,
         {
@@ -315,6 +322,9 @@ export async function commitStagedDiscoveryJob(fastify: FastifyInstance, jobId: 
           className: record.target_class,
           environment: record.environment || null,
           attributes: JSON.stringify(attrs),
+          lastDiscoveredAt: discoveredAt,
+          lastDiscoveryJobId: jobId,
+          lastDiscoverySource: "discovery_pipeline",
           attributesMap: neo4jPropertyMap(attrs),
         }
       );

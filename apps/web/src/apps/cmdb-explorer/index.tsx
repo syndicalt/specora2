@@ -186,21 +186,32 @@ function deriveInsights(ci: CI | null, classDef: CIClass | undefined, relationsh
   if (!ci) return [];
   const attrs = ci.attributes || {};
   const insights: Array<{ tone: "good" | "warn" | "bad"; title: string; detail: string }> = [];
-  const mandatory = classDef?.attributes.filter((attr) => attr.isMandatory || attr.isHealthRequired) || [];
-  const missing = mandatory.filter((attr) => {
+  const requiredAttrs = classDef?.attributes.filter((attr) => attr.isMandatory) || [];
+  const healthAttrs = classDef?.attributes.filter((attr) => attr.isHealthRequired && !attr.isMandatory) || [];
+  const missingRequired = requiredAttrs.filter((attr) => {
+    const value = attrs[attr.name] ?? (ci as any)[attr.name];
+    return value === undefined || value === null || value === "";
+  });
+  const missingHealth = healthAttrs.filter((attr) => {
     const value = attrs[attr.name] ?? (ci as any)[attr.name];
     return value === undefined || value === null || value === "";
   });
   const overall = scorePercent(ci.health?.overall ?? ci.dataQualityScore);
 
-  if (missing.length > 0) {
+  if (missingRequired.length > 0) {
     insights.push({
       tone: "bad",
-      title: `${missing.length} required fields missing`,
-      detail: missing.slice(0, 4).map((attr) => attr.displayName || attr.name).join(", "),
+      title: `${missingRequired.length} required fields missing`,
+      detail: missingRequired.slice(0, 4).map((attr) => attr.displayName || attr.name).join(", "),
     });
-  } else if (mandatory.length > 0) {
-    insights.push({ tone: "good", title: "Required data is populated", detail: `${mandatory.length} required fields checked.` });
+  } else if (missingHealth.length > 0) {
+    insights.push({
+      tone: "warn",
+      title: `${missingHealth.length} health fields missing`,
+      detail: missingHealth.slice(0, 4).map((attr) => attr.displayName || attr.name).join(", "),
+    });
+  } else if (requiredAttrs.length || healthAttrs.length) {
+    insights.push({ tone: "good", title: "Class data is populated", detail: `${requiredAttrs.length + healthAttrs.length} required and health fields checked.` });
   }
 
   if (relationships.length === 0) {
@@ -894,8 +905,8 @@ function AttributeGrid({ ci, classDef }: { ci: CI; classDef?: CIClass }) {
   const classKeys = new Set(classAttrs.map((attr) => attr.name));
   const extra = Object.keys(attrs).filter((key) => !classKeys.has(key));
   const rows = [
-    ...classAttrs.map((attr) => ({ key: attr.name, label: attr.displayName || attr.name, required: attr.isMandatory || attr.isHealthRequired, value: attrs[attr.name] ?? (ci as any)[attr.name] })),
-    ...extra.map((key) => ({ key, label: key, required: false, value: attrs[key] })),
+    ...classAttrs.map((attr) => ({ key: attr.name, label: attr.displayName || attr.name, required: attr.isMandatory, health: attr.isHealthRequired && !attr.isMandatory, value: attrs[attr.name] ?? (ci as any)[attr.name] })),
+    ...extra.map((key) => ({ key, label: key, required: false, health: false, value: attrs[key] })),
   ];
 
   if (rows.length === 0) return <div className="text-sm text-gray-500">No attributes are available for this CI.</div>;
@@ -903,12 +914,13 @@ function AttributeGrid({ ci, classDef }: { ci: CI; classDef?: CIClass }) {
   return (
     <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
       {rows.map((row) => {
-        const missing = row.required && (row.value === undefined || row.value === null || row.value === "");
+        const missing = (row.required || row.health) && (row.value === undefined || row.value === null || row.value === "");
         return (
           <div key={row.key} className={`rounded-lg border px-3 py-2 ${missing ? "border-red-500/20 bg-red-500/5" : "border-gray-800 bg-gray-950"}`}>
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <span className="truncate">{row.label}</span>
               {row.required && <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] uppercase">Required</span>}
+              {row.health && <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] uppercase">Health</span>}
             </div>
             <div className={`mt-1 truncate text-sm ${missing ? "text-red-300" : "text-gray-200"}`}>{formatValue(row.value)}</div>
           </div>
