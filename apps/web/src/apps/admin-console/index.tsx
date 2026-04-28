@@ -245,6 +245,20 @@ interface EdgeCollector {
   updatedAt: string | null;
 }
 
+interface EdgeRuntimeConfig {
+  publicSigningKey: string;
+  runtimeConfig: {
+    key_id: string;
+    keyring: Record<string, string>;
+    collector_manifest: Array<Record<string, unknown>>;
+    capability_policy: Record<string, unknown>;
+    suggested_paths: Record<string, string>;
+    readiness: Record<string, boolean>;
+    signature: string;
+    signed_at: string;
+  };
+}
+
 interface RbacGroup {
   id: string;
   name: string;
@@ -607,6 +621,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [userEditDraft, setUserEditDraft] = useState({ name: "", role: "" });
   const [edgeEnrollmentTokens, setEdgeEnrollmentTokens] = useState<EdgeEnrollmentToken[]>([]);
   const [edgeCollectors, setEdgeCollectors] = useState<EdgeCollector[]>([]);
+  const [edgeRuntimeConfig, setEdgeRuntimeConfig] = useState<EdgeRuntimeConfig | null>(null);
   const [edgeEnrollmentDraft, setEdgeEnrollmentDraft] = useState({ name: "", site: "", labels: "", expiresInHours: "24", maxUses: "1" });
   const [issuedEnrollmentToken, setIssuedEnrollmentToken] = useState("");
   const [rbacGroups, setRbacGroups] = useState<RbacGroup[]>([]);
@@ -677,13 +692,14 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, userRes, edgeEnrollmentRes, edgeCollectorRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, userRes, edgeEnrollmentRes, edgeCollectorRes, edgeRuntimeRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/users`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/edge-enrollment/tokens`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/edge-enrollment/collectors`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/edge-enrollment/runtime-config`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/credentials`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -707,6 +723,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const userData = userRes.ok ? await userRes.json() : { users: [] };
       const edgeEnrollmentData = edgeEnrollmentRes.ok ? await edgeEnrollmentRes.json() : { tokens: [] };
       const edgeCollectorData = edgeCollectorRes.ok ? await edgeCollectorRes.json() : { collectors: [] };
+      const edgeRuntimeData = edgeRuntimeRes.ok ? await edgeRuntimeRes.json() : null;
       const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const credentialData = credentialRes.ok ? await credentialRes.json() : { credentials: [] };
@@ -727,6 +744,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setSelectedUserId((current) => current || userData.users?.[0]?.id || "");
       setEdgeEnrollmentTokens(edgeEnrollmentData.tokens || []);
       setEdgeCollectors(edgeCollectorData.collectors || []);
+      setEdgeRuntimeConfig(edgeRuntimeData);
       setNumberSequences(sequenceData.sequences || []);
       setNumberSequenceOptions(sequenceOptionsData.options || []);
       setCredentials(credentialData.credentials || []);
@@ -936,6 +954,46 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setError(err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function deleteEdgeCollector(id: string, name: string) {
+    if (!confirm(`Delete edge collector registration "${name}"? This removes the registration from Specora but does not uninstall the edge server.`)) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/edge-enrollment/collectors/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token || ""}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete edge collector");
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function copyEdgeRuntimeConfig() {
+    if (!edgeRuntimeConfig) return;
+    const value = JSON.stringify(edgeRuntimeConfig.runtimeConfig, null, 2);
+    try {
+      await navigator.clipboard.writeText(value);
+      shell.dispatch?.({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "Runtime config copied", type: "success" } });
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      shell.dispatch?.({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "Runtime config copied", type: "success" } });
     }
   }
 
@@ -2195,6 +2253,67 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
           </div>
 
           <div className="rounded-lg border border-gray-800 bg-gray-900">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-800 px-4 py-3">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
+                  <KeyRound className="h-4 w-4 text-cyan-300" />
+                  Edge runtime configuration
+                </div>
+                <div className="mt-1 text-xs text-gray-500">Published for enrolled edge servers to fetch after registration. Operators still choose where these files are written locally.</div>
+              </div>
+              {edgeRuntimeConfig && (
+                <button type="button" onClick={copyEdgeRuntimeConfig} className="flex items-center gap-2 rounded-lg border border-gray-700 px-3 py-2 text-xs font-medium text-gray-200 hover:bg-gray-800">
+                  <Clipboard className="h-4 w-4" />
+                  Copy config
+                </button>
+              )}
+            </div>
+            {edgeRuntimeConfig ? (
+              <div className="grid gap-4 p-4 xl:grid-cols-[0.9fr_1.1fr]">
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="text-xs uppercase tracking-wide text-gray-500">Fetch endpoint</div>
+                    <div className="mt-2 break-all font-mono text-sm text-cyan-100">GET {API_URL}/edge/runtime-config</div>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="text-xs uppercase tracking-wide text-gray-500">Public signing key</div>
+                    <div className="mt-2 break-all font-mono text-sm text-gray-200">{edgeRuntimeConfig.publicSigningKey || "Not configured"}</div>
+                    <div className="mt-2 text-xs text-gray-500">key_id: {edgeRuntimeConfig.runtimeConfig.key_id}</div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {Object.entries(edgeRuntimeConfig.runtimeConfig.readiness || {}).map(([key, value]) => (
+                      <div key={key} className={`rounded-lg border p-3 ${value ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-amber-400/30 bg-amber-500/10 text-amber-100"}`}>
+                        <div className="text-xs font-medium">{value ? "Ready" : "Needs value"}</div>
+                        <div className="mt-1 break-words text-xs text-current/80">{key.replaceAll("_", " ")}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="mb-2 text-xs uppercase tracking-wide text-gray-500">Keyring</div>
+                    <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all text-xs leading-5 text-gray-300">{JSON.stringify(edgeRuntimeConfig.runtimeConfig.keyring, null, 2)}</pre>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="mb-2 text-xs uppercase tracking-wide text-gray-500">Suggested paths</div>
+                    <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all text-xs leading-5 text-gray-300">{JSON.stringify(edgeRuntimeConfig.runtimeConfig.suggested_paths, null, 2)}</pre>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="mb-2 text-xs uppercase tracking-wide text-gray-500">Collector manifest</div>
+                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all text-xs leading-5 text-gray-300">{JSON.stringify(edgeRuntimeConfig.runtimeConfig.collector_manifest, null, 2)}</pre>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                    <div className="mb-2 text-xs uppercase tracking-wide text-gray-500">Capability policy</div>
+                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all text-xs leading-5 text-gray-300">{JSON.stringify(edgeRuntimeConfig.runtimeConfig.capability_policy, null, 2)}</pre>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 text-sm text-gray-500">Runtime configuration is unavailable. Confirm the platform job signing key is configured.</div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-gray-800 bg-gray-900">
             <div className="border-b border-gray-800 px-4 py-3">
               <div className="text-sm font-medium text-gray-100">Enrollment tokens</div>
               <div className="mt-1 text-xs text-gray-500">Hashed at rest, revocable, and tied to collectors after use.</div>
@@ -2260,6 +2379,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     <th className="px-4 py-3">Sources</th>
                     <th className="px-4 py-3">Last IP</th>
                     <th className="px-4 py-3">Labels</th>
+                    <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2283,9 +2403,20 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                       <td className="px-4 py-3">
                         <div className="max-w-xs truncate font-mono text-xs text-gray-500">{JSON.stringify(collector.labels || {})}</div>
                       </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => deleteEdgeCollector(collector.id, collector.name)}
+                          disabled={saving}
+                          className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-200 hover:bg-red-500/10 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </button>
+                      </td>
                     </tr>
                   ))}
-                  {!edgeCollectors.length && <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-500">No edge servers have enrolled yet.</td></tr>}
+                  {!edgeCollectors.length && <tr><td colSpan={9} className="px-4 py-10 text-center text-sm text-gray-500">No edge servers have enrolled yet.</td></tr>}
                 </tbody>
               </table>
             </div>

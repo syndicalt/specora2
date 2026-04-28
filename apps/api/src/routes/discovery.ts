@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { mkdirSync } from "fs";
 import { join, resolve } from "path";
-import { createHash, createPrivateKey, randomBytes, randomUUID, sign as cryptoSign } from "crypto";
+import { createHash, randomBytes, randomUUID, sign as cryptoSign } from "crypto";
 import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
 import { enqueueJob } from "../services/jobQueue";
@@ -11,11 +11,10 @@ import { nextDiscoveryRunAt, normalizeScheduleInterval, runSavedDiscoveryPipelin
 import { hasPermission, resolveUserRole } from "../services/rbac";
 import { recordRouteAudit } from "./auditHelpers";
 import { redactCredentialConfig, validateDiscoveryCredential } from "../services/credentials";
+import { buildEdgeRuntimeConfig, EDGE_JOB_SIGNING_KEY_ID, edgeJobPrivateKey } from "../services/edgeRuntimeConfig";
 
 const UPLOAD_DIR = resolve(process.env.UPLOAD_DIR || "./uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
-
-const EDGE_JOB_SIGNING_KEY_ID = process.env.EDGE_JOB_SIGNING_KEY_ID || "specora-dev-edge-key";
 
 function mappingProfileRow(row: any) {
   return {
@@ -176,18 +175,6 @@ function edgeJobSigningMessage(job: Record<string, any>, payload: unknown) {
     payload_sha256: payloadSum,
   };
   return createHash("sha256").update(JSON.stringify(envelope)).digest();
-}
-
-function edgeJobPrivateKey() {
-  const raw = process.env.EDGE_JOB_SIGNING_PRIVATE_KEY;
-  if (!raw) return null;
-  if (raw.includes("BEGIN")) return createPrivateKey(raw.replace(/\\n/g, "\n"));
-  const key = Buffer.from(raw, "base64");
-  if (key.length === 48 || key.length === 64) {
-    const prefix = Buffer.from("302e020100300506032b657004220420", "hex");
-    return createPrivateKey({ key: key.length === 64 ? Buffer.concat([prefix, key.subarray(0, 32)]) : key, format: "der", type: "pkcs8" });
-  }
-  return createPrivateKey(raw);
 }
 
 function signEdgeJob(job: Record<string, any>) {
@@ -451,6 +438,14 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
       metadata: { source: "api.edge", surface: "edge", status },
     });
     return { accepted: true, policy_version: process.env.EDGE_POLICY_VERSION || "policy-v1" };
+  });
+
+  fastify.get("/edge/runtime-config", async (_request, reply) => {
+    const config = buildEdgeRuntimeConfig();
+    if (!config.readiness.signing_key_configured || !config.readiness.public_key_available) {
+      return reply.status(503).send({ error: "Edge job signing key is not configured" });
+    }
+    return config;
   });
 
   fastify.post("/edge/jobs/poll", async (request, reply) => {

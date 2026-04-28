@@ -15,6 +15,7 @@ import {
   normalizeCredentialReferenceBody,
   testCredentialReference,
 } from "../services/credentials";
+import { buildEdgeRuntimeConfig, edgeJobPublicKeyBase64 } from "../services/edgeRuntimeConfig";
 
 const API_PUBLIC_URL = process.env.API_PUBLIC_URL || (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/graphql").replace("/graphql", "");
 
@@ -1596,6 +1597,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.get("/api/admin/edge-enrollment/runtime-config", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "read")] }, async (_request, reply) => {
+    try {
+      return {
+        publicSigningKey: edgeJobPublicKeyBase64(),
+        runtimeConfig: buildEdgeRuntimeConfig(),
+      };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to build edge runtime config" });
+    }
+  });
+
   fastify.post("/api/admin/edge-enrollment/tokens", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => createEnrollmentToken(fastify, request, reply));
   fastify.post("/discovery/collectors/enrollment-tokens", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => createEnrollmentToken(fastify, request, reply));
   fastify.post("/discovery/enrollment-tokens", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => createEnrollmentToken(fastify, request, reply));
@@ -1625,6 +1638,32 @@ export async function adminRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to revoke edge enrollment token" });
+    }
+  });
+
+  fastify.delete("/api/admin/edge-enrollment/collectors/:id", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => {
+    try {
+      const actor = (request as any).user as { id?: string } | null;
+      const { id } = request.params as { id: string };
+      const result = await fastify.pg.query(
+        `DELETE FROM discovery_collectors
+         WHERE id = $1
+         RETURNING id, name, status, site, version`,
+        [id]
+      );
+      if (!result.rows.length) return reply.status(404).send({ error: "Edge collector not found" });
+      await recordAuditEvent(fastify, {
+        actorId: actor?.id,
+        action: "edge.collector_deleted",
+        entityType: "DiscoveryCollector",
+        entityId: id,
+        oldValues: result.rows[0],
+        metadata: { source: "api.admin", surface: "edge-enrollment" },
+      });
+      return { deleted: true, collector: result.rows[0] };
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to delete edge collector" });
     }
   });
 
