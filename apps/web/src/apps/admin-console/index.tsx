@@ -26,6 +26,10 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  UserCog,
+  UserPlus,
+  Users,
+  LogOut,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -183,6 +187,30 @@ interface RbacUser {
   name: string;
   email: string;
   role: string;
+}
+
+interface ManagedUser extends RbacUser {
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  lastLoginAt?: string | null;
+  activeSessions: number;
+  failedLogins24h: number;
+  groupCount: number;
+  highRiskGrants: number;
+  ownedRecords: number;
+  status: string;
+  authMethod: string;
+}
+
+interface ManagedUserDetail {
+  user: ManagedUser;
+  directGrants: Array<{ id: string; role: string; resource: string; action: string; risk: string; source: string }>;
+  inheritedGroups: Array<{ id: string; name: string; slug: string; source: string; cmdb_ci_id?: string | null }>;
+  inheritedGrants: Array<{ id: string; group_id: string; group_name: string; resource: string; action: string; risk: string; source: string }>;
+  sessions: Array<{ id: string; userAgent?: string | null; ipAddress?: string | null; expiresAt?: string | null; lastUsedAt?: string | null; revokedAt?: string | null; revokedReason?: string | null; createdAt?: string | null; active: boolean }>;
+  auditEvents: Array<{ id: string; action: string; entityType: string; entityId: string; metadata: any; createdAt?: string | null }>;
+  impact: Record<string, number>;
+  recommendations: Array<{ severity: string; title: string; rationale: string; action: string }>;
 }
 
 interface RbacGroup {
@@ -457,6 +485,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   Settings,
   Shield,
   ShieldCheck,
+  Users,
 };
 
 const PERMISSION_VALUE_SEPARATOR = "\u0000";
@@ -537,6 +566,12 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     description: "",
   });
   const [rbacUsers, setRbacUsers] = useState<RbacUser[]>([]);
+  const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [selectedUserDetail, setSelectedUserDetail] = useState<ManagedUserDetail | null>(null);
+  const [userSearch, setUserSearch] = useState("");
+  const [userDraft, setUserDraft] = useState({ email: "", name: "", role: "operator", password: "" });
+  const [userEditDraft, setUserEditDraft] = useState({ name: "", role: "" });
   const [rbacGroups, setRbacGroups] = useState<RbacGroup[]>([]);
   const [rbacTargets, setRbacTargets] = useState<RbacTarget[]>([]);
   const [rbacApps, setRbacApps] = useState<RbacApp[]>([]);
@@ -595,15 +630,21 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setNewSequenceFromOption(numberSequenceOptions[0]);
   }, [numberSequenceOptions, newSequence.appId]);
 
+  useEffect(() => {
+    if (activeTab !== "users" || !selectedUserId) return;
+    fetchUserDetail(selectedUserId);
+  }, [activeTab, selectedUserId]);
+
   async function fetchData() {
     setLoading(true);
     setError(null);
     try {
       const token = getToken();
-      const [permRes, propRes, panelRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
+      const [permRes, propRes, panelRes, userRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
+        fetch(`${API_URL}/api/admin/users`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
         fetch(`${API_URL}/api/admin/credentials`, { headers: { Authorization: `Bearer ${token || ""}` } }),
@@ -624,6 +665,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       const permData = await permRes.json();
       const propData = await propRes.json();
       const panelData = panelRes.ok ? await panelRes.json() : { panels: [] };
+      const userData = userRes.ok ? await userRes.json() : { users: [] };
       const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
       const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
       const credentialData = credentialRes.ok ? await credentialRes.json() : { credentials: [] };
@@ -640,6 +682,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setPermissions(permData.permissions || []);
       setSystemProps(propData.properties || []);
       setPanels(panelData.panels || []);
+      setManagedUsers(userData.users || []);
+      setSelectedUserId((current) => current || userData.users?.[0]?.id || "");
       setNumberSequences(sequenceData.sequences || []);
       setNumberSequenceOptions(sequenceOptionsData.options || []);
       setCredentials(credentialData.credentials || []);
@@ -708,6 +752,86 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function fetchUserDetail(userId: string) {
+    if (!userId) return;
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/users/${userId}`, { headers: { Authorization: `Bearer ${token || ""}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to fetch user detail");
+      setSelectedUserDetail(data);
+      setUserEditDraft({ name: data.user?.name || "", role: data.user?.role || "" });
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  async function createManagedUser(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify(userDraft),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to create user");
+      setUserDraft({ email: "", name: "", role: "operator", password: "" });
+      setSelectedUserId(data.user.id);
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function updateManagedUser() {
+    if (!selectedUserId) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/users/${selectedUserId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify(userEditDraft),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update user");
+      await fetchData();
+      await fetchUserDetail(selectedUserId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function revokeManagedUserSessions() {
+    if (!selectedUserId || !confirm("Revoke all active sessions for this user?")) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/users/${selectedUserId}/revoke-sessions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token || ""}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to revoke sessions");
+      await fetchData();
+      await fetchUserDetail(selectedUserId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -1384,6 +1508,12 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
 
   const roles = Array.from(new Set(permissions.map((p) => p.role)));
   const allRoles = Array.from(new Set([...roles, ...rbacUsers.map((user) => user.role)])).filter(Boolean).sort();
+  const filteredManagedUsers = managedUsers.filter((user) => {
+    const needle = userSearch.trim().toLowerCase();
+    if (!needle) return true;
+    return [user.name, user.email, user.role, user.status, user.authMethod].some((value) => String(value || "").toLowerCase().includes(needle));
+  });
+  const selectedManagedUser = selectedUserDetail?.user || managedUsers.find((user) => user.id === selectedUserId) || null;
   const selectedPermissionTarget = newResource && newAction ? encodePermissionValue(newResource, newAction) : "";
   const selectedGrantTarget = rbacTargets.find((target) => target.resource === newResource && target.action === newAction) || null;
   const grantScopes = ["All", ...Array.from(new Set(rbacTargets.map((target) => target.category || "Application"))).sort()];
@@ -1444,6 +1574,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
 
   const allTabs = useMemo(() => Array.from(new Map([
     { id: "overview", name: "Overview", icon: "LayoutDashboard", category: "Command" },
+    { id: "users", name: "User Management", icon: "Users", category: "Governance" },
     { id: "rbac", name: "Users & Access", icon: "ShieldCheck", category: "Governance" },
     { id: "credentials", name: "Credentials", icon: "KeyRound", category: "Governance" },
     { id: "identity", name: "Identity Providers", icon: "KeyRound", category: "Governance" },
@@ -1668,6 +1799,213 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
               </div>
             </div>
           </div>
+        </div>
+      );
+    }
+
+    if (activeTab === "users") {
+      const detail = selectedUserDetail;
+      const effectiveGrants = [
+        ...(detail?.directGrants || []),
+        ...(detail?.inheritedGrants || []),
+      ].sort((a, b) => `${a.resource}:${a.action}`.localeCompare(`${b.resource}:${b.action}`));
+      return (
+        <div className="space-y-5">
+          <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+            <div className="rounded-lg border border-gray-800 bg-gray-900">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
+                    <Users className="h-4 w-4 text-indigo-300" />
+                    Users
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500">{managedUsers.length} accounts with session, group, and access posture</div>
+                </div>
+                <div className="relative w-full max-w-xs">
+                  <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-gray-500" />
+                  <input
+                    value={userSearch}
+                    onChange={(event) => setUserSearch(event.target.value)}
+                    placeholder="Search users"
+                    className="w-full rounded-lg border border-gray-700 bg-gray-950 py-2 pl-9 pr-3 text-sm text-gray-200 outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+              <div className="max-h-[580px] overflow-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="sticky top-0 z-10 bg-gray-900 text-xs uppercase tracking-wide text-gray-500">
+                    <tr className="border-b border-gray-800">
+                      <th className="px-4 py-3">User</th>
+                      <th className="px-4 py-3">Role</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Risk</th>
+                      <th className="px-4 py-3">Last login</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredManagedUsers.map((user) => (
+                      <tr
+                        key={user.id}
+                        onClick={() => setSelectedUserId(user.id)}
+                        className={`cursor-pointer border-b border-gray-800/60 hover:bg-gray-800/50 ${selectedUserId === user.id ? "bg-indigo-500/10" : ""}`}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-gray-100">{user.name}</div>
+                          <div className="text-xs text-gray-500">{user.email}</div>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-indigo-200">{user.role}</td>
+                        <td className="px-4 py-3">
+                          <span className={`rounded-full border px-2 py-1 text-xs ${user.status === "active" ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border-gray-700 bg-gray-950 text-gray-400"}`}>
+                            {user.status.replaceAll("_", " ")}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="text-xs text-gray-400">{user.highRiskGrants} critical grants</div>
+                          <div className="text-xs text-gray-600">{user.groupCount} groups / {user.activeSessions} sessions</div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-gray-500">{formatDateTime(user.lastLoginAt)}</td>
+                      </tr>
+                    ))}
+                    {!filteredManagedUsers.length && (
+                      <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-gray-500">No users match this search.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <form onSubmit={createManagedUser} className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+              <div className="mb-4 flex items-center gap-2 text-sm font-medium text-gray-100">
+                <UserPlus className="h-4 w-4 text-emerald-300" />
+                Invite platform user
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <FieldInput label="Name" value={userDraft.name} onChange={(value) => setUserDraft((current) => ({ ...current, name: value }))} placeholder="Avery Admin" autoComplete="off" />
+                <FieldInput label="Email" value={userDraft.email} onChange={(value) => setUserDraft((current) => ({ ...current, email: value }))} placeholder="avery@example.com" type="email" autoComplete="off" />
+                <FieldSelect label="Role" value={userDraft.role} onChange={(value) => setUserDraft((current) => ({ ...current, role: value }))} options={(allRoles.length ? allRoles : ["operator"]).map((role) => ({ value: role, label: role }))} />
+                <FieldInput label="Temporary password" value={userDraft.password} onChange={(value) => setUserDraft((current) => ({ ...current, password: value }))} type="password" autoComplete="new-password" help="Use at least 8 characters. The user can rotate it after first login." />
+              </div>
+              <button type="submit" disabled={saving} className="mt-4 flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+                <UserPlus className="h-4 w-4" />
+                Create user
+              </button>
+            </form>
+          </div>
+
+          {selectedManagedUser && (
+            <div className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+              <div className="space-y-4">
+                <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-lg font-semibold text-gray-100">{selectedManagedUser.name}</div>
+                      <div className="text-sm text-gray-500">{selectedManagedUser.email}</div>
+                    </div>
+                    <span className="rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-200">{selectedManagedUser.authMethod}</span>
+                  </div>
+                  <div className="grid gap-3">
+                    <FieldInput label="Display name" value={userEditDraft.name} onChange={(value) => setUserEditDraft((current) => ({ ...current, name: value }))} />
+                    <FieldSelect label="Role" value={userEditDraft.role} onChange={(value) => setUserEditDraft((current) => ({ ...current, role: value }))} options={(allRoles.length ? allRoles : [selectedManagedUser.role]).map((role) => ({ value: role, label: role }))} />
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button type="button" onClick={updateManagedUser} disabled={saving} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+                      <UserCog className="h-4 w-4" />
+                      Save profile
+                    </button>
+                    <button type="button" onClick={revokeManagedUserSessions} disabled={saving || selectedManagedUser.activeSessions === 0} className="flex items-center gap-2 rounded-lg border border-red-500/40 px-3 py-2 text-sm font-medium text-red-200 hover:bg-red-500/10 disabled:opacity-50">
+                      <LogOut className="h-4 w-4" />
+                      Revoke sessions
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+                  <div className="mb-3 text-sm font-medium text-gray-100">Operational impact</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {Object.entries(detail?.impact || {}).map(([key, value]) => (
+                      <MiniMetric key={key} label={key.replace(/([A-Z])/g, " $1")} value={value} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-medium text-gray-100">
+                    <ShieldCheck className="h-4 w-4 text-indigo-300" />
+                    AI-style access rationale
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {(detail?.recommendations || []).map((item) => (
+                      <div key={item.title} className={`rounded-lg border p-3 ${item.severity === "critical" ? "border-red-500/30 bg-red-500/10" : item.severity === "warning" ? "border-amber-500/30 bg-amber-500/10" : "border-sky-500/30 bg-sky-500/10"}`}>
+                        <div className="text-sm font-medium text-gray-100">{item.title}</div>
+                        <div className="mt-1 text-sm leading-5 text-gray-400">{item.rationale}</div>
+                        <div className="mt-2 text-xs text-gray-500">{item.action}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+                    <div className="mb-3 text-sm font-medium text-gray-100">Effective grants</div>
+                    <div className="max-h-80 space-y-2 overflow-auto pr-1">
+                      {effectiveGrants.slice(0, 80).map((grant) => (
+                        <div key={`${grant.source}-${grant.id}-${grant.resource}-${grant.action}`} className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-xs text-gray-200">{grant.resource}:{grant.action}</span>
+                            <span className={`rounded-full border px-2 py-0.5 text-[11px] ${riskClass(grant.risk)}`}>{grant.risk}</span>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600">{grant.source === "group" ? `Inherited from ${(grant as any).group_name}` : `Role ${selectedManagedUser.role}`}</div>
+                        </div>
+                      ))}
+                      {!effectiveGrants.length && <div className="text-sm text-gray-500">No direct or inherited grants were found.</div>}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+                    <div className="mb-3 text-sm font-medium text-gray-100">Groups, sessions, and audit</div>
+                    <div className="space-y-4">
+                      <div>
+                        <div className="mb-2 text-xs uppercase tracking-wide text-gray-600">Groups</div>
+                        <div className="flex flex-wrap gap-2">
+                          {(detail?.inheritedGroups || []).map((group) => <span key={group.id} className="rounded-full border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-300">{group.name}</span>)}
+                          {!detail?.inheritedGroups?.length && <span className="text-sm text-gray-500">No group memberships.</span>}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="mb-2 text-xs uppercase tracking-wide text-gray-600">Sessions</div>
+                        <div className="space-y-2">
+                          {(detail?.sessions || []).slice(0, 4).map((session) => (
+                            <div key={session.id} className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-xs text-gray-400">
+                              <div className="flex justify-between gap-3">
+                                <span>{session.active ? "Active" : "Inactive"} / {session.ipAddress || "unknown IP"}</span>
+                                <span>{formatDateTime(session.lastUsedAt || session.createdAt)}</span>
+                              </div>
+                              <div className="mt-1 truncate text-gray-600">{session.userAgent || "Unknown user agent"}</div>
+                            </div>
+                          ))}
+                          {!detail?.sessions?.length && <div className="text-sm text-gray-500">No sessions found.</div>}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="mb-2 text-xs uppercase tracking-wide text-gray-600">Recent audit</div>
+                        <div className="space-y-2">
+                          {(detail?.auditEvents || []).slice(0, 4).map((event) => (
+                            <div key={event.id} className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-xs">
+                              <div className="text-gray-200">{event.action}</div>
+                              <div className="mt-1 text-gray-600">{event.entityType} / {event.entityId} / {formatDateTime(event.createdAt)}</div>
+                            </div>
+                          ))}
+                          {!detail?.auditEvents?.length && <div className="text-sm text-gray-500">No audit events found.</div>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
