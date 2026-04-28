@@ -389,7 +389,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
           {state.notifications.map((n) => (
             <div
               key={n.id}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-2xl border text-sm backdrop-blur-xl ${
+              className={`flex min-w-72 max-w-md items-start gap-3 px-4 py-2.5 rounded-xl shadow-2xl border text-sm backdrop-blur-xl ${
                 n.type === "error"
                   ? "bg-red-900/60 border-red-500/20 text-red-200"
                   : n.type === "success"
@@ -397,10 +397,11 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
                     : "bg-gray-900/60 border-white/10 text-gray-200"
               }`}
             >
-              <span>{n.message}</span>
+              <span className="min-w-0 flex-1 leading-5">{n.message}</span>
               <button
                 onClick={() => dispatch({ type: "DISMISS_NOTIFICATION", id: n.id })}
-                className="ml-2 text-gray-500 hover:text-white transition-colors"
+                className="ml-auto shrink-0 pt-0.5 text-gray-500 transition-colors hover:text-white"
+                aria-label="Dismiss notification"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

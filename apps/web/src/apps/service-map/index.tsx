@@ -972,8 +972,16 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
     <div className="h-full w-full relative" onContextMenu={(e) => e.preventDefault()}>
       {/* Toast */}
       {toast && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg shadow-xl text-sm text-gray-200">
-          {toast}
+        <div className="absolute left-1/2 top-4 z-[60] flex min-w-72 max-w-md -translate-x-1/2 items-start gap-3 rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm text-gray-200 shadow-xl">
+          <span className="min-w-0 flex-1 leading-5">{toast}</span>
+          <button
+            type="button"
+            onClick={() => setToast("")}
+            className="ml-auto shrink-0 pt-0.5 text-gray-500 transition-colors hover:text-white"
+            aria-label="Dismiss notification"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
 

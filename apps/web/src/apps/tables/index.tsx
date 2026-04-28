@@ -506,6 +506,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
   const [mode, setMode] = useState<"records" | "stewardship">("records");
   const [tables, setTables] = useState<TableDef[]>([]);
   const [selected, setSelected] = useState<TableDef | null>(null);
+  const [tableSearch, setTableSearch] = useState("");
   const [records, setRecords] = useState<TableRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
@@ -610,6 +611,15 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
     acc[decision.action] = (acc[decision.action] || 0) + 1;
     return acc;
   }, {} as Record<ImportDecision["action"], number>), [importDecisions]);
+  const filteredTables = useMemo(() => {
+    const needle = tableSearch.trim().toLowerCase();
+    return [...tables]
+      .sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id, undefined, { sensitivity: "base" }))
+      .filter((table) => {
+        if (!needle) return true;
+        return [table.label, table.id, table.className, table.category].some((value) => String(value || "").toLowerCase().includes(needle));
+      });
+  }, [tableSearch, tables]);
 
   function tableAttr(key: string) {
     return selected?.attributes.find((attr) => attr.name === key);
@@ -1466,23 +1476,45 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
             </button>
           </div>
         </div>
-        {mode === "records" && <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-2">
-          {loading ? (
-            <div className="px-3 py-4 text-sm text-gray-500">Loading tables...</div>
-          ) : tables.map((table) => (
-            <button
-              key={table.id}
-              data-testid={`tables-table-${table.id}`}
-              onClick={() => selectTable(table)}
-              className={`w-full rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
-                selected?.id === table.id ? "bg-indigo-600/20 text-indigo-200" : "text-gray-300 hover:bg-gray-900"
-              }`}
-            >
-              <div className="truncate font-medium">{table.label}</div>
-              <div className="mt-0.5 truncate font-mono text-[10px] text-gray-500">{table.id}</div>
-            </button>
-          ))}
-        </div>}
+        {mode === "records" && (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="border-b border-gray-900 p-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+                <input
+                  value={tableSearch}
+                  onChange={(event) => setTableSearch(event.target.value)}
+                  placeholder="Search tables"
+                  className="w-full rounded-lg border border-gray-800 bg-gray-900 py-2 pl-8 pr-8 text-sm text-gray-100 outline-none focus:border-indigo-500"
+                />
+                {tableSearch && (
+                  <button onClick={() => setTableSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 hover:text-gray-200" aria-label="Clear table search">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-2">
+              {loading ? (
+                <div className="px-3 py-4 text-sm text-gray-500">Loading tables...</div>
+              ) : filteredTables.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-gray-800 px-3 py-8 text-center text-sm text-gray-600">No tables match this search.</div>
+              ) : filteredTables.map((table) => (
+                <button
+                  key={table.id}
+                  data-testid={`tables-table-${table.id}`}
+                  onClick={() => selectTable(table)}
+                  className={`w-full rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
+                    selected?.id === table.id ? "bg-indigo-600/20 text-indigo-200" : "text-gray-300 hover:bg-gray-900"
+                  }`}
+                >
+                  <div className="truncate font-medium">{table.label}</div>
+                  <div className="mt-0.5 truncate font-mono text-[10px] text-gray-500">{table.id}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {mode === "stewardship" && (
           <div className="min-h-0 flex-1 border-t border-gray-900 p-3 text-sm text-gray-500">
             <div className="font-medium text-gray-300">Cleanup Review Queue</div>
