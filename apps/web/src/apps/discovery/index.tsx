@@ -983,6 +983,23 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setView("builder");
   }
 
+  async function deletePipeline(pipeline: PipelineRecord) {
+    if (!window.confirm(`Delete discovery pipeline "${pipeline.name}"? This removes the saved pipeline definition and schedule, but not raw observations or committed CMDB data.`)) return;
+    try {
+      const res = await shell.fetch(`/discovery/pipelines/${pipeline.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setPipelines((current) => current.filter((item) => item.id !== pipeline.id));
+      if (currentPipelineId === pipeline.id) {
+        newPipeline();
+      }
+      shell.notify(data.deleted ? "Pipeline deleted" : "Pipeline was already deleted", data.deleted ? "success" : "error");
+      refresh();
+    } catch {
+      shell.notify("Pipeline could not be deleted", "error");
+    }
+  }
+
   function loadExample() {
     rememberFlow();
     const exampleFlow = proposalToFlow(null, "server-app-inventory.csv");
@@ -1552,6 +1569,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                     <button onClick={() => loadPipeline(pipeline)} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">Open</button>
                     <button onClick={() => publishPipeline(pipeline.id)} className="rounded-md border border-emerald-500/40 px-3 py-1.5 text-xs text-emerald-200 hover:bg-emerald-500/10">Publish</button>
                     <button onClick={() => runPipeline(pipeline.id)} className="rounded-md border border-cyan-500/40 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-500/10">Run</button>
+                    <button onClick={() => deletePipeline(pipeline)} className="rounded-md border border-rose-500/40 px-3 py-1.5 text-xs text-rose-200 hover:bg-rose-500/10">Delete</button>
                   </div>
                 </div>
               </div>
@@ -1837,10 +1855,16 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
           <aside className="space-y-3">
             <h2 className="text-sm font-semibold">Saved Pipelines</h2>
             {pipelines.length ? pipelines.map((pipeline) => (
-              <button key={pipeline.id} onClick={() => loadPipeline(pipeline)} className="block w-full rounded-lg border border-gray-800 bg-gray-900 p-3 text-left hover:border-cyan-500/50">
-                <div className="text-sm font-medium">{pipeline.name}</div>
-                <div className="mt-1 text-xs text-gray-500">{pipeline.status} · {new Date(pipeline.updated_at || pipeline.updatedAt || Date.now()).toLocaleDateString()}</div>
-              </button>
+              <div key={pipeline.id} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+                <button onClick={() => loadPipeline(pipeline)} className="block w-full text-left">
+                  <div className="text-sm font-medium">{pipeline.name}</div>
+                  <div className="mt-1 text-xs text-gray-500">{pipeline.status} · {new Date(pipeline.updated_at || pipeline.updatedAt || Date.now()).toLocaleDateString()}</div>
+                </button>
+                <div className="mt-3 flex gap-2">
+                  <button onClick={() => loadPipeline(pipeline)} className="flex-1 rounded-md border border-gray-700 px-2 py-1.5 text-xs text-gray-300 hover:bg-gray-800">Open</button>
+                  <button onClick={() => deletePipeline(pipeline)} className="rounded-md border border-rose-500/40 px-2 py-1.5 text-xs text-rose-200 hover:bg-rose-500/10">Delete</button>
+                </div>
+              </div>
             )) : (
               <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm text-gray-500">No saved pipelines.</div>
             )}
