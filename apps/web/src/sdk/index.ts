@@ -275,7 +275,7 @@ export async function seedBuiltInApps(): Promise<void> {
       description: "Manage profile, theme, and platform preferences.",
       icon: "Settings",
       version: "1.0.0",
-      permissions: ["read:profile"],
+      permissions: ["read:profile", "write:profile"],
       defaultMode: "window",
       installKey: "builtin_settings",
       source: "built-in",

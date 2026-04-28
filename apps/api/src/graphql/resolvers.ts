@@ -1100,12 +1100,12 @@ LIMIT 50`;
         throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
       }
       let result = await context.pg.query(
-        "UPDATE users SET preferences = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name, email, preferences",
+        "UPDATE users SET preferences = COALESCE(preferences, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2 RETURNING id, name, email, preferences",
         [JSON.stringify(args.preferences), context.user.id]
       );
       if (!result.rows.length && context.user?.email) {
         result = await context.pg.query(
-          "UPDATE users SET preferences = $1, updated_at = NOW() WHERE email = $2 RETURNING id, name, email, preferences",
+          "UPDATE users SET preferences = COALESCE(preferences, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE email = $2 RETURNING id, name, email, preferences",
           [JSON.stringify(args.preferences), context.user.email]
         );
       }

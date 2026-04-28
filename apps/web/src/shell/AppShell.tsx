@@ -12,6 +12,7 @@ import { ChatPanel } from "@/components/ChatPanel";
 import { graphqlClient } from "@/lib/api";
 import { useEventStream } from "@/hooks/useEventStream";
 import { BootstrapLoading } from "@/components/BootstrapLoading";
+import { applyTheme } from "@/lib/themes";
 
 function createMessageBus() {
   const handlers = new Set<(msg: AppMessage) => void>();
@@ -168,6 +169,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
         const user = data?.me;
         if (user) {
           userIdRef.current = user.id;
+          applyTheme(user.preferences?.theme);
           const dockOrder = user.preferences?.dock?.order;
           if (Array.isArray(dockOrder)) {
             loadedDockRef.current = dockOrder;
@@ -176,6 +178,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
             dispatch({ type: "SET_DOCK_ORDER", order: ["service-map"] });
           }
         } else {
+          applyTheme(null);
           dispatch({ type: "SET_DOCK_ORDER", order: ["service-map"] });
         }
         hasLoadedPrefs.current = true;
@@ -183,6 +186,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
       } catch (err) {
         console.error("[AppShell] user preferences failed:", err);
         if (!mounted) return;
+        applyTheme(null);
         dispatch({ type: "SET_DOCK_ORDER", order: ["service-map"] });
         hasLoadedPrefs.current = true;
         setReady(true);

@@ -726,7 +726,7 @@ describe("Mutation.updatePreferences", () => {
     const result = await resolvers.Mutation.updatePreferences(null, { preferences: { dock: { order: ["service-map"] } } }, mockContextWithPg(mockNeo4jSession(), pg));
     expect(result.preferences).toEqual({ dock: { order: ["service-map"] } });
     expect(pg.query).toHaveBeenCalledWith(
-      expect.stringContaining("UPDATE users SET preferences"),
+      expect.stringContaining("COALESCE(preferences, '{}'::jsonb) || $1::jsonb"),
       [JSON.stringify({ dock: { order: ["service-map"] } }), "550e8400-e29b-41d4-a716-446655440001"]
     );
   });

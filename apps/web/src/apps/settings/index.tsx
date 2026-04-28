@@ -1,138 +1,158 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { getToken } from "@/lib/auth";
-import { Moon, Sun, Server, User, Trash2, AlertTriangle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, Check, Palette, Trash2, User } from "lucide-react";
+import type { ShellAPI } from "@/sdk/types";
+import { applyTheme, DEFAULT_THEME, isThemeId, THEME_OPTIONS, type ThemeId } from "@/lib/themes";
 
-export default function SettingsApp() {
-  const [darkMode, setDarkMode] = useState(true);
-  const [apiUrl, setApiUrl] = useState(process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/graphql");
-  const [user, setUser] = useState<{ id: string; email: string; name: string } | null>(null);
+const ME_QUERY = `query { me { id name email preferences } }`;
+
+const UPDATE_PREFS_MUTATION = `
+  mutation UpdatePreferences($preferences: JSON!) {
+    updatePreferences(preferences: $preferences) { id preferences }
+  }
+`;
+
+type SettingsUser = {
+  id: string;
+  email: string;
+  name: string;
+  preferences?: Record<string, any>;
+};
+
+export default function SettingsApp({ shell }: { shell: ShellAPI }) {
+  const [user, setUser] = useState<SettingsUser | null>(null);
+  const [theme, setTheme] = useState<ThemeId>(DEFAULT_THEME);
   const [saved, setSaved] = useState(false);
+  const [savingTheme, setSavingTheme] = useState<ThemeId | null>(null);
 
   useEffect(() => {
-    try {
-      const token = getToken();
-      if (token) {
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        setUser({ id: payload.id, email: payload.email, name: payload.name || "User" });
-      }
-    } catch {
-      // silent
-    }
-  }, []);
+    let mounted = true;
+    shell.query(ME_QUERY).then((data) => {
+      if (!mounted) return;
+      const nextUser = data?.me || null;
+      setUser(nextUser);
+      const profileTheme = nextUser?.preferences?.theme;
+      setTheme(applyTheme(profileTheme));
+    }).catch(() => {
+      if (!mounted) return;
+      setTheme(applyTheme(null));
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [shell]);
 
-  const handleSave = () => {
-    // In a real app, this would persist to backend
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
+  async function selectTheme(nextTheme: ThemeId) {
+    setTheme(nextTheme);
+    applyTheme(nextTheme);
+    setSavingTheme(nextTheme);
+    setSaved(false);
+    try {
+      const preferences = { ...(user?.preferences || {}), theme: nextTheme };
+      const data = await shell.mutate(UPDATE_PREFS_MUTATION, { preferences: { theme: nextTheme } });
+      setUser((current) => current ? { ...current, preferences: data?.updatePreferences?.preferences || preferences } : current);
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 2000);
+    } catch (error: any) {
+      const previousTheme = isThemeId(user?.preferences?.theme) ? user.preferences.theme : DEFAULT_THEME;
+      setTheme(applyTheme(previousTheme));
+      shell.notify(error?.message || "Theme preference could not be saved", "error");
+    } finally {
+      setSavingTheme(null);
+    }
+  }
 
   const handleClearData = () => {
-    if (confirm("This will clear all local app data and reload the page. Continue?")) {
+    if (confirm("This will clear local app data and reload the page. Continue?")) {
       localStorage.clear();
       window.location.reload();
     }
   };
 
   return (
-    <div className="h-full w-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
-        <h2 className="font-semibold text-sm">Settings</h2>
-        {saved && (
-          <span className="text-xs text-green-400 animate-pulse">Saved</span>
-        )}
+    <div className="flex h-full w-full flex-col overflow-hidden bg-gray-900 text-gray-100">
+      <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-4 py-3">
+        <h2 className="text-sm font-semibold">Settings</h2>
+        {saved && <span className="text-xs text-green-400">Saved</span>}
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4 pb-24 space-y-6">
-        {/* Profile */}
+      <div className="flex-1 space-y-6 overflow-y-auto p-4 pb-24">
         <div className="space-y-3">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-2">
-            <User className="w-3.5 h-3.5" />
+          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+            <User className="h-3.5 w-3.5" />
             Profile
           </h3>
-          <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 p-4 space-y-3">
+          <div className="space-y-3 rounded-lg border border-gray-700/50 bg-gray-800/50 p-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white text-sm font-bold">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-sm font-bold text-white">
                 {user?.name?.[0] || "U"}
               </div>
-              <div>
-                <p className="text-sm font-medium text-gray-200">{user?.name || "User"}</p>
-                <p className="text-xs text-gray-500">{user?.email || "—"}</p>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-gray-200">{user?.name || "User"}</p>
+                <p className="truncate text-xs text-gray-500">{user?.email || "-"}</p>
               </div>
             </div>
-            <div className="text-xs text-gray-500 font-mono">ID: {user?.id || "—"}</div>
+            <div className="truncate font-mono text-xs text-gray-500">ID: {user?.id || "-"}</div>
           </div>
         </div>
 
-        {/* Appearance */}
         <div className="space-y-3">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-2">
-            <Moon className="w-3.5 h-3.5" />
+          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+            <Palette className="h-3.5 w-3.5" />
             Appearance
           </h3>
-          <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                {darkMode ? <Moon className="w-4 h-4 text-gray-400" /> : <Sun className="w-4 h-4 text-gray-400" />}
-                <span className="text-sm text-gray-300">Dark mode</span>
-              </div>
-              <button
-                onClick={() => setDarkMode(!darkMode)}
-                className={`relative w-10 h-5 rounded-full transition-colors ${darkMode ? "bg-indigo-600" : "bg-gray-600"}`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${darkMode ? "translate-x-5" : ""}`}
-                />
-              </button>
-            </div>
-            <p className="text-xs text-gray-500 mt-2">Theme preference is stored locally.</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {THEME_OPTIONS.map((option) => {
+              const selected = option.id === theme;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => selectTheme(option.id)}
+                  className={`rounded-lg border p-3 text-left transition-colors ${
+                    selected
+                      ? "border-indigo-400 bg-indigo-500/10"
+                      : "border-gray-700/60 bg-gray-800/50 hover:border-gray-600 hover:bg-gray-800"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-gray-100">{option.name}</div>
+                      <div className="mt-1 text-xs leading-5 text-gray-500">{option.description}</div>
+                    </div>
+                    <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${selected ? "border-indigo-300 text-indigo-200" : "border-gray-700 text-transparent"}`}>
+                      <Check className="h-3.5 w-3.5" />
+                    </div>
+                  </div>
+                  <div className="mt-3 flex gap-1.5">
+                    {option.swatches.map((swatch) => (
+                      <span key={swatch} className="h-4 flex-1 rounded-sm border border-white/10" style={{ backgroundColor: swatch }} />
+                    ))}
+                  </div>
+                  {savingTheme === option.id && <div className="mt-2 text-xs text-gray-500">Saving...</div>}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        {/* API Configuration */}
         <div className="space-y-3">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-2">
-            <Server className="w-3.5 h-3.5" />
-            API Configuration
-          </h3>
-          <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 p-4 space-y-3">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">GraphQL Endpoint</label>
-              <input
-                value={apiUrl}
-                onChange={(e) => setApiUrl(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-gray-950 border border-gray-700 text-sm text-gray-300 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-            <button
-              onClick={handleSave}
-              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors"
-            >
-              Save
-            </button>
-          </div>
-        </div>
-
-        {/* Danger Zone */}
-        <div className="space-y-3">
-          <h3 className="text-xs font-semibold text-red-500/80 uppercase tracking-wider flex items-center gap-2">
-            <AlertTriangle className="w-3.5 h-3.5" />
+          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-red-500/80">
+            <AlertTriangle className="h-3.5 w-3.5" />
             Danger Zone
           </h3>
-          <div className="bg-gray-800/50 rounded-xl border border-red-500/20 p-4">
-            <div className="flex items-center justify-between">
+          <div className="rounded-lg border border-red-500/20 bg-gray-800/50 p-4">
+            <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm text-gray-300">Clear local data</p>
-                <p className="text-xs text-gray-500">Reset all local preferences and cached data</p>
+                <p className="text-xs text-gray-500">Reset local cache and browser-stored tokens</p>
               </div>
               <button
                 onClick={handleClearData}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300 text-sm transition-colors"
+                className="flex items-center gap-1.5 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/20 hover:text-red-300"
               >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="h-4 w-4" />
                 Clear
               </button>
             </div>

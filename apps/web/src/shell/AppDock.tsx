@@ -28,7 +28,7 @@ export function UserProfileBadge() {
 
   const openSettings = () => {
     setOpen(false);
-    dispatch({ type: "OPEN_APP", id: "settings", installKey: "settings", mode: "window", permissions: ["read:profile"] });
+    dispatch({ type: "OPEN_APP", id: "settings", installKey: "settings", mode: "window", permissions: ["read:profile", "write:profile"] });
   };
 
   return (

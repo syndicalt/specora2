@@ -8,6 +8,238 @@ html, body, #__next {
 
 :root {
   --specora-dock-safe-area: 112px;
+  --color-gray-50: 249 250 251;
+  --color-gray-100: 243 244 246;
+  --color-gray-200: 229 231 235;
+  --color-gray-300: 209 213 219;
+  --color-gray-400: 156 163 175;
+  --color-gray-500: 107 114 128;
+  --color-gray-600: 75 85 99;
+  --color-gray-700: 55 65 81;
+  --color-gray-800: 31 41 55;
+  --color-gray-900: 17 24 39;
+  --color-gray-950: 2 6 23;
+  --color-accent-50: 236 254 255;
+  --color-accent-100: 207 250 254;
+  --color-accent-200: 165 243 252;
+  --color-accent-300: 103 232 249;
+  --color-accent-400: 34 211 238;
+  --color-accent-500: 6 182 212;
+  --color-accent-600: 8 145 178;
+  --color-accent-700: 14 116 144;
+  --color-accent-800: 21 94 117;
+  --color-accent-900: 22 78 99;
+  --color-accent-950: 8 51 68;
+  --color-secondary-50: 245 243 255;
+  --color-secondary-100: 237 233 254;
+  --color-secondary-200: 221 214 254;
+  --color-secondary-300: 196 181 253;
+  --color-secondary-400: 167 139 250;
+  --color-secondary-500: 139 92 246;
+  --color-secondary-600: 124 58 237;
+  --color-secondary-700: 109 40 217;
+  --color-secondary-800: 91 33 182;
+  --color-secondary-900: 76 29 149;
+  --color-secondary-950: 46 16 101;
+}
+
+:root[data-theme="midnight"] {
+  --color-gray-50: 248 250 252;
+  --color-gray-100: 241 245 249;
+  --color-gray-200: 226 232 240;
+  --color-gray-300: 203 213 225;
+  --color-gray-400: 148 163 184;
+  --color-gray-500: 100 116 139;
+  --color-gray-600: 71 85 105;
+  --color-gray-700: 51 65 85;
+  --color-gray-800: 30 41 59;
+  --color-gray-900: 15 23 42;
+  --color-gray-950: 2 6 23;
+  --color-accent-50: 239 246 255;
+  --color-accent-100: 219 234 254;
+  --color-accent-200: 191 219 254;
+  --color-accent-300: 147 197 253;
+  --color-accent-400: 96 165 250;
+  --color-accent-500: 59 130 246;
+  --color-accent-600: 37 99 235;
+  --color-accent-700: 29 78 216;
+  --color-accent-800: 30 64 175;
+  --color-accent-900: 30 58 138;
+  --color-accent-950: 23 37 84;
+}
+
+:root[data-theme="graphite"] {
+  --color-gray-50: 250 250 250;
+  --color-gray-100: 244 244 245;
+  --color-gray-200: 228 228 231;
+  --color-gray-300: 212 212 216;
+  --color-gray-400: 161 161 170;
+  --color-gray-500: 113 113 122;
+  --color-gray-600: 82 82 91;
+  --color-gray-700: 63 63 70;
+  --color-gray-800: 39 39 42;
+  --color-gray-900: 24 24 27;
+  --color-gray-950: 5 5 5;
+  --color-accent-50: 247 254 231;
+  --color-accent-100: 236 252 203;
+  --color-accent-200: 217 249 157;
+  --color-accent-300: 190 242 100;
+  --color-accent-400: 163 230 53;
+  --color-accent-500: 132 204 22;
+  --color-accent-600: 101 163 13;
+  --color-accent-700: 77 124 15;
+  --color-accent-800: 63 98 18;
+  --color-accent-900: 54 83 20;
+  --color-accent-950: 26 46 5;
+}
+
+:root[data-theme="soft-light"] {
+  --color-gray-50: 23 23 20;
+  --color-gray-100: 33 32 29;
+  --color-gray-200: 50 48 43;
+  --color-gray-300: 75 72 65;
+  --color-gray-400: 103 99 89;
+  --color-gray-500: 129 124 112;
+  --color-gray-600: 170 165 151;
+  --color-gray-700: 211 207 194;
+  --color-gray-800: 231 229 220;
+  --color-gray-900: 244 242 237;
+  --color-gray-950: 250 249 246;
+  --color-accent-50: 240 253 250;
+  --color-accent-100: 204 251 241;
+  --color-accent-200: 153 246 228;
+  --color-accent-300: 94 234 212;
+  --color-accent-400: 45 212 191;
+  --color-accent-500: 20 184 166;
+  --color-accent-600: 13 148 136;
+  --color-accent-700: 15 118 110;
+  --color-accent-800: 17 94 89;
+  --color-accent-900: 19 78 74;
+  --color-accent-950: 4 47 46;
+  --color-secondary-50: 250 245 255;
+  --color-secondary-100: 243 232 255;
+  --color-secondary-200: 233 213 255;
+  --color-secondary-300: 216 180 254;
+  --color-secondary-400: 192 132 252;
+  --color-secondary-500: 168 85 247;
+  --color-secondary-600: 147 51 234;
+  --color-secondary-700: 126 34 206;
+  --color-secondary-800: 107 33 168;
+  --color-secondary-900: 88 28 135;
+  --color-secondary-950: 59 7 100;
+}
+
+:root[data-theme="soft-light"] [class*="text-emerald-100"],
+:root[data-theme="soft-light"] [class*="text-emerald-200"],
+:root[data-theme="soft-light"] [class*="text-emerald-300"],
+:root[data-theme="soft-light"] [class*="text-green-100"],
+:root[data-theme="soft-light"] [class*="text-green-200"],
+:root[data-theme="soft-light"] [class*="text-green-300"] {
+  color: #047857 !important;
+}
+
+:root[data-theme="soft-light"] [class*="text-red-100"],
+:root[data-theme="soft-light"] [class*="text-red-200"],
+:root[data-theme="soft-light"] [class*="text-red-300"],
+:root[data-theme="soft-light"] [class*="text-rose-100"],
+:root[data-theme="soft-light"] [class*="text-rose-200"],
+:root[data-theme="soft-light"] [class*="text-rose-300"] {
+  color: #b91c1c !important;
+}
+
+:root[data-theme="soft-light"] [class*="text-amber-100"],
+:root[data-theme="soft-light"] [class*="text-amber-200"],
+:root[data-theme="soft-light"] [class*="text-amber-300"],
+:root[data-theme="soft-light"] [class*="text-yellow-100"],
+:root[data-theme="soft-light"] [class*="text-yellow-200"],
+:root[data-theme="soft-light"] [class*="text-yellow-300"],
+:root[data-theme="soft-light"] [class*="text-orange-100"],
+:root[data-theme="soft-light"] [class*="text-orange-200"],
+:root[data-theme="soft-light"] [class*="text-orange-300"] {
+  color: #92400e !important;
+}
+
+:root[data-theme="soft-light"] [class*="text-cyan-100"],
+:root[data-theme="soft-light"] [class*="text-cyan-200"],
+:root[data-theme="soft-light"] [class*="text-cyan-300"],
+:root[data-theme="soft-light"] [class*="text-sky-100"],
+:root[data-theme="soft-light"] [class*="text-sky-200"],
+:root[data-theme="soft-light"] [class*="text-sky-300"],
+:root[data-theme="soft-light"] [class*="text-teal-100"],
+:root[data-theme="soft-light"] [class*="text-teal-200"],
+:root[data-theme="soft-light"] [class*="text-teal-300"] {
+  color: #0f766e !important;
+}
+
+:root[data-theme="soft-light"] [class*="text-indigo-100"],
+:root[data-theme="soft-light"] [class*="text-indigo-200"],
+:root[data-theme="soft-light"] [class*="text-indigo-300"],
+:root[data-theme="soft-light"] [class*="text-violet-100"],
+:root[data-theme="soft-light"] [class*="text-violet-200"],
+:root[data-theme="soft-light"] [class*="text-violet-300"],
+:root[data-theme="soft-light"] [class*="text-purple-100"],
+:root[data-theme="soft-light"] [class*="text-purple-200"],
+:root[data-theme="soft-light"] [class*="text-purple-300"] {
+  color: #4338ca !important;
+}
+
+:root[data-theme="soft-light"] [class*="bg-green-900"],
+:root[data-theme="soft-light"] [class*="bg-emerald-900"] {
+  background-color: rgba(220, 252, 231, 0.9) !important;
+}
+
+:root[data-theme="soft-light"] [class*="bg-red-900"],
+:root[data-theme="soft-light"] [class*="bg-rose-900"] {
+  background-color: rgba(254, 226, 226, 0.92) !important;
+}
+
+:root[data-theme="soft-light"] [class*="bg-amber-500/10"],
+:root[data-theme="soft-light"] [class*="bg-yellow-500/10"],
+:root[data-theme="soft-light"] [class*="bg-orange-500/10"] {
+  background-color: rgba(251, 191, 36, 0.18) !important;
+}
+
+:root[data-theme="soft-light"] [class*="bg-red-500/10"],
+:root[data-theme="soft-light"] [class*="bg-rose-500/10"] {
+  background-color: rgba(248, 113, 113, 0.16) !important;
+}
+
+:root[data-theme="soft-light"] [class*="bg-emerald-500/10"],
+:root[data-theme="soft-light"] [class*="bg-green-500/10"] {
+  background-color: rgba(52, 211, 153, 0.17) !important;
+}
+
+:root[data-theme="soft-light"] [class*="bg-cyan-500/10"],
+:root[data-theme="soft-light"] [class*="bg-sky-500/10"],
+:root[data-theme="soft-light"] [class*="bg-teal-500/10"],
+:root[data-theme="soft-light"] [class*="bg-indigo-500/10"],
+:root[data-theme="soft-light"] [class*="bg-violet-500/10"] {
+  background-color: rgba(20, 184, 166, 0.15) !important;
+}
+
+:root[data-theme="high-contrast"] {
+  --color-gray-50: 255 255 255;
+  --color-gray-100: 244 244 245;
+  --color-gray-200: 228 228 231;
+  --color-gray-300: 212 212 216;
+  --color-gray-400: 161 161 170;
+  --color-gray-500: 113 113 122;
+  --color-gray-600: 82 82 91;
+  --color-gray-700: 63 63 70;
+  --color-gray-800: 24 24 27;
+  --color-gray-900: 9 9 11;
+  --color-gray-950: 0 0 0;
+  --color-accent-50: 236 254 255;
+  --color-accent-100: 207 250 254;
+  --color-accent-200: 165 243 252;
+  --color-accent-300: 103 232 249;
+  --color-accent-400: 34 211 238;
+  --color-accent-500: 6 182 212;
+  --color-accent-600: 8 145 178;
+  --color-accent-700: 14 116 144;
+  --color-accent-800: 21 94 117;
+  --color-accent-900: 22 78 99;
+  --color-accent-950: 8 51 68;
 }
 
 .specora-dock-inset-target {
