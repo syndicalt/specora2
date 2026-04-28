@@ -181,6 +181,28 @@ const TABLES_LAUNCH_KEY = "specora_tables_launch";
 const SELECT_CLASS = "appearance-none rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500";
 const INLINE_SELECT_CLASS = "w-full min-w-32 appearance-none rounded border border-indigo-500 bg-gray-950 px-2 py-1 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-50";
 const RELATIONSHIP_TYPES = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"];
+const USER_REFERENCE_FIELDS = new Set([
+  "assignedUser",
+  "assignedUserId",
+  "assignedTo",
+  "assigned_to",
+  "owner",
+  "ownerId",
+  "businessOwner",
+  "businessOwnerId",
+  "technicalOwner",
+  "technicalOwnerId",
+  "supportedBy",
+  "supportedById",
+  "managedBy",
+  "managedById",
+  "serviceOwnerId",
+  "managerId",
+  "openedBy",
+  "createdBy",
+  "updatedBy",
+  "requestedBy",
+]);
 const RELATIONSHIP_FILTERS: ColumnDef[] = [
   { key: "__relationshipState", label: "Relationship State", core: false, attrType: "relationship-state" },
   { key: "__relationshipType", label: "Relationship Type", core: false, attrType: "relationship-type" },
@@ -246,6 +268,17 @@ function canReadAttr(attr?: AttributeDef) {
 
 function canWriteAttr(attr?: AttributeDef) {
   return attr?.canWrite !== false;
+}
+
+function normalizeAttributeDef(attr: AttributeDef): AttributeDef {
+  if (USER_REFERENCE_FIELDS.has(attr.name)) {
+    return { ...attr, attrType: "reference", referenceClass: attr.referenceClass || "User" };
+  }
+  return attr;
+}
+
+function normalizeTableDef(table: TableDef): TableDef {
+  return { ...table, attributes: table.attributes.map(normalizeAttributeDef) };
 }
 
 function coerceValue(raw: string, attr?: AttributeDef): unknown {
@@ -665,7 +698,7 @@ export default function TablesApp({ shell }: { shell: ShellAPI }) {
         throw new Error(body.error || "Failed to fetch tables");
       }
       const data = await res.json();
-      const nextTables = data.tables || [];
+      const nextTables = (data.tables || []).map(normalizeTableDef);
       setTables(nextTables);
     } catch (err: any) {
       shell.notify(err.message || "Failed to fetch tables", "error");
