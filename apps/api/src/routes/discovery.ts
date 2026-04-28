@@ -516,9 +516,12 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     const body = request.body as { tenant_id?: string; relay_id?: string; attempt?: number; status?: string; failure_code?: string; detail?: string };
     const relayId = body.relay_id?.trim();
     if (!relayId) return reply.status(400).send({ error: "relay_id is required" });
-    const status = ["succeeded", "failed", "timed_out", "executor_failed", "invalid_evidence"].includes(body.status || "")
-      ? body.status as string
-      : "failed";
+    const requestedStatus = body.status || "";
+    const status = requestedStatus === "uploaded"
+      ? "succeeded"
+      : ["succeeded", "failed", "timed_out", "executor_failed", "invalid_evidence"].includes(requestedStatus)
+        ? requestedStatus
+        : "failed";
     const result = await fastify.pg.query(
       `UPDATE edge_discovery_jobs
        SET status = $3,
