@@ -1342,6 +1342,13 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
       recordCount?: number;
       fieldStats?: Array<{ name: string; fillRate: number; distinctCount?: number; examples?: string[] }>;
       sampleRows?: Record<string, unknown>[];
+      entityProfiles?: Array<{
+        entityType: string;
+        recordCount: number;
+        columns: string[];
+        sampleRows?: Record<string, unknown>[];
+        fieldStats?: Array<{ name: string; fillRate: number; distinctCount?: number; examples?: string[] }>;
+      }>;
       targetClasses?: Array<{ name: string; displayName?: string; attributes?: Array<{ name: string; isMandatory?: boolean; isKeyAttribute?: boolean }> }>;
     };
     if (!body.columns?.length) {
@@ -1355,6 +1362,13 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
         columns: body.columns,
         sampleRows: (body.sampleRows || []).slice(0, 20),
         fieldStats: body.fieldStats,
+        entityProfiles: (body.entityProfiles || []).slice(0, 12).map((profile) => ({
+          entityType: profile.entityType,
+          recordCount: profile.recordCount,
+          columns: (profile.columns || []).slice(0, 80),
+          sampleRows: (profile.sampleRows || []).slice(0, 10),
+          fieldStats: (profile.fieldStats || []).slice(0, 80),
+        })),
       },
       body.targetClasses || []
     );

@@ -100,6 +100,64 @@ describe("buildDeterministicProposal", () => {
     expect(preview.relationships[0]).toMatchObject({ type: "OWNED_BY", targetHint: "Platform" });
   });
 
+  it("previews edge collector bundles as host records enriched with related observations", () => {
+    const entityProfiles = [
+      {
+        entityType: "host",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "hostname", "name", "version"],
+        sampleRows: [{ entity_type: "host", natural_key: "nb-lenovo", hostname: "nb-lenovo", name: "Pop!_OS", version: "24.04 LTS" }],
+      },
+      {
+        entityType: "network_interface",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "interface", "address"],
+        sampleRows: [{ entity_type: "network_interface", natural_key: "nb-lenovo:wlp0s20f3:10.0.0.22", interface: "wlp0s20f3", address: "10.0.0.22" }],
+      },
+      {
+        entityType: "software_package",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "name", "version"],
+        sampleRows: [{ entity_type: "software_package", natural_key: "nb-lenovo:docker:24.0", name: "docker", version: "24.0" }],
+      },
+      {
+        entityType: "service",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "name", "state", "status"],
+        sampleRows: [{ entity_type: "service", natural_key: "nb-lenovo:docker.service", name: "docker.service", state: "running", status: "active" }],
+      },
+    ];
+    const proposal = buildDeterministicProposal(
+      {
+        sourceName: "edge collector",
+        entityType: "host",
+        recordCount: 1,
+        columns: entityProfiles[0].columns,
+        sampleRows: entityProfiles[0].sampleRows,
+        entityProfiles,
+      },
+      [{ name: "Server", attributes: [{ name: "ipAddress", isMandatory: true }] }, { name: "ApplicationService" }]
+    );
+
+    const preview = previewPipeline({ sample: { rows: entityProfiles[0].sampleRows }, entityProfiles, proposal }, [
+      { name: "Server", attributes: [{ name: "ipAddress", isMandatory: true }] },
+      { name: "ApplicationService" },
+    ]);
+
+    expect(preview.summary.errors).toBe(0);
+    expect(preview.records).toContainEqual(expect.objectContaining({
+      targetClass: "Server",
+      name: "nb-lenovo",
+      attributes: expect.objectContaining({
+        ipAddress: "10.0.0.22",
+        installedSoftware: expect.arrayContaining([expect.objectContaining({ name: "docker" })]),
+        services: expect.arrayContaining([expect.objectContaining({ name: "docker.service" })]),
+      }),
+    }));
+    expect(preview.records).toContainEqual(expect.objectContaining({ targetClass: "ApplicationService", name: "docker.service" }));
+    expect(preview.relationships).toContainEqual(expect.objectContaining({ fromClass: "ApplicationService", toClass: "Server", targetHint: "nb-lenovo" }));
+  });
+
   it("flags preview records that are missing mandatory values", () => {
     const proposal = buildDeterministicProposal(
       {

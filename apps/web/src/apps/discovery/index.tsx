@@ -159,6 +159,7 @@ type PipelineDefinition = {
   source?: { id?: string; name?: string; type?: string; collectorId?: string; entityType?: string };
   sourceName?: string;
   sample?: { columns?: string[]; rows?: Record<string, unknown>[] };
+  entityProfiles?: EdgeObservationProfile[];
   proposal?: TransformProposal | null;
   flow?: { nodes: Node[]; edges: Edge[] };
 };
@@ -723,9 +724,10 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
         : { name: sourceName, type: "manual" },
     sourceName,
     sample: profile,
+    entityProfiles: selectedCollector ? edgeProfiles : undefined,
     proposal,
     flow: { nodes, edges },
-  }), [selectedSource, selectedCollector, selectedEdgeProfile, sourceName, profile, proposal, nodes, edges]);
+  }), [selectedSource, selectedCollector, selectedEdgeProfile, sourceName, profile, edgeProfiles, proposal, nodes, edges]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -830,6 +832,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
           fieldStats: selectedEdgeProfile?.fieldStats,
           columns: profile.columns,
           sampleRows: profile.rows,
+          entityProfiles: selectedCollector ? edgeProfiles : undefined,
           targetClasses: classes.slice(0, 80),
         }),
       });

@@ -264,7 +264,7 @@ describe("discoveryRoutes", () => {
       "specora-osquery-local",
       "host",
       "host-1",
-      "uuid-1",
+      "host-1",
       "2026-04-27T12:00:00Z",
     ]));
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["edge.evidence_uploaded", "EdgeEvidenceDocument", "doc-1"]));
@@ -906,6 +906,42 @@ describe("discoveryRoutes", () => {
     const body = JSON.parse(response.body);
     expect(body.classRoutes[0].targetClass).toBe("Server");
     expect(body.fieldMappings).toContainEqual(expect.objectContaining({ sourceField: "hostname", targetField: "name" }));
+  });
+
+  it("includes related edge entity profiles in transform drafts", async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/discovery/ai/propose-transform",
+      payload: {
+        sourceName: "edge collector",
+        entityType: "host",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "hostname", "name", "version"],
+        sampleRows: [{ entity_type: "host", natural_key: "nb-lenovo", hostname: "nb-lenovo", name: "Pop!_OS", version: "24.04 LTS" }],
+        entityProfiles: [
+          {
+            entityType: "host",
+            recordCount: 1,
+            columns: ["entity_type", "natural_key", "hostname", "name", "version"],
+            sampleRows: [{ entity_type: "host", natural_key: "nb-lenovo", hostname: "nb-lenovo", name: "Pop!_OS", version: "24.04 LTS" }],
+          },
+          {
+            entityType: "network_interface",
+            recordCount: 2,
+            columns: ["entity_type", "natural_key", "interface", "address", "mask"],
+            sampleRows: [{ entity_type: "network_interface", natural_key: "nb-lenovo:eth0", interface: "eth0", address: "10.0.0.22" }],
+          },
+        ],
+        targetClasses: [{ name: "Server" }, { name: "NetworkGear" }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.summary).toContain("2 edge entity profiles");
+    expect(body.sourceProfile.entityProfiles).toHaveLength(2);
+    expect(body.relationshipRules).toContainEqual(expect.objectContaining({ sourceField: "network_interface.address" }));
   });
 
   it("rejects transform proposals without columns", async () => {
