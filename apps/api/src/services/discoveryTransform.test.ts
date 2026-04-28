@@ -75,6 +75,42 @@ describe("buildDeterministicProposal", () => {
     expect(preview.relationships).toContainEqual(expect.objectContaining({ sourceField: "db_host", targetHint: "sql01" }));
   });
 
+  it("does not let duplicate host name or IP mappings overwrite durable host identity", () => {
+    const proposal = buildDeterministicProposal(
+      {
+        sourceName: "edge host",
+        columns: ["entity_type", "natural_key", "hostname", "name", "ipAddress", "ipAddresses"],
+        sampleRows: [{
+          entity_type: "host",
+          natural_key: "nb-lenovo",
+          hostname: "nb-lenovo",
+          name: "Pop!_OS",
+          ipAddress: "192.168.50.146",
+          ipAddresses: "fe80::389b:a0ff:fe54:42e2%veth550dc8f",
+        }],
+      },
+      [{ name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] }, { name: "Server" }]
+    );
+
+    expect(proposal.fieldMappings).toContainEqual(expect.objectContaining({ sourceField: "hostname", targetField: "name" }));
+    expect(proposal.fieldMappings).toContainEqual(expect.objectContaining({ sourceField: "name", targetField: "operatingSystem" }));
+    expect(proposal.fieldMappings).toContainEqual(expect.objectContaining({ sourceField: "ipAddresses", targetField: "ipAddresses" }));
+
+    const preview = previewPipeline({ sample: { rows: proposal.sourceProfile.sampleRows }, proposal }, [
+      { name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] },
+    ]);
+
+    expect(preview.records[0]).toMatchObject({
+      targetClass: "Computer",
+      name: "nb-lenovo",
+      attributes: expect.objectContaining({
+        ipAddress: "192.168.50.146",
+        operatingSystem: "Pop!_OS",
+        ipAddresses: "fe80::389b:a0ff:fe54:42e2%veth550dc8f",
+      }),
+    });
+  });
+
   it("previews staged records and relationship candidates", () => {
     const proposal = buildDeterministicProposal(
       {

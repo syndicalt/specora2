@@ -136,6 +136,14 @@ function transformFor(sourceField: string, targetField: string): string {
   return "trim";
 }
 
+function isHostDeviceClass(targetClass: string) {
+  return targetClass === "Server" || targetClass === "Computer";
+}
+
+function hostDeviceName(row: Record<string, unknown>) {
+  return String(row.hostname || row.host || row.natural_key || "").trim();
+}
+
 function sampleEvidence(profile: SourceProfile, sourceField: string): string[] {
   const values = profile.sampleRows
     .map((row) => row[sourceField])
@@ -411,9 +419,21 @@ export function previewPipeline(definition: PipelineDefinition, targetClasses: T
       let environment: string | undefined;
       for (const mapping of mappings) {
         const value = applyTransform(row[mapping.sourceField], mapping.transform);
-        if (mapping.targetField === "name") name = String(value || "");
+        if (mapping.targetField === "name") {
+          if (!name) name = String(value || "");
+          else attributes[fallbackTargetField(mapping.sourceField)] = value;
+        }
         else if (mapping.targetField === "environment") environment = String(value || "");
+        else if (mapping.targetField === "ipAddress" && attributes.ipAddress) {
+          attributes[fallbackTargetField(mapping.sourceField)] = value;
+        }
         else attributes[mapping.targetField] = value;
+      }
+      if (isHostDeviceClass(targetClass)) {
+        const durableName = hostDeviceName(row);
+        const sourceName = String(row.name || "").trim().toLowerCase();
+        if (durableName && (!name || (sourceName && name.toLowerCase() === sourceName))) name = durableName;
+        if (row.ipAddress) attributes.ipAddress = String(row.ipAddress);
       }
 
       const classDef = classMap.get(targetClass);
@@ -490,9 +510,17 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
   const mappedNames = new Set<string>();
   const fieldMappings = columns.slice(0, 18).map((sourceField) => {
     const initialTargetField = bestTargetField(sourceField);
-    const targetField = initialTargetField === "name" && mappedNames.has("name")
-      ? fallbackTargetField(sourceField)
-      : initialTargetField;
+    let targetField = initialTargetField;
+    if (mappedNames.has(initialTargetField)) {
+      const normalizedSource = normalize(sourceField);
+      if (initialTargetField === "name" && normalizedSource === "name" && columns.some((column) => ["hostname", "host"].includes(normalize(column)))) {
+        targetField = "operatingSystem";
+      } else if (initialTargetField === "ipAddress") {
+        targetField = normalizedSource === "ipaddresses" ? "ipAddresses" : fallbackTargetField(sourceField);
+      } else {
+        targetField = fallbackTargetField(sourceField);
+      }
+    }
     mappedNames.add(targetField);
     return {
       sourceField,
