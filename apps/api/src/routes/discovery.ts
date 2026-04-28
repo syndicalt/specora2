@@ -230,7 +230,7 @@ const HOST_INVENTORY_JOBS = [
     payload: {
       queries: [
         { name: "interfaces", sql: "select interface, address, mask, broadcast, type from interface_addresses;" },
-        { name: "listening_ports", sql: "select port, protocol, address, pid from listening_ports limit 128;" },
+        { name: "listening_ports", sql: "select port, protocol, address, pid from listening_ports where port > 0 limit 128;" },
       ],
     },
   },
