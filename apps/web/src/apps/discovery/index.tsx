@@ -724,7 +724,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
         : { name: sourceName, type: "manual" },
     sourceName,
     sample: profile,
-    entityProfiles: selectedCollector ? edgeProfiles : undefined,
+    entityProfiles: edgeProfiles.length ? edgeProfiles : undefined,
     proposal,
     flow: { nodes, edges },
   }), [selectedSource, selectedCollector, selectedEdgeProfile, sourceName, profile, edgeProfiles, proposal, nodes, edges]);
@@ -832,7 +832,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
           fieldStats: selectedEdgeProfile?.fieldStats,
           columns: profile.columns,
           sampleRows: profile.rows,
-          entityProfiles: selectedCollector ? edgeProfiles : undefined,
+          entityProfiles: edgeProfiles.length ? edgeProfiles : undefined,
           targetClasses: classes.slice(0, 80),
         }),
       });

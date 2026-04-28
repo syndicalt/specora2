@@ -596,15 +596,41 @@ function getAiConfig(): AiConfig | null {
     : null;
 }
 
+function coerceParsedProposal(proposal: TransformProposal, fallback: TransformProposal): TransformProposal {
+  const fallbackPrimary = fallback.classRoutes[0]?.targetClass;
+  if (fallbackPrimary !== "Computer") return proposal;
+  return {
+    ...proposal,
+    classRoutes: proposal.classRoutes.map((route, index) => ({
+      ...route,
+      targetClass: index === 0 || route.targetClass === "Server" ? "Computer" : route.targetClass,
+      rationale: index === 0 ? `${route.rationale || "Host route"} Endpoint/workstation signals require Computer.` : route.rationale,
+    })),
+    fieldMappings: proposal.fieldMappings.map((mapping) => ({
+      ...mapping,
+      targetClass: mapping.targetClass === "Server" ? "Computer" : mapping.targetClass,
+    })),
+    relationshipRules: proposal.relationshipRules.filter((rule) => !(rule.fromClass === "ApplicationService" && rule.toClass === "Server" && rule.sourceField === "service.name")),
+    reconciliationRules: proposal.reconciliationRules.map((rule) => ({
+      ...rule,
+      targetClass: rule.targetClass === "Server" ? "Computer" : rule.targetClass,
+    })),
+    assumptions: Array.from(new Set([
+      ...(proposal.assumptions || []),
+      "Endpoint/workstation signals were present, so the host profile is routed to Computer instead of Server.",
+    ])),
+  };
+}
+
 function parseProposal(content: string, fallback: TransformProposal): TransformProposal {
   const cleaned = content.replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
   const parsed = JSON.parse(cleaned);
-  return {
+  return coerceParsedProposal({
     ...fallback,
     ...parsed,
     sourceProfile: fallback.sourceProfile,
     aiGenerated: true,
-  };
+  }, fallback);
 }
 
 export async function proposeTransform(profile: SourceProfile, targetClasses: TargetClass[] = []): Promise<TransformProposal> {

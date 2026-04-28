@@ -306,4 +306,56 @@ describe("buildDeterministicProposal", () => {
       requires_structured_output: true,
     });
   });
+
+  it("keeps AI-generated endpoint edge drafts on Computer instead of Server", async () => {
+    process.env = {
+      ...originalEnv,
+      PROVARA_URL: "https://provara.test/v1",
+      PROVARA_API_KEY: "pk_test",
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              title: "Edge draft",
+              summary: "Bad server draft",
+              confidence: 0.9,
+              classRoutes: [{ sourcePattern: "*", targetClass: "Server", confidence: 0.9, rationale: "Host data" }],
+              fieldMappings: [{ sourceField: "name", targetClass: "Server", targetField: "name", transform: "trim_lowercase", confidence: 0.8 }],
+              relationshipRules: [{ fromClass: "ApplicationService", toClass: "Server", type: "HOSTED_ON", sourceField: "service.name", confidence: 0.8 }],
+              reconciliationRules: [{ targetClass: "Server", matchKeys: ["name"], strategy: "create_or_update" }],
+              assumptions: [],
+              risks: [],
+            }),
+          },
+        }],
+      }),
+    }));
+
+    const entityProfiles = [
+      {
+        entityType: "host",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "hostname", "name", "ipAddress"],
+        sampleRows: [{ entity_type: "host", natural_key: "nb-lenovo", hostname: "nb-lenovo", name: "Pop!_OS", ipAddress: "192.168.50.146" }],
+      },
+      {
+        entityType: "network_interface",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "interface", "address"],
+        sampleRows: [{ entity_type: "network_interface", natural_key: "nb-lenovo:wlp0s20f3:192.168.50.146", interface: "wlp0s20f3", address: "192.168.50.146" }],
+      },
+    ];
+    const proposal = await proposeTransform(
+      { sourceName: "edge", entityType: "host", columns: entityProfiles[0].columns, sampleRows: entityProfiles[0].sampleRows, entityProfiles },
+      [{ name: "Computer" }, { name: "Server" }]
+    );
+
+    expect(proposal.classRoutes[0].targetClass).toBe("Computer");
+    expect(proposal.fieldMappings[0].targetClass).toBe("Computer");
+    expect(proposal.reconciliationRules[0].targetClass).toBe("Computer");
+    expect(proposal.relationshipRules).toHaveLength(0);
+  });
 });
