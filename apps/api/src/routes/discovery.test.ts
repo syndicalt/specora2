@@ -1,10 +1,37 @@
 import { describe, it, expect, vi } from "vitest";
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
-import { generateKeyPairSync } from "crypto";
+import { createHash, createPublicKey, generateKeyPairSync, verify as cryptoVerify } from "crypto";
 import { discoveryRoutes } from "./discovery";
 
 describe("discoveryRoutes", () => {
+  function edgeRfc3339Nano(value: string) {
+    return new Date(value).toISOString().replace(/(\.\d*?[1-9])0+Z$/, "$1Z").replace(/\.0+Z$/, "Z");
+  }
+
+  function edgeSigningMessage(job: any) {
+    const payloadSum = createHash("sha256").update(JSON.stringify(job.payload || {})).digest("hex");
+    return createHash("sha256").update(JSON.stringify({
+      version: "specora.job.v1",
+      algorithm: "Ed25519",
+      id: job.id,
+      tenant_id: job.tenant_id || "default",
+      relay_id: job.relay_id,
+      capability: job.capability,
+      collector_id: job.collector_id,
+      collector_version: job.collector_version,
+      timeout_seconds: Number(job.timeout_seconds || 30),
+      priority: Number(job.priority || 10),
+      credential_scope_id: job.credential_scope_id || "",
+      network_scope_id: job.network_scope_id || "",
+      expected_schema: job.expected_schema || "specora.evidence.v1",
+      issued_at: edgeRfc3339Nano(job.issued_at),
+      expires_at: edgeRfc3339Nano(job.expires_at),
+      nonce: job.nonce,
+      payload_sha256: payloadSum,
+    })).digest();
+  }
+
   async function buildApp(neo4jRun?: (sql: string, params?: any) => Promise<any>) {
     const app = Fastify();
     await app.register(multipart);
@@ -295,8 +322,8 @@ describe("discoveryRoutes", () => {
     const previousKey = process.env.EDGE_JOB_SIGNING_PRIVATE_KEY;
     process.env.EDGE_JOB_SIGNING_PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const app = await buildApp();
-    const issuedAt = "2026-04-27T12:00:00.000Z";
-    const expiresAt = "2026-04-27T12:10:00.000Z";
+    const issuedAt = "2026-04-27T12:00:00.500Z";
+    const expiresAt = "2026-04-27T12:10:00.500Z";
     (app as any).pg.queuedResults.push(
       {
         rows: [{
@@ -311,7 +338,12 @@ describe("discoveryRoutes", () => {
           credential_scope_id: "",
           network_scope_id: "",
           expected_schema: "specora.evidence.v1",
-          payload: { queries: [{ name: "system_info", sql: "select hostname from system_info;" }] },
+          payload: {
+            queries: [
+              { name: "packages", sql: "select name, version, source from deb_packages union all select name, version, source from rpm_packages limit 128;" },
+              { name: "services", sql: "select id, active_state, sub_state, unit_file_state from systemd_units where id like '%.service' limit 128;" },
+            ],
+          },
           issued_at: issuedAt,
           expires_at: expiresAt,
           nonce: "nonce-1",
@@ -340,6 +372,7 @@ describe("discoveryRoutes", () => {
     });
     expect(jobs[0].signature).toEqual(expect.any(String));
     expect(jobs[0].signature.length).toBeGreaterThan(20);
+    expect(cryptoVerify(null, edgeSigningMessage(jobs[0]), createPublicKey(privateKey), Buffer.from(jobs[0].signature, "base64"))).toBe(true);
 
     const claim = await app.inject({
       method: "POST",
@@ -357,6 +390,21 @@ describe("discoveryRoutes", () => {
     expect(status.statusCode).toBe(200);
     expect(JSON.parse(status.body)).toEqual({ accepted: true, status: "succeeded" });
     process.env.EDGE_JOB_SIGNING_PRIVATE_KEY = previousKey;
+  });
+
+  it("maps edge completed job status to succeeded", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push({ rows: [{ id: "job-1", status: "succeeded" }] });
+
+    const status = await app.inject({
+      method: "POST",
+      url: "/edge/jobs/job-1/status",
+      payload: { tenant_id: "default", relay_id: "collector-1", attempt: 1, status: "completed", detail: "exit_code=0 timed_out=false" },
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(JSON.parse(status.body)).toEqual({ accepted: true, status: "succeeded" });
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("SET status = $3"), expect.arrayContaining(["job-1", "collector-1", "succeeded"]));
   });
 
   it("lists normalized collector observations", async () => {

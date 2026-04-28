@@ -201,6 +201,11 @@ function payloadText(payload: unknown) {
   return JSON.stringify(payload || {});
 }
 
+function edgeRfc3339Nano(value: unknown) {
+  const iso = new Date(value as any).toISOString();
+  return iso.replace(/(\.\d*?[1-9])0+Z$/, "$1Z").replace(/\.0+Z$/, "Z");
+}
+
 function edgeJobSigningMessage(job: Record<string, any>, payload: unknown) {
   const payloadSum = createHash("sha256").update(payloadText(payload)).digest("hex");
   const envelope = {
@@ -217,8 +222,8 @@ function edgeJobSigningMessage(job: Record<string, any>, payload: unknown) {
     credential_scope_id: job.credential_scope_id || "",
     network_scope_id: job.network_scope_id || "",
     expected_schema: job.expected_schema || "specora.evidence.v1",
-    issued_at: new Date(job.issued_at).toISOString(),
-    expires_at: new Date(job.expires_at).toISOString(),
+    issued_at: edgeRfc3339Nano(job.issued_at),
+    expires_at: edgeRfc3339Nano(job.expires_at),
     nonce: job.nonce,
     payload_sha256: payloadSum,
   };
@@ -567,7 +572,7 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     const relayId = body.relay_id?.trim();
     if (!relayId) return reply.status(400).send({ error: "relay_id is required" });
     const requestedStatus = body.status || "";
-    const status = requestedStatus === "uploaded"
+    const status = ["uploaded", "completed"].includes(requestedStatus)
       ? "succeeded"
       : ["succeeded", "failed", "timed_out", "executor_failed", "invalid_evidence"].includes(requestedStatus)
         ? requestedStatus
