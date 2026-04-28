@@ -160,6 +160,49 @@ describe("buildDeterministicProposal", () => {
     expect(preview.relationships).not.toContainEqual(expect.objectContaining({ sourceField: "service.name", targetHint: "docker.service" }));
   });
 
+  it("routes endpoint-like edge hosts to Computer when the class is available", () => {
+    const entityProfiles = [
+      {
+        entityType: "host",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "hostname", "name", "version", "ipAddress"],
+        sampleRows: [{ entity_type: "host", natural_key: "nb-lenovo", hostname: "nb-lenovo", name: "Pop!_OS", version: "24.04 LTS", ipAddress: "192.168.50.146" }],
+      },
+      {
+        entityType: "network_interface",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "interface", "address"],
+        sampleRows: [{ entity_type: "network_interface", natural_key: "nb-lenovo:wlp0s20f3:192.168.50.146", interface: "wlp0s20f3", address: "192.168.50.146" }],
+      },
+    ];
+    const proposal = buildDeterministicProposal(
+      {
+        sourceName: "edge collector",
+        entityType: "host",
+        recordCount: 1,
+        columns: entityProfiles[0].columns,
+        sampleRows: entityProfiles[0].sampleRows,
+        entityProfiles,
+      },
+      [{ name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] }, { name: "Server", attributes: [{ name: "ipAddress", isMandatory: true }] }]
+    );
+
+    expect(proposal.classRoutes[0].targetClass).toBe("Computer");
+    expect(proposal.assumptions).toContain("Endpoint/workstation signals were present, so the host profile is routed to Computer instead of Server.");
+
+    const preview = previewPipeline({ sample: { rows: entityProfiles[0].sampleRows }, entityProfiles, proposal }, [
+      { name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] },
+      { name: "Server", attributes: [{ name: "ipAddress", isMandatory: true }] },
+    ]);
+
+    expect(preview.records).toContainEqual(expect.objectContaining({
+      targetClass: "Computer",
+      name: "nb-lenovo",
+      attributes: expect.objectContaining({ ipAddress: "192.168.50.146", deviceType: "workstation" }),
+    }));
+    expect(preview.records).not.toContainEqual(expect.objectContaining({ targetClass: "Server", name: "nb-lenovo" }));
+  });
+
   it("suppresses unsafe model-generated edge relationship rules", () => {
     const entityProfiles = [
       {

@@ -12,6 +12,7 @@ export const CSDM_NODE_LABELS = [
   "ApplicationService",
   "TechnicalService",
   "Server",
+  "Computer",
   "Database",
   "Application",
   "NetworkGear",

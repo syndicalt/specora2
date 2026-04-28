@@ -97,6 +97,7 @@ const CANDIDATE_FIELDS = {
 
 const CLASS_HINTS: Record<string, string[]> = {
   Server: ["host", "hostname", "server", "ip", "os", "serial"],
+  Computer: ["host", "hostname", "computer", "laptop", "desktop", "workstation", "endpoint", "device", "ip", "os", "serial"],
   Database: ["database", "db", "schema", "instance"],
   ApplicationService: ["app", "application", "service_name"],
   BusinessService: ["business_service", "business", "capability"],
@@ -200,8 +201,50 @@ function relatedRows(rows: Record<string, unknown>[], key: string) {
 }
 
 function preferredIp(rows: Record<string, unknown>[]) {
-  const addresses = compactValues(rows.map((row) => row.address));
-  return addresses.find((address) => !address.startsWith("127.") && address !== "::1" && address !== "0.0.0.0" && address !== "::") || addresses[0] || "";
+  const scored = rows
+    .map((row) => {
+      const address = String(row.address || "").trim();
+      const iface = String(row.interface || "").toLowerCase();
+      if (!address || address === "::1" || address.startsWith("127.") || address === "0.0.0.0" || address === "::") return { address: "", score: -1 };
+      let score = 0;
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(address)) score += 100;
+      if (!address.toLowerCase().startsWith("fe80:")) score += 30;
+      if (!/^(lo|docker|br-|veth|virbr)/.test(iface)) score += 50;
+      if (/^(eth|en|wl|wlan)/.test(iface)) score += 25;
+      return { address, score };
+    })
+    .filter((item) => item.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.address || "";
+}
+
+function edgeEndpointSignals(hostRow: Record<string, unknown>, entityRows: Map<string, Record<string, unknown>[]>) {
+  const key = hostKey(hostRow);
+  const text = [
+    hostRow.hostname,
+    hostRow.name,
+    hostRow.platform,
+    hostRow.os,
+    hostRow.version,
+    ...(relatedRows(entityRows.get("network_interface") || [], key).flatMap((row) => [row.interface, row.address])),
+    ...(relatedRows(entityRows.get("software_package") || [], key).map((row) => row.name)),
+    ...(relatedRows(entityRows.get("service") || [], key).map((row) => row.name)),
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  return /(^|\W)(wl|wlan|wifi|airport|pop!_os|pop_os|system76|desktop|laptop|workstation|endpoint)/.test(text);
+}
+
+function sourceHasEndpointSignals(profile: SourceProfile) {
+  const entityProfiles = profile.entityProfiles || [];
+  const entityRows = new Map(entityProfiles.map((entity) => [entity.entityType, entity.sampleRows || []]));
+  const hostRows = entityRows.get("host")?.length ? entityRows.get("host") || [] : profile.sampleRows || [];
+  return hostRows.some((row) => edgeEndpointSignals(row, entityRows));
+}
+
+function edgeHostTargetClass(targetClasses: TargetClass[], proposal: TransformProposal, hostRows: Record<string, unknown>[], entityRows: Map<string, Record<string, unknown>[]>) {
+  const classNames = new Set(targetClasses.map((targetClass) => targetClass.name));
+  if (classNames.has("Computer") && hostRows.some((row) => edgeEndpointSignals(row, entityRows))) return "Computer";
+  if (classNames.has("Server")) return "Server";
+  return proposal.classRoutes[0]?.targetClass || "ConfigurationItem";
 }
 
 function readProfileValue(
@@ -222,10 +265,13 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
   const classMap = new Map(targetClasses.map((cls) => [cls.name, cls]));
   const records: PipelinePreview["records"] = [];
   const relationships: PipelinePreview["relationships"] = [];
-  const targetClassNames = Array.from(new Set([
+  const rawTargetClassNames = Array.from(new Set([
     ...proposal.classRoutes.map((route) => route.targetClass),
     ...proposal.fieldMappings.map((mapping) => mapping.targetClass),
   ])).filter(Boolean);
+  const hostTargetClass = edgeHostTargetClass(targetClasses, proposal, hostRows, entityRows);
+  const targetClassNames = hostTargetClass === "Computer" ? rawTargetClassNames.filter((name) => name !== "Server") : rawTargetClassNames;
+  if (!targetClassNames.includes(hostTargetClass)) targetClassNames.unshift(hostTargetClass);
 
   hostRows.forEach((hostRow, rowIndex) => {
     const key = hostKey(hostRow) || `host-${rowIndex + 1}`;
@@ -236,7 +282,7 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
 
     for (const targetClass of targetClassNames) {
       const mappings = proposal.fieldMappings.filter((mapping) => mapping.targetClass === targetClass);
-      if (!mappings.length && targetClass !== proposal.classRoutes[0]?.targetClass) continue;
+      if (!mappings.length && targetClass !== proposal.classRoutes[0]?.targetClass && targetClass !== hostTargetClass) continue;
 
       const attributes: Record<string, unknown> = {};
       let name = "";
@@ -248,12 +294,13 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
         else attributes[mapping.targetField] = value;
       }
 
-      if (targetClass === "Server") {
+      if (targetClass === "Server" || targetClass === "Computer") {
         name = String(hostRow.hostname || hostRow.natural_key || name || key);
         attributes.os = attributes.os || hostRow.name || hostRow.platform;
         attributes.osVersion = attributes.osVersion || hostRow.version;
         attributes.cpuType = attributes.cpuType || hostRow.cpu_type;
         attributes.physicalMemory = attributes.physicalMemory || hostRow.physical_memory;
+        if (targetClass === "Computer" && !attributes.deviceType) attributes.deviceType = "workstation";
         const ip = preferredIp(networkRows);
         if (ip && !attributes.ipAddress) attributes.ipAddress = ip;
         const ipAddresses = compactValues(networkRows.map((row) => row.address));
@@ -291,6 +338,7 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
     }
 
     for (const serviceRow of serviceRows.slice(0, 25)) {
+      if (hostTargetClass !== "Server") break;
       if (!targetClasses.some((targetClass) => targetClass.name === "ApplicationService")) break;
       const serviceName = String(serviceRow.name || "").trim();
       if (!serviceName) continue;
@@ -430,6 +478,11 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
   const ranked = classNames
     .map((name) => ({ name, score: scoreClass(contextColumns, name) }))
     .sort((a, b) => b.score - a.score);
+  if (profile.entityType === "host" && classNames.includes("Computer") && sourceHasEndpointSignals(profile)) {
+    const computer = ranked.find((item) => item.name === "Computer");
+    if (computer) computer.score = Math.max(computer.score, (ranked[0]?.score || 1) + 1);
+    ranked.sort((a, b) => b.score - a.score);
+  }
   const selected = ranked.filter((r) => r.score > 0).slice(0, 3);
   const routes = selected.length ? selected : [{ name: classNames[0] || "ConfigurationItem", score: 1 }];
   const primaryClass = routes[0].name;
@@ -519,7 +572,8 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
         ? "The proposal uses edge observation profile field quality plus representative sample rows."
         : "The proposal is based on column names and sample rows, not a committed import.",
       ...(entityProfiles.length ? ["The edge source profile includes related entity samples so host mappings can account for interfaces, software, services, and ports."] : []),
-      ...(hasNetworkAddresses ? ["Network interface addresses enrich Server attributes; they are not staged as NetworkGear dependencies without a discovered network device target."] : []),
+      ...(primaryClass === "Computer" ? ["Endpoint/workstation signals were present, so the host profile is routed to Computer instead of Server."] : []),
+      ...(hasNetworkAddresses ? ["Network interface addresses enrich host device attributes; they are not staged as NetworkGear dependencies without a discovered network device target."] : []),
       "Low-confidence relationship rules should be reviewed before execution.",
     ],
     risks: matchKeys.length ? [] : ["No durable reconciliation key was detected; imports may create duplicates."],

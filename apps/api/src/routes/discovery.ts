@@ -158,6 +158,41 @@ function entityTypeForEvidence(record: EvidenceRecord) {
   return subjectType || "unknown";
 }
 
+function hostKeyFromRow(row: Record<string, any>) {
+  const key = String(row.natural_key || row.hostname || row.uuid || row.name || "").trim();
+  return key.includes(":") ? key.split(":")[0] : key;
+}
+
+function isLoopbackAddress(address: string) {
+  return address === "::1" || address.startsWith("127.");
+}
+
+function addressScore(row: Record<string, any>) {
+  const address = String(row.address || "").trim();
+  const iface = String(row.interface || "").toLowerCase();
+  if (!address || isLoopbackAddress(address)) return -1;
+  let score = 0;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(address)) score += 100;
+  if (!address.toLowerCase().startsWith("fe80:")) score += 30;
+  if (!/^(lo|docker|br-|veth|virbr)/.test(iface)) score += 50;
+  if (/^(eth|en|wl|wlan)/.test(iface)) score += 25;
+  return score;
+}
+
+function preferredAddress(rows: Record<string, any>[]) {
+  return rows
+    .map((row) => ({ row, score: addressScore(row) }))
+    .filter((item) => item.score >= 0)
+    .sort((a, b) => b.score - a.score)[0]?.row.address || "";
+}
+
+function relatedInterfaceRows(rows: Record<string, any>[], hostKey: string) {
+  return rows.filter((row) => {
+    const naturalKey = String(row.natural_key || "").trim();
+    return naturalKey === hostKey || naturalKey.startsWith(`${hostKey}:`) || String(row.hostname || "").trim() === hostKey;
+  });
+}
+
 function base64Std(input: Buffer) {
   return input.toString("base64");
 }
@@ -725,6 +760,17 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
       const existing = rows.get(row.natural_key);
       rows.set(row.natural_key, existing ? { ...sampleRow, ...existing, observed_at: existing.observed_at || sampleRow.observed_at } : sampleRow);
       groups.set(row.entity_type, rows);
+    }
+    const hostRows = groups.get("host");
+    const interfaceRows = Array.from(groups.get("network_interface")?.values() || []);
+    if (hostRows?.size && interfaceRows.length) {
+      for (const [key, hostRow] of hostRows.entries()) {
+        const related = relatedInterfaceRows(interfaceRows, hostKeyFromRow(hostRow) || key);
+        const ipAddress = preferredAddress(related);
+        const ipAddresses = Array.from(new Set(related.map((row) => String(row.address || "").trim()).filter((address) => address && !isLoopbackAddress(address))));
+        if (ipAddress) hostRow.ipAddress = ipAddress;
+        if (ipAddresses.length) hostRow.ipAddresses = ipAddresses;
+      }
     }
     const preferred = ["host", "software_package", "service", "network_interface", "listening_port"];
     const profiles = Array.from(groups.entries()).map(([entityType, rowMap]) => {

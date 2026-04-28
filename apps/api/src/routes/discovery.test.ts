@@ -116,6 +116,26 @@ describe("discoveryRoutes", () => {
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.collector_heartbeat", "DiscoveryCollector", "collector-1"]));
   });
 
+  it("enriches host collector profiles with a preferred interface IP address", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push({
+      rows: [
+        { entity_type: "host", natural_key: "nb-lenovo", observed_at: "2026-04-28T04:36:55.438Z", facts: { hostname: "nb-lenovo", name: "Pop!_OS" } },
+        { entity_type: "network_interface", natural_key: "nb-lenovo:veth550dc8f:fe80::389b", observed_at: "2026-04-28T04:36:55.438Z", facts: { interface: "veth550dc8f", address: "fe80::389b" } },
+        { entity_type: "network_interface", natural_key: "nb-lenovo:docker0:172.17.0.1", observed_at: "2026-04-28T04:36:55.438Z", facts: { interface: "docker0", address: "172.17.0.1" } },
+        { entity_type: "network_interface", natural_key: "nb-lenovo:wlp0s20f3:192.168.50.146", observed_at: "2026-04-28T04:36:55.438Z", facts: { interface: "wlp0s20f3", address: "192.168.50.146" } },
+      ],
+    });
+
+    const response = await app.inject({ method: "GET", url: "/discovery/collectors/collector-1/profile" });
+
+    expect(response.statusCode).toBe(200);
+    const hostProfile = JSON.parse(response.body).profiles.find((profile: any) => profile.entityType === "host");
+    expect(hostProfile.sampleRows[0]).toMatchObject({ hostname: "nb-lenovo", ipAddress: "192.168.50.146" });
+    expect(hostProfile.columns).toContain("ipAddress");
+    expect(hostProfile.columns).toContain("ipAddresses");
+  });
+
   it("enrolls collectors with one-time enrollment tokens and allows collector heartbeats", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push(
@@ -941,7 +961,7 @@ describe("discoveryRoutes", () => {
     const body = JSON.parse(response.body);
     expect(body.summary).toContain("2 edge entity profiles");
     expect(body.sourceProfile.entityProfiles).toHaveLength(2);
-    expect(body.assumptions).toContain("Network interface addresses enrich Server attributes; they are not staged as NetworkGear dependencies without a discovered network device target.");
+    expect(body.assumptions).toContain("Network interface addresses enrich host device attributes; they are not staged as NetworkGear dependencies without a discovered network device target.");
   });
 
   it("rejects transform proposals without columns", async () => {
