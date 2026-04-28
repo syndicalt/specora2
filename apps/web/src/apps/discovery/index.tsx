@@ -113,6 +113,18 @@ type EdgeObservationProfile = {
   recentObservedAt?: string | null;
 };
 
+type DiscoveryDataset = {
+  id: string;
+  collectorId: string;
+  name: string;
+  status: string;
+  observedStartAt?: string | null;
+  observedEndAt?: string | null;
+  entityCounts: Record<string, number>;
+  profiles: EdgeObservationProfile[];
+  createdAt?: string;
+};
+
 type SourceForm = { name: string; type: string; sample: string; endpoint: string; credentialRef: string; collectorId: string };
 
 type TransformProposal = {
@@ -159,7 +171,7 @@ type PipelineSchedule = {
 };
 
 type PipelineDefinition = {
-  source?: { id?: string; name?: string; type?: string; collectorId?: string; entityType?: string };
+  source?: { id?: string; name?: string; type?: string; collectorId?: string; datasetId?: string; entityType?: string };
   sourceName?: string;
   sample?: { columns?: string[]; rows?: Record<string, unknown>[] };
   entityProfiles?: EdgeObservationProfile[];
@@ -567,6 +579,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [credentialRefs, setCredentialRefs] = useState<DiscoveryCredentialReference[]>([]);
   const [collectors, setCollectors] = useState<DiscoveryCollector[]>([]);
   const [edgeProfiles, setEdgeProfiles] = useState<EdgeObservationProfile[]>([]);
+  const [edgeDatasets, setEdgeDatasets] = useState<DiscoveryDataset[]>([]);
+  const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [selectedEdgeEntityType, setSelectedEdgeEntityType] = useState("");
   const [classes, setClasses] = useState<TargetClass[]>([]);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
@@ -596,6 +610,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const selectedSource = useMemo(() => sources.find((source) => source.id === selectedSourceId) || null, [sources, selectedSourceId]);
   const selectedCollectorId = selectedSourceId.startsWith("collector:") ? selectedSourceId.slice("collector:".length) : "";
   const selectedCollector = useMemo(() => collectors.find((collector) => collector.id === selectedCollectorId) || null, [collectors, selectedCollectorId]);
+  const selectedDataset = useMemo(() => edgeDatasets.find((dataset) => dataset.id === selectedDatasetId) || null, [edgeDatasets, selectedDatasetId]);
   const selectedEdgeProfile = useMemo(
     () => edgeProfiles.find((item) => item.entityType === selectedEdgeEntityType) || edgeProfiles[0] || null,
     [edgeProfiles, selectedEdgeEntityType]
@@ -733,14 +748,14 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     source: selectedSource
       ? { id: selectedSource.id, name: selectedSource.name, type: selectedSource.type, collectorId: String(selectedSource.config?.collectorId || "") || undefined }
       : selectedCollector
-        ? { id: `collector:${selectedCollector.id}`, collectorId: selectedCollector.id, name: selectedCollector.name, type: "edge", entityType: selectedEdgeProfile?.entityType }
+        ? { id: `collector:${selectedCollector.id}`, collectorId: selectedCollector.id, datasetId: selectedDatasetId || undefined, name: selectedCollector.name, type: "edge", entityType: selectedEdgeProfile?.entityType }
         : { name: sourceName, type: "manual" },
     sourceName,
     sample: profile,
     entityProfiles: edgeProfiles.length ? edgeProfiles : undefined,
     proposal,
     flow: { nodes, edges },
-  }), [selectedSource, selectedCollector, selectedEdgeProfile, sourceName, profile, edgeProfiles, proposal, nodes, edges]);
+  }), [selectedSource, selectedCollector, selectedDatasetId, selectedEdgeProfile, sourceName, profile, edgeProfiles, proposal, nodes, edges]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -967,6 +982,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setCurrentPipelineId(pipeline.id);
     setSelectedSourceId(saved.source?.id || "");
     setEdgeProfiles(savedEdgeProfiles);
+    setEdgeDatasets([]);
+    setSelectedDatasetId(saved.source?.datasetId || "");
     setSelectedEdgeEntityType(saved.source?.entityType || savedEdgeProfiles[0]?.entityType || "");
     setSourceName(saved.sourceName || pipeline.name);
     setSample(rowsToCsv(columns, savedSample.rows || []));
@@ -1022,6 +1039,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   function applySource(source: DiscoverySource) {
     setSelectedSourceId(source.id);
     setEdgeProfiles([]);
+    setEdgeDatasets([]);
+    setSelectedDatasetId("");
     setSelectedEdgeEntityType("");
     setSourceName(source.name);
     const config = source.config || {};
@@ -1047,31 +1066,90 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setStaged(null);
   }
 
+  function applyDatasetProfile(collector: DiscoveryCollector, dataset: DiscoveryDataset, profile: EdgeObservationProfile) {
+    setSelectedDatasetId(dataset.id);
+    setEdgeProfiles(dataset.profiles || []);
+    setSelectedEdgeEntityType(profile.entityType);
+    setSourceName(`${collector.name} · ${profile.entityType}`);
+    setSample(profileToCsv(profile));
+    setProposal(null);
+    setPreview(null);
+    setStaged(null);
+  }
+
   async function applyCollector(collector: DiscoveryCollector) {
     setSelectedSourceId(`collector:${collector.id}`);
     setSourceName(collector.name);
+    setEdgeDatasets([]);
+    setSelectedDatasetId("");
     setEdgeProfiles([]);
     setSelectedEdgeEntityType("");
     try {
-      const res = await shell.fetch(`/discovery/collectors/${collector.id}/profile`);
-      if (!res.ok) throw new Error(`Profile request failed: ${res.status}`);
-      const data = await res.json();
-      const profiles = (data.profiles || []) as EdgeObservationProfile[];
-      setEdgeProfiles(profiles);
-      if (profiles.length) {
-        applyEdgeProfile(collector, profiles[0]);
-        shell.notify(`Profiled ${data.totalObservations || 0} edge observations across ${profiles.length} entity types`, "success");
+      const datasetRes = await shell.fetch(`/discovery/collectors/${collector.id}/datasets`);
+      if (!datasetRes.ok) throw new Error(`Dataset request failed: ${datasetRes.status}`);
+      const datasetData = await datasetRes.json();
+      const datasets = (datasetData.datasets || []) as DiscoveryDataset[];
+      setEdgeDatasets(datasets);
+      if (datasets.length && datasets[0].profiles?.length) {
+        applyDatasetProfile(collector, datasets[0], datasets[0].profiles[0]);
+        shell.notify(`Loaded dataset with ${Object.values(datasets[0].entityCounts || {}).reduce((sum, count) => sum + Number(count || 0), 0)} profiled entities`, "success");
       } else {
-        setSample(edgeCollectorSample(collector));
-        shell.notify("No edge observations staged yet; using collector schema sample", "info");
+        const res = await shell.fetch(`/discovery/collectors/${collector.id}/profile`);
+        if (!res.ok) throw new Error(`Profile request failed: ${res.status}`);
+        const data = await res.json();
+        const profiles = (data.profiles || []) as EdgeObservationProfile[];
+        setEdgeProfiles(profiles);
+        if (profiles.length) {
+          applyEdgeProfile(collector, profiles[0]);
+          shell.notify(`Profiled ${data.totalObservations || 0} edge observations across ${profiles.length} entity types`, "success");
+        } else {
+          setSample(edgeCollectorSample(collector));
+          shell.notify("No edge observations staged yet; using collector schema sample", "info");
+        }
       }
     } catch {
       setSample(edgeCollectorSample(collector));
-      shell.notify("Edge observations could not be loaded; using collector schema sample", "error");
+      shell.notify("Edge datasets could not be loaded; using collector schema sample", "error");
     }
     setProposal(null);
     setPreview(null);
     setStaged(null);
+  }
+
+  async function selectCollectorDataset(datasetId: string) {
+    if (!selectedCollector) return;
+    if (!datasetId) {
+      setSelectedDatasetId("");
+      try {
+        const res = await shell.fetch(`/discovery/collectors/${selectedCollector.id}/profile`);
+        if (!res.ok) throw new Error(`Profile request failed: ${res.status}`);
+        const data = await res.json();
+        const profiles = (data.profiles || []) as EdgeObservationProfile[];
+        setEdgeProfiles(profiles);
+        if (profiles.length) applyEdgeProfile(selectedCollector, profiles[0]);
+      } catch {
+        shell.notify("Latest observations could not be loaded", "error");
+      }
+      return;
+    }
+    const dataset = edgeDatasets.find((item) => item.id === datasetId);
+    if (!dataset?.profiles?.length) return;
+    applyDatasetProfile(selectedCollector, dataset, dataset.profiles[0]);
+  }
+
+  async function materializeCollectorDataset() {
+    if (!selectedCollector) return;
+    try {
+      const res = await shell.fetch(`/discovery/collectors/${selectedCollector.id}/datasets`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Dataset could not be created");
+      const dataset = data.dataset as DiscoveryDataset;
+      setEdgeDatasets((current) => [dataset, ...current.filter((item) => item.id !== dataset.id)]);
+      if (dataset.profiles?.length) applyDatasetProfile(selectedCollector, dataset, dataset.profiles[0]);
+      shell.notify("Discovery dataset created", "success");
+    } catch (err: any) {
+      shell.notify(err.message || "Discovery dataset could not be created", "error");
+    }
   }
 
   async function loadSchedule(pipelineId: string) {
@@ -1928,6 +2006,36 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                 spellCheck={false}
                 className="h-48 w-full resize-none rounded-md border border-gray-800 bg-gray-900 p-3 font-mono text-xs leading-5 text-gray-200 outline-none focus:border-cyan-500"
               />
+              {selectedCollector && (
+                <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium uppercase tracking-wide text-gray-500">Discovery dataset</label>
+                    <button
+                      onClick={materializeCollectorDataset}
+                      className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:border-cyan-500/50 hover:text-cyan-100"
+                    >
+                      Snapshot latest
+                    </button>
+                  </div>
+                  <select
+                    value={selectedDatasetId}
+                    onChange={(event) => selectCollectorDataset(event.target.value)}
+                    className="mt-2 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                  >
+                    <option value="">Latest observations</option>
+                    {edgeDatasets.map((dataset) => (
+                      <option key={dataset.id} value={dataset.id}>
+                        {new Date(dataset.createdAt || dataset.observedEndAt || Date.now()).toLocaleString()} · {Object.entries(dataset.entityCounts || {}).map(([key, value]) => `${key}:${value}`).join(" ")}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedDataset && (
+                    <div className="mt-2 text-xs text-gray-500">
+                      Pinned dataset {selectedDataset.id.slice(0, 8)} · {selectedDataset.status}
+                    </div>
+                  )}
+                </div>
+              )}
               {selectedCollector && edgeProfiles.length > 0 && (
                 <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
                   <label className="text-xs font-medium uppercase tracking-wide text-gray-500">Edge entity profile</label>

@@ -193,6 +193,134 @@ function relatedInterfaceRows(rows: Record<string, any>[], hostKey: string) {
   });
 }
 
+function buildCollectorProfiles(rows: any[]) {
+  const groups = new Map<string, Map<string, Record<string, any>>>();
+  for (const row of rows) {
+    const facts = typeof row.facts === "string" ? JSON.parse(row.facts || "{}") : row.facts || {};
+    const sampleRow = {
+      entity_type: row.entity_type,
+      natural_key: row.natural_key,
+      observed_at: row.observed_at,
+      ...facts,
+    };
+    const entityRows = groups.get(row.entity_type) || new Map<string, Record<string, any>>();
+    const existing = entityRows.get(row.natural_key);
+    entityRows.set(row.natural_key, existing ? { ...sampleRow, ...existing, observed_at: existing.observed_at || sampleRow.observed_at } : sampleRow);
+    groups.set(row.entity_type, entityRows);
+  }
+  const hostRows = groups.get("host");
+  const interfaceRows = Array.from(groups.get("network_interface")?.values() || []);
+  if (hostRows?.size && interfaceRows.length) {
+    for (const [key, hostRow] of hostRows.entries()) {
+      const related = relatedInterfaceRows(interfaceRows, hostKeyFromRow(hostRow) || key);
+      const ipAddress = preferredAddress(related);
+      const ipAddresses = Array.from(new Set(related.map((row) => String(row.address || "").trim()).filter((address) => address && !isLoopbackAddress(address))));
+      if (ipAddress) hostRow.ipAddress = ipAddress;
+      if (ipAddresses.length) hostRow.ipAddresses = ipAddresses;
+    }
+  }
+  const preferred = ["host", "software_package", "service", "network_interface", "listening_port"];
+  return Array.from(groups.entries()).map(([entityType, rowMap]) => {
+    const entityRows = Array.from(rowMap.values());
+    const columns = Array.from(new Set(entityRows.flatMap((row) => Object.keys(row))));
+    const fieldStats = columns.map((column) => {
+      const values = entityRows
+        .map((row) => row[column])
+        .filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
+      const examples = Array.from(new Set(values.map((value) => String(value)).filter(Boolean))).slice(0, 5);
+      return {
+        name: column,
+        fillRate: entityRows.length ? values.length / entityRows.length : 0,
+        distinctCount: new Set(values.map((value) => String(value))).size,
+        examples,
+      };
+    });
+    return {
+      entityType,
+      recordCount: entityRows.length,
+      columns,
+      sampleRows: entityRows.slice(0, 25),
+      fieldStats,
+      recentObservedAt: entityRows[0]?.observed_at || null,
+    };
+  }).sort((a, b) => {
+    const preferredDelta = preferred.indexOf(a.entityType) - preferred.indexOf(b.entityType);
+    if (preferredDelta !== 0 && preferred.indexOf(a.entityType) !== -1 && preferred.indexOf(b.entityType) !== -1) return preferredDelta;
+    if (preferred.indexOf(a.entityType) !== -1) return -1;
+    if (preferred.indexOf(b.entityType) !== -1) return 1;
+    return b.recordCount - a.recordCount || a.entityType.localeCompare(b.entityType);
+  });
+}
+
+async function createDiscoveryDatasetForCollector(fastify: FastifyInstance, collectorId: string, actorId?: string | null) {
+  const documents = await fastify.pg.query(
+    `SELECT id, run_id, created_at
+     FROM edge_evidence_documents
+     WHERE collector_id = $1 AND complete = TRUE AND verification_status = 'parsed'
+     ORDER BY created_at DESC
+     LIMIT 10`,
+    [collectorId]
+  );
+  const documentIds = documents.rows.map((row: any) => row.id);
+  if (!documentIds.length) return null;
+  const observations = await fastify.pg.query(
+    `SELECT entity_type, natural_key, observed_at, facts
+     FROM discovery_observations
+     WHERE collector_id = $1 AND document_id = ANY($2::uuid[])
+     ORDER BY observed_at DESC, created_at DESC
+     LIMIT 10000`,
+    [collectorId, documentIds]
+  );
+  const profiles = buildCollectorProfiles(observations.rows);
+  const entityCounts = Object.fromEntries(profiles.map((profile) => [profile.entityType, profile.recordCount]));
+  const observedTimes = observations.rows
+    .map((row: any) => row.observed_at)
+    .filter(Boolean)
+    .map((value: string | Date) => new Date(value).toISOString())
+    .sort();
+  const latestDocument = documents.rows[0];
+  const name = `Edge dataset ${new Date(latestDocument.created_at).toISOString()}`;
+  const result = await fastify.pg.query(
+    `INSERT INTO discovery_datasets
+       (collector_id, source_type, source_id, name, status, observed_start_at, observed_end_at, document_ids, run_ids, entity_counts, profiles, created_by)
+     VALUES ($1, 'edge', $2, $3, 'ready', $4, $5, $6, $7, $8, $9, $10)
+     RETURNING id, collector_id, source_type, source_id, name, status, observed_start_at, observed_end_at,
+               document_ids, run_ids, entity_counts, profiles, created_at, updated_at`,
+    [
+      collectorId,
+      collectorId,
+      name,
+      observedTimes[0] || null,
+      observedTimes[observedTimes.length - 1] || null,
+      JSON.stringify(documentIds),
+      JSON.stringify(Array.from(new Set(documents.rows.map((row: any) => row.run_id).filter(Boolean)))),
+      JSON.stringify(entityCounts),
+      JSON.stringify(profiles),
+      actorId || null,
+    ]
+  );
+  return result.rows[0];
+}
+
+function datasetRow(row: any) {
+  return {
+    id: row.id,
+    collectorId: row.collector_id,
+    sourceType: row.source_type,
+    sourceId: row.source_id,
+    name: row.name,
+    status: row.status,
+    observedStartAt: row.observed_start_at,
+    observedEndAt: row.observed_end_at,
+    documentIds: typeof row.document_ids === "string" ? JSON.parse(row.document_ids || "[]") : row.document_ids || [],
+    runIds: typeof row.run_ids === "string" ? JSON.parse(row.run_ids || "[]") : row.run_ids || [],
+    entityCounts: typeof row.entity_counts === "string" ? JSON.parse(row.entity_counts || "{}") : row.entity_counts || {},
+    profiles: typeof row.profiles === "string" ? JSON.parse(row.profiles || "[]") : row.profiles || [],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function base64Std(input: Buffer) {
   return input.toString("base64");
 }
@@ -672,6 +800,9 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     let ingest: { records: number; status: string; error?: string } = { records: 0, status: "pending" };
     if (body.final) {
       ingest = await ingestEvidenceDocument(fastify, updated.rows[0]);
+      if (ingest.status === "parsed") {
+        await createDiscoveryDatasetForCollector(fastify, relayId);
+      }
       await recordRouteAudit(fastify, request, {
         action: "edge.evidence_uploaded",
         entityType: "EdgeEvidenceDocument",
@@ -741,9 +872,74 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     };
   });
 
+  fastify.get("/discovery/collectors/:id/datasets", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const { id } = request.params as { id: string };
+    const result = await fastify.pg.query(
+      `SELECT id, collector_id, source_type, source_id, name, status, observed_start_at, observed_end_at,
+              document_ids, run_ids, entity_counts, profiles, created_at, updated_at
+       FROM discovery_datasets
+       WHERE collector_id = $1
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [id]
+    );
+    return { datasets: result.rows.map(datasetRow) };
+  });
+
+  fastify.post("/discovery/collectors/:id/datasets", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const { id } = request.params as { id: string };
+    const collector = await fastify.pg.query("SELECT id FROM discovery_collectors WHERE id = $1", [id]);
+    if (!collector.rows.length) return reply.status(404).send({ error: "Collector not found" });
+    const dataset = await createDiscoveryDatasetForCollector(fastify, id, (request.user as any)?.id || null);
+    if (!dataset) return reply.status(404).send({ error: "No parsed evidence is available for this collector" });
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.dataset_created",
+      entityType: "DiscoveryDataset",
+      entityId: dataset.id,
+      newValues: { collectorId: id, entityCounts: dataset.entity_counts },
+      metadata: { source: "api.discovery", surface: "discovery" },
+    });
+    return { dataset: datasetRow(dataset) };
+  });
+
+  fastify.get("/discovery/datasets/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const { id } = request.params as { id: string };
+    const result = await fastify.pg.query(
+      `SELECT id, collector_id, source_type, source_id, name, status, observed_start_at, observed_end_at,
+              document_ids, run_ids, entity_counts, profiles, created_at, updated_at
+       FROM discovery_datasets
+       WHERE id = $1`,
+      [id]
+    );
+    if (!result.rows.length) return reply.status(404).send({ error: "Dataset not found" });
+    return { dataset: datasetRow(result.rows[0]) };
+  });
+
   fastify.get("/discovery/collectors/:id/profile", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
     const { id } = request.params as { id: string };
+    const query = request.query as { datasetId?: string };
+    if (query.datasetId) {
+      const dataset = await fastify.pg.query(
+        `SELECT id, collector_id, source_type, source_id, name, status, observed_start_at, observed_end_at,
+                document_ids, run_ids, entity_counts, profiles, created_at, updated_at
+         FROM discovery_datasets
+         WHERE id = $1 AND collector_id = $2`,
+        [query.datasetId, id]
+      );
+      if (!dataset.rows.length) return reply.status(404).send({ error: "Dataset not found" });
+      const row = datasetRow(dataset.rows[0]);
+      return {
+        collectorId: id,
+        datasetId: row.id,
+        totalObservations: Object.values(row.entityCounts).reduce((total: number, count: any) => total + Number(count || 0), 0),
+        profiles: row.profiles,
+        dataset: row,
+      };
+    }
     const result = await fastify.pg.query(
       `SELECT entity_type, natural_key, observed_at, facts
        FROM discovery_observations
@@ -752,62 +948,7 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
        LIMIT 5000`,
       [id]
     );
-    const groups = new Map<string, Map<string, Record<string, any>>>();
-    for (const row of result.rows) {
-      const facts = typeof row.facts === "string" ? JSON.parse(row.facts || "{}") : row.facts || {};
-      const sampleRow = {
-        entity_type: row.entity_type,
-        natural_key: row.natural_key,
-        observed_at: row.observed_at,
-        ...facts,
-      };
-      const rows = groups.get(row.entity_type) || new Map<string, Record<string, any>>();
-      const existing = rows.get(row.natural_key);
-      rows.set(row.natural_key, existing ? { ...sampleRow, ...existing, observed_at: existing.observed_at || sampleRow.observed_at } : sampleRow);
-      groups.set(row.entity_type, rows);
-    }
-    const hostRows = groups.get("host");
-    const interfaceRows = Array.from(groups.get("network_interface")?.values() || []);
-    if (hostRows?.size && interfaceRows.length) {
-      for (const [key, hostRow] of hostRows.entries()) {
-        const related = relatedInterfaceRows(interfaceRows, hostKeyFromRow(hostRow) || key);
-        const ipAddress = preferredAddress(related);
-        const ipAddresses = Array.from(new Set(related.map((row) => String(row.address || "").trim()).filter((address) => address && !isLoopbackAddress(address))));
-        if (ipAddress) hostRow.ipAddress = ipAddress;
-        if (ipAddresses.length) hostRow.ipAddresses = ipAddresses;
-      }
-    }
-    const preferred = ["host", "software_package", "service", "network_interface", "listening_port"];
-    const profiles = Array.from(groups.entries()).map(([entityType, rowMap]) => {
-      const rows = Array.from(rowMap.values());
-      const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
-      const fieldStats = columns.map((column) => {
-        const values = rows
-          .map((row) => row[column])
-          .filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
-        const examples = Array.from(new Set(values.map((value) => String(value)).filter(Boolean))).slice(0, 5);
-        return {
-          name: column,
-          fillRate: rows.length ? values.length / rows.length : 0,
-          distinctCount: new Set(values.map((value) => String(value))).size,
-          examples,
-        };
-      });
-      return {
-        entityType,
-        recordCount: rows.length,
-        columns,
-        sampleRows: rows.slice(0, 25),
-        fieldStats,
-        recentObservedAt: rows[0]?.observed_at || null,
-      };
-    }).sort((a, b) => {
-      const preferredDelta = preferred.indexOf(a.entityType) - preferred.indexOf(b.entityType);
-      if (preferredDelta !== 0 && preferred.indexOf(a.entityType) !== -1 && preferred.indexOf(b.entityType) !== -1) return preferredDelta;
-      if (preferred.indexOf(a.entityType) !== -1) return -1;
-      if (preferred.indexOf(b.entityType) !== -1) return 1;
-      return b.recordCount - a.recordCount || a.entityType.localeCompare(b.entityType);
-    });
+    const profiles = buildCollectorProfiles(result.rows);
     return {
       collectorId: id,
       totalObservations: result.rows.length,

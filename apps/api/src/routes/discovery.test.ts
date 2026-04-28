@@ -163,6 +163,38 @@ describe("discoveryRoutes", () => {
     expect(hostProfile.columns).toContain("ipAddresses");
   });
 
+  it("returns pinned discovery dataset profiles for a collector", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push({
+      rows: [{
+        id: "dataset-1",
+        collector_id: "collector-1",
+        source_type: "edge",
+        source_id: "collector-1",
+        name: "Edge dataset",
+        status: "ready",
+        observed_start_at: "2026-04-27T12:00:00Z",
+        observed_end_at: "2026-04-27T12:00:00Z",
+        document_ids: ["doc-1"],
+        run_ids: ["run-1"],
+        entity_counts: { host: 1 },
+        profiles: [{ entityType: "host", recordCount: 1, columns: ["hostname"], sampleRows: [{ hostname: "host-1" }], fieldStats: [] }],
+        created_at: "2026-04-27T12:01:00Z",
+        updated_at: "2026-04-27T12:01:00Z",
+      }],
+    });
+
+    const response = await app.inject({ method: "GET", url: "/discovery/collectors/collector-1/profile?datasetId=dataset-1" });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      collectorId: "collector-1",
+      datasetId: "dataset-1",
+      totalObservations: 1,
+      profiles: [{ entityType: "host", recordCount: 1 }],
+    });
+  });
+
   it("enrolls collectors with one-time enrollment tokens and allows collector heartbeats", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push(
@@ -275,7 +307,10 @@ describe("discoveryRoutes", () => {
       { rows: [{ id: "doc-1", collector_id: "collector-1", upload_id: "upload-1", run_id: "run-1", raw_text: evidence, accepted_offset: Buffer.byteLength(evidence), complete: true }] },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 },
-      { rows: [], rowCount: 1 }
+      { rows: [], rowCount: 1 },
+      { rows: [{ id: "doc-1", run_id: "run-1", created_at: "2026-04-27T12:01:00Z" }] },
+      { rows: [{ entity_type: "host", natural_key: "host-1", observed_at: "2026-04-27T12:00:00Z", facts: { hostname: "host-1", uuid: "uuid-1", platform: "linux" } }] },
+      { rows: [{ id: "dataset-1", collector_id: "collector-1", source_type: "edge", source_id: "collector-1", name: "Edge dataset 2026-04-27T12:01:00.000Z", status: "ready", observed_start_at: "2026-04-27T12:00:00Z", observed_end_at: "2026-04-27T12:00:00Z", document_ids: ["doc-1"], run_ids: ["run-1"], entity_counts: { host: 1 }, profiles: [], created_at: "2026-04-27T12:01:00Z", updated_at: "2026-04-27T12:01:00Z" }] }
     );
 
     const session = await app.inject({
@@ -315,6 +350,7 @@ describe("discoveryRoutes", () => {
       "2026-04-27T12:00:00Z",
     ]));
     expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["edge.evidence_uploaded", "EdgeEvidenceDocument", "doc-1"]));
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO discovery_datasets"), expect.any(Array));
   });
 
   it("polls signed edge jobs and accepts claim/status updates", async () => {
