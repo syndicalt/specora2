@@ -207,7 +207,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [loading, setLoading] = useState(true);
   const [rootId, setRootId] = useState<string>(() => {
-    if (typeof window !== "undefined") return localStorage.getItem("specora:lastServiceMapRoot") || "";
+    if (typeof window !== "undefined") return sessionStorage.getItem("specora:lastServiceMapRoot") || "";
     return "";
   });
   const [rootName, setRootName] = useState<string>("");
@@ -475,13 +475,13 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
         }
         if (cancelled) return;
         setRoots(results);
-        const saved = typeof window !== "undefined" ? localStorage.getItem("specora:lastServiceMapRoot") : null;
+        const saved = typeof window !== "undefined" ? sessionStorage.getItem("specora:lastServiceMapRoot") : null;
         if (saved && results.some((r) => r.id === saved)) {
           setRootId(saved);
         } else if (results.length > 0) {
           const first = results[0].id;
           setRootId(first);
-          localStorage.setItem("specora:lastServiceMapRoot", first);
+          sessionStorage.setItem("specora:lastServiceMapRoot", first);
         }
       } catch {
         // silently fail
@@ -776,7 +776,7 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
 
   const selectRoot = (id: string) => {
     setRootId(id); setPickerOpen(false);
-    localStorage.setItem("specora:lastServiceMapRoot", id);
+    sessionStorage.setItem("specora:lastServiceMapRoot", id);
   };
 
   const selectResult = (id: string, name: string) => {

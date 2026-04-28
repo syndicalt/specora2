@@ -252,7 +252,7 @@ function deriveInsights(ci: CI | null, classDef: CIClass | undefined, relationsh
 
 function loadStoredIds(key: string) {
   try {
-    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+    const parsed = JSON.parse(sessionStorage.getItem(key) || "[]");
     return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
   } catch {
     return [];
@@ -261,9 +261,9 @@ function loadStoredIds(key: string) {
 
 function saveStoredIds(key: string, ids: string[]) {
   try {
-    localStorage.setItem(key, JSON.stringify(ids.slice(0, 20)));
+    sessionStorage.setItem(key, JSON.stringify(ids.slice(0, 20)));
   } catch {
-    /* ignore local storage failures */
+    /* ignore session storage failures */
   }
 }
 

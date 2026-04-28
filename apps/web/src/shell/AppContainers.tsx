@@ -499,7 +499,7 @@ const WINDOW_STATE_KEY = "specora_window_state";
 
 function loadWindowState(appId: string) {
   try {
-    const raw = localStorage.getItem(WINDOW_STATE_KEY);
+    const raw = sessionStorage.getItem(WINDOW_STATE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw) as Record<string, { x: number; y: number; width: number; height: number }>;
     return data[appId] ?? null;
@@ -510,10 +510,10 @@ function loadWindowState(appId: string) {
 
 function saveWindowState(appId: string, state: { x: number; y: number; width: number; height: number }) {
   try {
-    const raw = localStorage.getItem(WINDOW_STATE_KEY) || "{}";
+    const raw = sessionStorage.getItem(WINDOW_STATE_KEY) || "{}";
     const data = JSON.parse(raw) as Record<string, { x: number; y: number; width: number; height: number }>;
     data[appId] = state;
-    localStorage.setItem(WINDOW_STATE_KEY, JSON.stringify(data));
+    sessionStorage.setItem(WINDOW_STATE_KEY, JSON.stringify(data));
   } catch {
     /* silent */
   }

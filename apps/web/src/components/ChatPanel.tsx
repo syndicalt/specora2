@@ -14,21 +14,21 @@ export function ChatPanel() {
   const { state, dispatch } = useShell();
   const [width, setWidth] = useState(() => {
     if (typeof window === "undefined") return DEFAULT_WIDTH;
-    const saved = localStorage.getItem(STORAGE_KEY_WIDTH);
+    const saved = sessionStorage.getItem(STORAGE_KEY_WIDTH);
     return saved ? parseInt(saved, 10) : DEFAULT_WIDTH;
   });
   const [resizing, setResizing] = useState(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(width);
 
-  // Persist width to localStorage
+  // Persist width to this browser tab.
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_WIDTH, String(width));
+    sessionStorage.setItem(STORAGE_KEY_WIDTH, String(width));
   }, [width]);
 
-  // Persist open state to localStorage
+  // Persist open state to this browser tab.
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_OPEN, String(state.rightPanelOpen));
+    sessionStorage.setItem(STORAGE_KEY_OPEN, String(state.rightPanelOpen));
   }, [state.rightPanelOpen]);
 
   const handleResizeStart = useCallback(
