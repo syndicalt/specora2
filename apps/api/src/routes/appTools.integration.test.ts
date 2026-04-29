@@ -245,7 +245,7 @@ function makePg(allowed = true) {
 }
 
 async function buildApp(options: {
-  role?: string;
+  role?: string | null;
   allowed?: boolean;
 } = {}) {
   const app = Fastify();
@@ -275,7 +275,7 @@ async function buildApp(options: {
   app.decorate("authenticate", async (request: any) => {
     request.user = {
       id: "550e8400-e29b-41d4-a716-446655440001",
-      role: options.role || "operator",
+      role: "role" in options ? options.role : "operator",
     };
   });
   await app.register(appToolRoutes);
@@ -367,6 +367,26 @@ describe("appToolRoutes with registered native app tools", () => {
       decision: { winner: { route: "incident" } },
       record: { id: "incident-route-1" },
     });
+  });
+
+  it("routes broken service intake to support handoff when incident write is not granted", async () => {
+    const app = await buildApp({ role: null, allowed: false });
+
+    const routed = await app.inject({
+      method: "POST",
+      url: "/api/apps/customer-portal/tools/route_intake",
+      payload: { message: "The billing portal is down and nobody can work", urgency: "high" },
+    });
+
+    expect(routed.statusCode).toBe(200);
+    const body = JSON.parse(routed.payload);
+    expect(body).toMatchObject({
+      action: "created_support_handoff",
+      routed: true,
+      decision: { winner: { route: "incident" } },
+      record: { id: "handoff-1", status: "requested" },
+    });
+    expect((app as any).pg.query).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO incidents"), expect.anything());
   });
 
   it("loads and updates catalog requests in the Engage Agent Workspace", async () => {

@@ -66,7 +66,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - **Operability and scale hardening** — API worker health checks, queue posture, Discovery job health, restore rehearsal command, stable dev launcher, identity provider readiness validation, Redis event/cache support, audit head anchoring, OIDC RS256/JWKS validation, and SAML XML signature validation.
 - **Real-time events** — WebSocket pub/sub for platform events with short-lived ticket auth, Redis cross-instance fanout, REST polling fallback, and authenticated SSE fallback for environments where WebSocket upgrades are unavailable.
 - **Demo documentation** — Canonical user/admin guides, application screenshots, reusable Playwright screenshot capture, public demo smoke coverage, documentation validation, and Railway release checklist automation.
-- **UAT fixes** — App state preservation, chat investigation continuity, CMDB Explorer attribute projection, baseline app access rules for Arc and Customer Portal, and executable access-matrix validation for app/chat tool visibility.
+- **UAT fixes** — App state preservation, chat investigation continuity, CMDB Explorer attribute projection, baseline app access rules for Arc and Customer Portal, executable access-matrix validation for app/chat tool visibility, and Customer Portal self-service request polish.
 
 ## Next Up
 
@@ -77,7 +77,6 @@ No open RC-readiness blockers are tracked here. Continue using `pnpm docs:check`
 ### Product Polish
 
 - **User management and RBAC clarity** — Make role and permission outcomes easier to explain from the Admin Console, including “why this user can access this app.”
-- **Customer Portal baseline** — Treat Customer Portal as the authenticated self-service home for basic users; tighten empty states, request status, and support handoff flows.
 - **Specora Arc governance** — Keep Arc restricted to admin/security_admin, clarify optional package lifecycle, and distinguish platform-bundled apps from installable packages.
 - **Chat reliability** — Continue reducing tool-call halts and loops; prefer explicit tool result cards and deterministic follow-up prompts over vague “I will fetch” responses.
 

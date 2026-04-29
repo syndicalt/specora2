@@ -91,6 +91,23 @@ function when(value?: string) {
   return Number.isNaN(date.getTime()) ? "Invalid date" : date.toLocaleString();
 }
 
+function statusTone(status?: string) {
+  const normalized = String(status || "").toLowerCase();
+  if (["resolved", "closed", "fulfilled", "complete", "completed"].includes(normalized)) return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+  if (["rejected", "cancelled", "failed"].includes(normalized)) return "border-red-500/30 bg-red-500/10 text-red-200";
+  if (["in_progress", "in progress", "assigned", "approved", "working"].includes(normalized)) return "border-cyan-500/30 bg-cyan-500/10 text-cyan-200";
+  return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+}
+
+function requestNextAction(request: PortalRequest) {
+  const status = request.status.toLowerCase();
+  if (status === "submitted") return "Your request is queued for review. Use support handoff if this is urgent.";
+  if (status === "approved") return "Fulfillment can proceed. Watch the timeline for completion events.";
+  if (status === "in_progress" || status === "assigned") return "A fulfiller is working this request. Check timeline updates before escalating.";
+  if (status === "fulfilled" || status === "closed" || status === "resolved") return "No action needed unless the request outcome is incomplete.";
+  return "Review the timeline and use support handoff if you need human help.";
+}
+
 export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
   const shellRef = useRef(shell);
   shellRef.current = shell;
@@ -393,6 +410,7 @@ export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
           <div className="grid gap-5 xl:grid-cols-[1.05fr_.95fr]">
             <Panel title="Service Catalog" icon={<ShoppingCart className="h-4 w-4" />}>
               <div className="space-y-4">
+                {groupedItems.length === 0 && <Empty text="No published catalog items are available yet. Ask in Portal Concierge or contact support." />}
                 {groupedItems.map(([category, entries]) => (
                   <div key={category}>
                     <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{category}</div>
@@ -424,7 +442,7 @@ export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
                         <div className="font-mono text-xs text-cyan-300">{request.number || "REQ pending"}</div>
                         <div className="truncate text-sm font-medium text-gray-100">{request.title}</div>
                       </div>
-                      <Pill>{label(request.status)}</Pill>
+                      <Pill tone={statusTone(request.status)}>{label(request.status)}</Pill>
                     </div>
                     <div className="mt-1 text-xs text-gray-500">{label(request.request_type)} · {when(request.created_at)}</div>
                   </button>
@@ -440,6 +458,7 @@ export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
               <Empty text="Select a request to inspect status, timeline, support handoffs, and next actions." />
               <Panel title="Support Channels" icon={<Headphones className="h-4 w-4" />}>
                 <div className="space-y-2">
+                  {channels.length === 0 && <Empty text="No support channels are enabled yet." />}
                   {channels.map((channel) => (
                     <button key={channel.id} onClick={() => requestSupport(channel)} className="block w-full rounded-lg border border-gray-800 bg-gray-900/40 p-3 text-left hover:border-cyan-500/40">
                       <div className="flex items-center gap-2 text-sm font-medium text-gray-100">
@@ -467,6 +486,10 @@ export default function CustomerPortalApp({ shell }: { shell: ShellAPI }) {
 
               <Panel title="Resolution Plan" icon={<Sparkles className="h-4 w-4" />}>
                 <p className="text-sm leading-6 text-gray-400">{selected.intent_summary || selected.description || "No AI resolution summary recorded."}</p>
+                <div className="mt-3 rounded-md border border-gray-800 bg-gray-900/50 p-3 text-sm text-gray-300">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Next action</div>
+                  <div className="mt-1 leading-5">{requestNextAction(selected)}</div>
+                </div>
                 <button onClick={() => requestSupport(channels[0])} className="mt-3 inline-flex items-center gap-2 rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-200 hover:bg-gray-900">
                   <Headphones className="h-4 w-4" />
                   Escalate with Context
@@ -531,8 +554,8 @@ function Panel({ title, icon, children }: { title: string; icon: ReactNode; chil
   );
 }
 
-function Pill({ children }: { children: ReactNode }) {
-  return <span className="rounded-full border border-gray-700 bg-gray-800 px-2 py-0.5 text-xs capitalize text-gray-300">{children}</span>;
+function Pill({ children, tone = "border-gray-700 bg-gray-800 text-gray-300" }: { children: ReactNode; tone?: string }) {
+  return <span className={`rounded-full border px-2 py-0.5 text-xs capitalize ${tone}`}>{children}</span>;
 }
 
 function Empty({ text }: { text: string }) {

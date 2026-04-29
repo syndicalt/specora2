@@ -3,6 +3,7 @@ import { executeTool, registerTool } from "@specora/sdk";
 import { emit } from "../eventBus";
 import { assignRecordNumberToRow } from "../numberSequences";
 import { scoreIntakeRoutes } from "../intelligentRouting";
+import { hasPermission } from "../rbac";
 
 function parseJson(value: unknown, fallback: any) {
   if (value === null || value === undefined) return fallback;
@@ -57,6 +58,11 @@ function severityFromUrgency(urgency?: string) {
   if (urgency === "high") return "high";
   if (urgency === "low") return "low";
   return "medium";
+}
+
+async function canCreateIncident(fastify: FastifyInstance, role?: string, userId?: string) {
+  if (!role) return false;
+  return hasPermission(fastify.pg, { role, userId, resource: "incident-manager", action: "write" });
 }
 
 export function registerCustomerPortalTools() {
@@ -143,17 +149,34 @@ export function registerCustomerPortalTools() {
       }, fastify);
       action = "created_catalog_request";
     } else if (shouldRoute && route === "incident") {
-      routedRecord = await executeTool("incident-manager_create_incident", {
-        title: String(message).slice(0, 180),
-        description: message,
-        severity: severityFromUrgency(urgency),
-        source: "customer-portal",
-        service,
-        externalRef: `portal-${Date.now()}`,
-        _userId,
-        _userRole,
-      }, fastify);
-      action = "created_incident";
+      if (await canCreateIncident(fastify, _userRole, _userId)) {
+        routedRecord = await executeTool("incident-manager_create_incident", {
+          title: String(message).slice(0, 180),
+          description: message,
+          severity: severityFromUrgency(urgency),
+          source: "customer-portal",
+          service,
+          externalRef: `portal-${Date.now()}`,
+          _userId,
+          _userRole,
+        }, fastify);
+        action = "created_incident";
+      } else {
+        routedRecord = await executeTool("customer-portal_request_support_handoff", {
+          reason: message,
+          context: {
+            message,
+            urgency,
+            service,
+            routeScores: decision.scores,
+            recommendedRoute: "incident",
+            accessBoundary: "incident-manager:write not granted",
+          },
+          _userId,
+          _userRole,
+        }, fastify);
+        action = "created_support_handoff";
+      }
     } else if (shouldRoute && route === "support_handoff") {
       routedRecord = await executeTool("customer-portal_request_support_handoff", {
         reason: message,
