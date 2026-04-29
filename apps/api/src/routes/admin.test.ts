@@ -227,6 +227,161 @@ describe("adminRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["credential.reference.tested", "CredentialReference", "cred-1"]));
   });
 
+  it("manages edge enrollment tokens, runtime config, and collectors", async () => {
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const past = new Date(Date.now() - 3600_000).toISOString();
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM discovery_collector_enrollment_tokens t")) {
+        return Promise.resolve({
+          rows: [
+            {
+              id: "tok-active",
+              name: "Laptop enrollment",
+              token_prefix: "se_active",
+              site: "lab",
+              labels: JSON.stringify({ os: "linux" }),
+              expires_at: future,
+              max_uses: 2,
+              uses: 1,
+              collector_id: "collector-1",
+              collector_name: "Lab collector",
+              revoked_at: null,
+              created_by: "user-1",
+              created_at: "2026-04-28T00:00:00.000Z",
+            },
+            {
+              id: "tok-expired",
+              name: "Expired enrollment",
+              token_prefix: "se_expire",
+              site: null,
+              labels: {},
+              expires_at: past,
+              max_uses: 1,
+              uses: 0,
+              collector_id: null,
+              collector_name: null,
+              revoked_at: null,
+              created_by: null,
+              created_at: "2026-04-27T00:00:00.000Z",
+            },
+          ],
+          rowCount: 2,
+        });
+      }
+      if (sql.includes("INSERT INTO discovery_collector_enrollment_tokens")) {
+        return Promise.resolve({
+          rows: [{
+            id: "tok-new",
+            name: "New collector",
+            token_prefix: params?.[1],
+            site: "dc-1",
+            labels: JSON.parse(String(params?.[4])),
+            expires_at: future,
+            max_uses: 1,
+            uses: 0,
+            collector_id: null,
+            revoked_at: null,
+            created_by: "user-1",
+            created_at: "2026-04-28T01:00:00.000Z",
+          }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("UPDATE discovery_collector_enrollment_tokens")) {
+        return Promise.resolve({
+          rows: [{
+            id: params?.[0],
+            name: "Laptop enrollment",
+            token_prefix: "se_active",
+            site: "lab",
+            labels: {},
+            expires_at: future,
+            max_uses: 2,
+            uses: 1,
+            collector_id: "collector-1",
+            revoked_at: "2026-04-28T02:00:00.000Z",
+            created_by: "user-1",
+            created_at: "2026-04-28T00:00:00.000Z",
+          }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("FROM discovery_collectors c")) {
+        return Promise.resolve({
+          rows: [{
+            id: "collector-1",
+            name: "Lab collector",
+            status: "healthy",
+            site: "lab",
+            version: "dev",
+            labels: JSON.stringify({ os: "linux" }),
+            last_heartbeat_at: new Date().toISOString(),
+            last_seen_ip: "127.0.0.1",
+            source_count: 2,
+            created_at: "2026-04-28T00:00:00.000Z",
+            updated_at: "2026-04-28T00:30:00.000Z",
+          }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("DELETE FROM discovery_collectors")) {
+        return Promise.resolve({
+          rows: [{ id: params?.[0], name: "Lab collector", status: "healthy", site: "lab", version: "dev" }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("SELECT entry_hash FROM audit_log") || sql.includes("INSERT INTO audit_log")) {
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const listedTokens = await app.inject({ method: "GET", url: "/api/admin/edge-enrollment/tokens", headers: authHeader(app) });
+    expect(listedTokens.statusCode).toBe(200);
+    const tokens = JSON.parse(listedTokens.payload).tokens;
+    expect(tokens[0]).toMatchObject({ id: "tok-active", status: "active", labels: { os: "linux" }, collectorName: "Lab collector" });
+    expect(tokens[1]).toMatchObject({ id: "tok-expired", status: "expired" });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/edge-enrollment/tokens",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { name: "New collector", site: "dc-1", labels: { os: "linux" }, expiresInHours: 9999, maxUses: 99 },
+    });
+    expect(created.statusCode).toBe(200);
+    const createdBody = JSON.parse(created.payload);
+    expect(createdBody.token).toMatch(/^se_/);
+    expect(createdBody.enrollmentToken).toMatchObject({ id: "tok-new", maxUses: 1, status: "active" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["edge.enrollment_token.created", "DiscoveryEnrollmentToken", "tok-new"]));
+
+    const revoked = await app.inject({
+      method: "POST",
+      url: "/api/admin/edge-enrollment/tokens/tok-active/revoke",
+      headers: authHeader(app),
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(JSON.parse(revoked.payload).enrollmentToken).toMatchObject({ id: "tok-active", status: "revoked" });
+
+    const collectors = await app.inject({ method: "GET", url: "/api/admin/edge-enrollment/collectors", headers: authHeader(app) });
+    expect(collectors.statusCode).toBe(200);
+    expect(JSON.parse(collectors.payload).collectors[0]).toMatchObject({ id: "collector-1", labels: { os: "linux" }, sourceCount: 2 });
+
+    const runtime = await app.inject({ method: "GET", url: "/api/admin/edge-enrollment/runtime-config", headers: authHeader(app) });
+    expect(runtime.statusCode).toBe(200);
+    expect(JSON.parse(runtime.payload).runtimeConfig).toMatchObject({
+      config_version: expect.any(String),
+      readiness: { signing_key_configured: false, public_key_available: false, collector_digest_configured: false },
+    });
+
+    const deleted = await app.inject({ method: "DELETE", url: "/api/admin/edge-enrollment/collectors/collector-1", headers: authHeader(app) });
+    expect(deleted.statusCode).toBe(200);
+    expect(JSON.parse(deleted.payload)).toMatchObject({ deleted: true, collector: { id: "collector-1" } });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["edge.collector_deleted", "DiscoveryCollector", "collector-1"]));
+  });
+
   it("DELETE /api/admin/permissions/:id deletes a permission", async () => {
     const app = await buildApp((sql: string) => {
       if (sql.includes("app_permissions WHERE role = $1")) {
@@ -1168,6 +1323,139 @@ describe("adminRoutes", () => {
     expect(body.domains.map((domain: any) => domain.id)).toContain("incidents");
     expect(body.signals.some((signal: any) => signal.appId === "incident-manager")).toBe(true);
     expect(body.governance.permissionGrants).toBe(20);
+  });
+
+  it("loads user detail with impact, inherited grants, sessions, audit, and recommendations", async () => {
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1 AND resource = $2 AND action = $3")) {
+        return Promise.resolve({ rows: [{ id: "admin-users", role: "security_admin", resource: "users", action: "read" }], rowCount: 1 });
+      }
+      if (sql.includes("FROM users u") && sql.includes("WHERE u.id = $1")) {
+        return Promise.resolve({
+          rows: [{
+            id: params?.[0],
+            name: "Specora Admin",
+            email: "admin@specora.org",
+            role: "security_admin",
+            created_at: "2026-04-28T00:00:00.000Z",
+            updated_at: "2026-04-28T00:00:00.000Z",
+            last_login_at: null,
+            active_sessions: 0,
+            group_count: 1,
+            oauth_accounts: 0,
+            failed_logins_24h: 1,
+            high_risk_grants: 2,
+            owned_records: 0,
+          }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY")) {
+        return Promise.resolve({
+          rows: [
+            { id: "perm-1", role: "security_admin", resource: "rbac", action: "write" },
+            { id: "perm-2", role: "security_admin", resource: "users", action: "write" },
+          ],
+          rowCount: 2,
+        });
+      }
+      if (sql.includes("SELECT g.id, g.name, g.slug")) {
+        return Promise.resolve({ rows: [{ id: "group-1", name: "Admins", slug: "admins", source: "local" }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT gp.id, gp.group_id")) {
+        return Promise.resolve({ rows: [{ id: "gp-1", group_id: "group-1", group_name: "Admins", group_slug: "admins", resource: "credentials", action: "write" }], rowCount: 1 });
+      }
+      if (sql.includes("FROM auth_sessions WHERE user_id = $1")) {
+        return Promise.resolve({
+          rows: [{ id: "session-1", user_agent: "Chrome", ip_address: "127.0.0.1", expires_at: new Date(Date.now() + 3600_000).toISOString(), last_used_at: null, revoked_at: null, revoked_reason: null, created_at: "2026-04-28T00:00:00.000Z" }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("FROM audit_log WHERE actor_id = $1")) {
+        return Promise.resolve({
+          rows: [{ id: "audit-1", action: "auth.login.failed", entity_type: "User", entity_id: params?.[0], metadata: {}, created_at: "2026-04-28T00:10:00.000Z" }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("COUNT(*)::int AS count FROM change_requests")) return Promise.resolve({ rows: [{ count: 1 }], rowCount: 1 });
+      if (sql.includes("COUNT(*)::int AS count FROM change_request_approvers")) return Promise.resolve({ rows: [{ count: 2 }], rowCount: 1 });
+      if (sql.includes("COUNT(*)::int AS count FROM incidents")) return Promise.resolve({ rows: [{ count: 3 }], rowCount: 1 });
+      if (sql.includes("COUNT(*)::int AS count FROM asset_records")) return Promise.resolve({ rows: [{ count: 4 }], rowCount: 1 });
+      if (sql.includes("COUNT(*)::int AS count FROM knowledge_items")) return Promise.resolve({ rows: [{ count: 5 }], rowCount: 1 });
+      if (sql.includes("COUNT(*)::int AS count FROM audit_log")) return Promise.resolve({ rows: [{ count: 6 }], rowCount: 1 });
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/admin/users/user-1", headers: authHeader(app) });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.user).toMatchObject({ id: "user-1", status: "never_signed_in", authMethod: "password", ownedRecords: 15 });
+    expect(body.directGrants[0]).toMatchObject({ resource: "rbac", action: "write", source: "role" });
+    expect(body.inheritedGroups[0]).toMatchObject({ name: "Admins" });
+    expect(body.sessions[0]).toMatchObject({ id: "session-1", active: true });
+    expect(body.impact).toMatchObject({ changeRequests: 1, approvals: 2, incidents: 3, assets: 4, knowledgeItems: 5 });
+    expect(body.recommendations.map((item: any) => item.title)).toEqual(expect.arrayContaining([
+      "Critical effective grants detected",
+      "Deactivation requires reassignment",
+      "Recent failed login activity",
+    ]));
+  });
+
+  it("creates, updates, revokes sessions for, and rejects invalid admin users", async () => {
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1 AND resource = $2 AND action = $3")) {
+        return Promise.resolve({ rows: [{ id: "admin-users", role: "security_admin", resource: "users", action: params?.[2] }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO users")) {
+        return Promise.resolve({ rows: [{ id: params?.[0], email: params?.[1], name: params?.[2], role: params?.[4], created_at: "2026-04-28", updated_at: "2026-04-28" }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT id, name, email, role FROM users WHERE id = $1")) {
+        return Promise.resolve({ rows: [{ id: params?.[0], name: "Old Name", email: "old@example.com", role: "viewer" }], rowCount: 1 });
+      }
+      if (sql.includes("UPDATE users SET name = $1")) {
+        return Promise.resolve({ rows: [{ id: params?.[2], name: params?.[0], email: "old@example.com", role: params?.[1], created_at: "2026-04-28", updated_at: "2026-04-29" }], rowCount: 1 });
+      }
+      if (sql.includes("UPDATE auth_sessions")) {
+        return Promise.resolve({ rows: [{ id: "session-1" }, { id: "session-2" }], rowCount: 2 });
+      }
+      if (sql.includes("SELECT entry_hash FROM audit_log") || sql.includes("INSERT INTO audit_log")) {
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { email: "new@example.com", name: "New User", password: "short" },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { email: " New@Example.COM ", name: " New User ", role: "viewer", password: "secret123" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(JSON.parse(created.payload).user).toMatchObject({ email: "new@example.com", name: "New User", role: "viewer" });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["admin.user.created", "user"]));
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/admin/users/user-2",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { name: "Updated User", role: "operator" },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(JSON.parse(updated.payload).user).toMatchObject({ id: "user-2", name: "Updated User", role: "operator" });
+
+    const revoked = await app.inject({ method: "POST", url: "/api/admin/users/user-2/revoke-sessions", headers: authHeader(app) });
+    expect(revoked.statusCode).toBe(200);
+    expect(JSON.parse(revoked.payload).revoked).toBe(2);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["admin.user.sessions_revoked", "user", "user-2"]));
   });
 
   it("rejects non-security_admin users", async () => {
