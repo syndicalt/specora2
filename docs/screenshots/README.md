@@ -11,6 +11,22 @@ Screenshots make the guides useful for admins, operators, and evaluators. Keep i
 - Use PNG for UI screenshots.
 - Refresh screenshots before release tags.
 
+## Playwright Capture
+
+Use the checked-in Playwright capture script to regenerate the canonical screenshot set from a demo-ready environment:
+
+```bash
+SPECORA_DOCS_BASE_URL=https://specora-dev.specora.org \
+SPECORA_DOCS_EMAIL=admin@specora.org \
+SPECORA_DOCS_PASSWORD=... \
+pnpm docs:screenshots
+```
+
+Optional settings:
+
+- `SPECORA_DOCS_SCREENSHOT_DIR` writes images somewhere other than `docs/screenshots`.
+- `SPECORA_DOCS_HEADED=1` runs Chromium visibly for troubleshooting.
+
 ## Required Screenshots
 
 ### Workspace

@@ -17,6 +17,7 @@
     "migrate:baseline": "pnpm --filter @specora/db migrate:baseline",
     "validate:seed": "bash scripts/validate-seed.sh",
     "demo:ready": "bash scripts/demo-readiness.sh",
+    "docs:screenshots": "node scripts/capture-docs-screenshots.mjs",
     "restore:rehearsal": "bash scripts/restore-rehearsal.sh",
     "release:check": "bash scripts/release-check.sh",
     "prod:ready": "RELEASE_CHECK_MODE=full bash scripts/release-check.sh",
