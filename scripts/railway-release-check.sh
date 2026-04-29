@@ -5,7 +5,11 @@ project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_dir"
 
 web_url="${SPECORA_WEB_URL:-https://specora-dev.specora.org}"
-api_url="${SPECORA_API_URL:-${NEXT_PUBLIC_API_URL:-$web_url}}"
+default_api_url="$web_url"
+if [[ "$web_url" == "https://specora-dev.specora.org" ]]; then
+  default_api_url="https://gateway-dev.specora.org"
+fi
+api_url="${SPECORA_API_URL:-${NEXT_PUBLIC_API_URL:-$default_api_url}}"
 api_url="${api_url%/graphql}"
 api_url="${api_url%/}"
 web_url="${web_url%/}"
@@ -58,11 +62,22 @@ check_json_endpoint() {
 }
 
 check_graphql() {
-  local response
-  response="$(curl -fsS \
+  local response code
+  response="$(curl -sS \
     -H 'Content-Type: application/json' \
     --data '{"query":"query ReleaseCheck { __typename }"}' \
+    -w $'\n%{http_code}' \
     "$api_url/graphql")"
+  code="$(printf '%s\n' "$response" | tail -n 1)"
+  response="$(printf '%s\n' "$response" | sed '$d')"
+  if [[ "$code" == "401" || "$code" == "403" ]]; then
+    printf 'GraphQL reachable and protected (%s): %s/graphql\n' "$code" "$api_url"
+    return
+  fi
+  if [[ "$code" != "200" ]]; then
+    printf 'GraphQL failed with HTTP %s: %s/graphql\n' "$code" "$api_url" >&2
+    exit 1
+  fi
   printf '%s\n' "$response" | node -e "const body = JSON.parse(require('fs').readFileSync(0, 'utf8')); if (!body.data && !body.errors) process.exit(1);" >/dev/null
   printf 'GraphQL OK: %s/graphql\n' "$api_url"
 }
