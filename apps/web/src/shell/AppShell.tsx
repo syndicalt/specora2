@@ -2,7 +2,7 @@
 
 import { useReducer, useEffect, useState, useRef } from "react";
 import { ShellContext, shellReducer, initialShellState, type ShellAction } from "./AppContext";
-import { CanvasArea, DormantApps, WindowLayer } from "./AppContainers";
+import { CanvasLayer, WindowLayer } from "./AppContainers";
 import { AppDock } from "./AppDock";
 import { AppLauncher } from "./AppLauncher";
 import { syncServerRegistry } from "@/sdk";
@@ -366,13 +366,10 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
       <div className="h-screen w-screen bg-gray-950 flex overflow-hidden">
         {/* Main workspace */}
         <div className="flex-1 relative overflow-hidden">
-          {/* Canvas area */}
+          {/* Canvas apps stay mounted while open; switching only changes visibility. */}
           <div className="h-full w-full">
-            <CanvasArea />
+            <CanvasLayer />
           </div>
-
-          {/* Dormant canvas apps (state preserved) */}
-          <DormantApps />
 
           {/* Floating windows — confined to workspace */}
           <WindowLayer registry={registry} />
