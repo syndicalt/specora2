@@ -92,6 +92,11 @@ import {
   revokeManagedUserSessionRecords,
   updateManagedUserRecord,
 } from "./adminUsersApi";
+import {
+  createEdgeEnrollmentTokenRecord,
+  deleteEdgeCollectorRecord,
+  revokeEdgeEnrollmentTokenRecord,
+} from "./adminEdgeApi";
 
 
 
@@ -457,38 +462,13 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     }
   }
 
-  function parseLabels(value: string) {
-    if (!value.trim()) return {};
-    try {
-      return JSON.parse(value);
-    } catch {
-      return Object.fromEntries(value.split(",").map((pair) => pair.trim()).filter(Boolean).map((pair) => {
-        const [key, ...rest] = pair.split("=");
-        return [key.trim(), rest.join("=").trim() || true];
-      }));
-    }
-  }
-
   async function createEdgeEnrollmentToken(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
     setError(null);
     setIssuedEnrollmentToken("");
     try {
-      const token = getToken();
-      const res = await fetch(`${API_URL}/api/admin/edge-enrollment/tokens`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
-        body: JSON.stringify({
-          name: edgeEnrollmentDraft.name,
-          site: edgeEnrollmentDraft.site,
-          labels: parseLabels(edgeEnrollmentDraft.labels),
-          expiresInHours: Number(edgeEnrollmentDraft.expiresInHours || 24),
-          maxUses: Number(edgeEnrollmentDraft.maxUses || 1),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to create enrollment token");
+      const data = await createEdgeEnrollmentTokenRecord(edgeEnrollmentDraft);
       setIssuedEnrollmentToken(data.token || "");
       setEdgeEnrollmentDraft({ name: "", site: "", labels: "", expiresInHours: "24", maxUses: "1" });
       await fetchData();
@@ -503,13 +483,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setSaving(true);
     setError(null);
     try {
-      const token = getToken();
-      const res = await fetch(`${API_URL}/api/admin/edge-enrollment/tokens/${id}/revoke`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token || ""}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to revoke enrollment token");
+      await revokeEdgeEnrollmentTokenRecord(id);
       await fetchData();
     } catch (err: any) {
       setError(err.message);
@@ -523,13 +497,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setSaving(true);
     setError(null);
     try {
-      const token = getToken();
-      const res = await fetch(`${API_URL}/api/admin/edge-enrollment/collectors/${id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token || ""}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to delete edge collector");
+      await deleteEdgeCollectorRecord(id);
       await fetchData();
     } catch (err: any) {
       setError(err.message);
