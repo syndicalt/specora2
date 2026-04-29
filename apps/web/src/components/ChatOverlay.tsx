@@ -8,13 +8,13 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, Calendar, Check, ChevronDown, ChevronRight, Clipboard, Clock, Compass, Plus, RotateCcw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import {
+  appendCardToLatestAssistant,
   contextChips,
   displayMessagesFromStored,
   followUpPrompts,
   formatSessionTime,
   parseActions,
   parseSseChunk,
-  resultCardsFromStoredMessages,
   resultCardForTool,
   sanitizeXml,
   toolLabel,
@@ -272,7 +272,6 @@ export function ChatOverlay() {
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [workSteps, setWorkSteps] = useState<WorkStep[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
-  const [resultCards, setResultCards] = useState<ResultCard[]>([]);
   const doSendRef = useRef<(text: string, options?: { approvedToolNames?: string[] }) => Promise<void>>(async () => {});
   const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
   const chips = contextChips(uiContext, activeApp);
@@ -421,7 +420,6 @@ export function ChatOverlay() {
       const data = await res.json();
       setSessionId(data.session.id);
       setMessages([{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
-      setResultCards([]);
       setDropdownOpen(false);
       setSessionQuery("");
       await loadSessions();
@@ -435,14 +433,12 @@ export function ChatOverlay() {
     setLoading(true);
     setDropdownOpen(false);
     setSessionQuery("");
-    setResultCards([]);
     try {
       const res = await authFetch(`${API_URL}/api/chat/sessions/${id}/messages`);
       if (!res.ok) return;
       const data = await res.json();
       const loaded = displayMessagesFromStored(data.messages || []);
       setMessages(loaded.length ? loaded : [{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
-      setResultCards(resultCardsFromStoredMessages(data.messages || []));
     } catch {
       // silent
     } finally {
@@ -460,7 +456,6 @@ export function ChatOverlay() {
       if (sessionId === id) {
         setSessionId(null);
         setMessages([{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
-        setResultCards([]);
       }
       await loadSessions();
     } catch {
@@ -580,7 +575,7 @@ export function ChatOverlay() {
             setMessages((prev) => {
               const next = [...prev];
               if (next[next.length - 1]?.role === "assistant") {
-                next[next.length - 1] = { role: "assistant", text: streamedText };
+                next[next.length - 1] = { ...next[next.length - 1], role: "assistant", text: streamedText };
               } else {
                 next.push({ role: "assistant", text: streamedText });
               }
@@ -593,7 +588,7 @@ export function ChatOverlay() {
             const id = `tool:${event.name}`;
             setWorkSteps((steps) => updateWorkStep(steps, { id, label: `Ran ${toolLabel(event.name)}`, status: "completed" }));
             const card = resultCardForTool(event.name, event.result);
-            if (card) setResultCards((cards) => [...cards, card]);
+            if (card) setMessages((prev) => appendCardToLatestAssistant(prev, card));
           } else if (event.type === "approval_required") {
             const approval: PendingApproval = {
               id: `${event.name}:${Date.now()}`,
@@ -611,7 +606,7 @@ export function ChatOverlay() {
               setMessages((prev) => {
                 const next = [...prev];
                 if (next[next.length - 1]?.role === "assistant") {
-                  next[next.length - 1] = { role: "assistant", text };
+                  next[next.length - 1] = { ...next[next.length - 1], role: "assistant", text };
                 } else {
                   next.push({ role: "assistant", text });
                 }
@@ -890,9 +885,10 @@ export function ChatOverlay() {
           const { cleanText, actions } = parseActions(sanitizedText);
           const isLatestAssistant = i === messages.length - 1 || (i === messages.length - 2 && messages[messages.length - 1]?.role === "user");
           const showPickerForThisMsg = isLatestAssistant && !loading && forceDatePicker;
+          const cards = m.cards || [];
 
-          // Skip rendering assistant messages that have no text and no actions
-          if (!cleanText && actions.length === 0) return null;
+          // Skip rendering assistant messages that have no text, actions, or cards.
+          if (!cleanText && actions.length === 0 && cards.length === 0) return null;
 
           return (
             <div key={i} className="flex justify-start">
@@ -919,6 +915,13 @@ export function ChatOverlay() {
                 )}
                 {showPickerForThisMsg && (
                   <DatePickerWidget onSubmit={(val) => doSend(val)} />
+                )}
+                {cards.length > 0 && (
+                  <div className="space-y-2">
+                    {cards.map((card) => (
+                      <ResultCardView key={card.id} card={card} onAction={handleAction} />
+                    ))}
+                  </div>
                 )}
                 {cleanText && (
                   <div className="flex flex-wrap items-center gap-1.5 pl-1">
@@ -992,13 +995,6 @@ export function ChatOverlay() {
                 onApprove={approveAction}
                 onCancel={cancelAction}
               />
-            ))}
-          </div>
-        )}
-        {resultCards.length > 0 && (
-          <div className="space-y-3">
-            {resultCards.slice(-4).map((card) => (
-              <ResultCardView key={card.id} card={card} onAction={handleAction} />
             ))}
           </div>
         )}

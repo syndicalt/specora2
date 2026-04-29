@@ -41,6 +41,7 @@ export type ResultCard =
 export type DisplayChatMessage = {
   role: "user" | "assistant";
   text: string;
+  cards?: ResultCard[];
 };
 
 export type StoredChatMessage = {
@@ -176,43 +177,64 @@ export function resultCardForTool(name: string, result: any, idSeed = `${Date.no
   return null;
 }
 
-export function displayMessagesFromStored(messages: StoredChatMessage[]): DisplayChatMessage[] {
-  return messages
-    .filter((message) => message.role === "user" || message.role === "assistant")
-    .map((message) => ({
-      role: message.role as "user" | "assistant",
-      text: message.content || "",
-    }));
+export function appendCardToLatestAssistant(messages: DisplayChatMessage[], card: ResultCard): DisplayChatMessage[] {
+  let lastAssistantIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "assistant") {
+      lastAssistantIndex = index;
+      break;
+    }
+  }
+  if (lastAssistantIndex === -1) return [...messages, { role: "assistant", text: "", cards: [card] }];
+  return messages.map((message, index) => {
+    if (index !== lastAssistantIndex) return message;
+    return { ...message, cards: [...(message.cards || []), card] };
+  });
 }
 
-export function resultCardsFromStoredMessages(messages: StoredChatMessage[]): ResultCard[] {
-  const toolNamesByCallId = new Map<string, string>();
-  const cards: ResultCard[] = [];
+export function displayMessagesFromStored(messages: StoredChatMessage[]): DisplayChatMessage[] {
+  const visibleMessages: DisplayChatMessage[] = [];
+  const toolMetadataByCallId = new Map<string, { name: string; messageIndex: number }>();
 
   for (const message of messages) {
+    if (message.role === "user" || message.role === "assistant") {
+      visibleMessages.push({
+        role: message.role as "user" | "assistant",
+        text: message.content || "",
+      });
+    }
+
     if (message.role === "assistant") {
       const toolCalls = parseMaybeJson(message.tool_calls);
       if (Array.isArray(toolCalls)) {
+        const messageIndex = visibleMessages.length - 1;
         for (const call of toolCalls) {
           if (!call || typeof call !== "object") continue;
           const item = call as { id?: unknown; function?: { name?: unknown } };
           if (typeof item.id === "string" && typeof item.function?.name === "string") {
-            toolNamesByCallId.set(item.id, item.function.name);
+            toolMetadataByCallId.set(item.id, { name: item.function.name, messageIndex });
           }
         }
       }
     }
 
     if (message.role === "tool" && message.tool_call_id) {
-      const toolName = toolNamesByCallId.get(message.tool_call_id);
-      if (!toolName) continue;
+      const metadata = toolMetadataByCallId.get(message.tool_call_id);
+      if (!metadata) continue;
       const result = parseMaybeJson(message.content || "");
-      const card = resultCardForTool(toolName, result, message.id || message.tool_call_id);
-      if (card) cards.push(card);
+      const card = resultCardForTool(metadata.name, result, message.id || message.tool_call_id);
+      if (card && visibleMessages[metadata.messageIndex]) {
+        const visible = visibleMessages[metadata.messageIndex];
+        visibleMessages[metadata.messageIndex] = { ...visible, cards: [...(visible.cards || []), card] };
+      }
     }
   }
 
-  return cards;
+  return visibleMessages;
+}
+
+export function resultCardsFromStoredMessages(messages: StoredChatMessage[]): ResultCard[] {
+  return displayMessagesFromStored(messages).flatMap((message) => message.cards || []);
 }
 
 export function parseSseChunk(chunk: string) {

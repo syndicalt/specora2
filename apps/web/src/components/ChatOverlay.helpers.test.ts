@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  appendCardToLatestAssistant,
   appLabel,
   contextChips,
   displayMessagesFromStored,
@@ -136,7 +137,7 @@ describe("ChatOverlay helpers", () => {
   });
 
   it("rebuilds durable result cards from stored tool messages", () => {
-    const cards = resultCardsFromStoredMessages([
+    const messages = displayMessagesFromStored([
       {
         id: "m1",
         role: "assistant",
@@ -153,23 +154,45 @@ describe("ChatOverlay helpers", () => {
       },
     ]);
 
-    expect(cards).toEqual([
+    expect(messages).toEqual([
       {
-        id: "ci:ci-1:m2",
-        type: "ci",
-        ci: {
-          id: "ci-1",
-          name: "Billing API",
-          class: "ApplicationService",
-          environment: undefined,
-          relationships: [],
-        },
+        role: "assistant",
+        text: "Here is the CI.",
+        cards: [
+          {
+            id: "ci:ci-1:m2",
+            type: "ci",
+            ci: {
+              id: "ci-1",
+              name: "Billing API",
+              class: "ApplicationService",
+              environment: undefined,
+              relationships: [],
+            },
+          },
+        ],
       },
     ]);
+    expect(resultCardsFromStoredMessages([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "Here is the CI.",
+        tool_calls: JSON.stringify([
+          { id: "call-1", type: "function", function: { name: "get_ci_details", arguments: "{\"id\":\"ci-1\"}" } },
+        ]),
+      },
+      {
+        id: "m2",
+        role: "tool",
+        tool_call_id: "call-1",
+        content: JSON.stringify({ id: "ci-1", name: "Billing API", class: "ApplicationService", relationships: [] }),
+      },
+    ])).toHaveLength(1);
   });
 
   it("rebuilds durable result cards when tool calls are already parsed", () => {
-    const cards = resultCardsFromStoredMessages([
+    const messages = displayMessagesFromStored([
       {
         id: "m1",
         role: "assistant",
@@ -190,13 +213,39 @@ describe("ChatOverlay helpers", () => {
       },
     ]);
 
-    expect(cards).toEqual([
+    expect(messages).toEqual([
       {
-        id: "service-map:ci-1:m2",
-        type: "service-map",
-        rootId: "ci-1",
-        nodes: [{ id: "ci-1", name: "Billing API" }],
-        edges: [{ sourceId: "ci-1", targetId: "ci-2", type: "DEPENDS_ON" }],
+        role: "assistant",
+        text: "Here is the map.",
+        cards: [
+          {
+            id: "service-map:ci-1:m2",
+            type: "service-map",
+            rootId: "ci-1",
+            nodes: [{ id: "ci-1", name: "Billing API" }],
+            edges: [{ sourceId: "ci-1", targetId: "ci-2", type: "DEPENDS_ON" }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("attaches live result cards to the latest assistant message", () => {
+    const messages = appendCardToLatestAssistant([
+      { role: "user", text: "Show CI" },
+      { role: "assistant", text: "Looking it up" },
+    ], {
+      id: "ci:ci-1:live",
+      type: "ci",
+      ci: { id: "ci-1", name: "Billing API", relationships: [] },
+    });
+
+    expect(messages).toEqual([
+      { role: "user", text: "Show CI" },
+      {
+        role: "assistant",
+        text: "Looking it up",
+        cards: [{ id: "ci:ci-1:live", type: "ci", ci: { id: "ci-1", name: "Billing API", relationships: [] } }],
       },
     ]);
   });
