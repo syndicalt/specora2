@@ -68,6 +68,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - **Demo documentation** — Canonical user/admin guides, application screenshots, reusable Playwright screenshot capture, public demo smoke coverage, documentation validation, and Railway release checklist automation.
 - **UAT fixes** — App state preservation, chat investigation continuity, CMDB Explorer attribute projection, baseline app access rules for Arc and Customer Portal, executable access-matrix validation for app/chat tool visibility, Customer Portal self-service request polish, Admin Console RBAC access clarity, Specora Arc lifecycle governance polish, and deterministic chat finalization for tool-backed investigations.
 - **Platform hardening coverage pass** — Added regression coverage for streaming chat finalization, inherited group grants in Admin RBAC app explanations, AppLauncher role filtering/search/open behavior, and widened web coverage reporting to include tested shell surfaces.
+- **Discovery lifecycle polish** — Added collector job/evidence lifecycle summaries, explicit pinned dataset freshness, staged-run discard cleanup, and reconciliation/relationship decision explanations in Discovery review surfaces.
 
 ## Next Up
 
@@ -81,7 +82,6 @@ No open product-polish blockers are tracked here. Continue capturing UAT feedbac
 
 ### Discovery And Edge
 
-- **Edge run lifecycle** — Make collector job queueing, run selection, evidence freshness, and staging cleanup explicit in the Admin/Discovery surfaces.
 - **Discovery mapping quality** — Improve entity-aware sample selection, typed observations, hardware/software/interface normalization, and class-router editability.
 - **CMDB reconciliation transparency** — Show why a discovery record updates an existing CI, creates a new CI, or blocks on a missing reconciliation key.
 

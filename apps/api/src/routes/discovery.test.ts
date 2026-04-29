@@ -195,6 +195,29 @@ describe("discoveryRoutes", () => {
     });
   });
 
+  it("summarizes edge collector job lifecycle and evidence freshness", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push(
+      { rows: [{ id: "collector-1" }] },
+      { rows: [{ status: "queued", count: 2 }, { status: "succeeded", count: 1 }] },
+      { rows: [{ id: "edge-job-1", status: "queued", capability: "collector.query.osquery", priority: 5, attempt: 0, created_at: "2026-04-27T12:00:00Z", updated_at: "2026-04-27T12:00:00Z" }] },
+      { rows: [{ documents: 3, complete_documents: 2, latest_upload_at: "2026-04-27T12:05:00Z" }] },
+      { rows: [{ datasets: 1, latest_observed_at: "2026-04-27T12:04:00Z" }] }
+    );
+
+    const response = await app.inject({ method: "GET", url: "/discovery/collectors/collector-1/jobs" });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      collectorId: "collector-1",
+      summary: { queued: 2, succeeded: 1 },
+      recentJobs: [{ id: "edge-job-1", status: "queued", capability: "collector.query.osquery" }],
+      evidence: { documents: 3, completeDocuments: 2, datasets: 1, latestObservedAt: "2026-04-27T12:04:00Z" },
+    });
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("FROM edge_discovery_jobs"), ["collector-1"]);
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("FROM edge_evidence_documents"), ["collector-1"]);
+  });
+
   it("enrolls collectors with one-time enrollment tokens and allows collector heartbeats", async () => {
     const app = await buildApp();
     (app as any).pg.queuedResults.push(
@@ -881,6 +904,35 @@ describe("discoveryRoutes", () => {
     const body = JSON.parse(response.body);
     expect(body.records[0]).toMatchObject({ id: "sr-1", name: "web01" });
     expect(body.relationships[0]).toMatchObject({ rel_type: "HOSTED_ON" });
+  });
+
+  it("discards uncommitted staged discovery data", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push(
+      { rows: [{ id: "dj-1", status: "staged" }] },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [{ id: "dj-1", status: "discarded", stats: { discardedAt: "now" }, created_at: "now", updated_at: "now" }] }
+    );
+
+    const response = await app.inject({ method: "DELETE", url: "/discovery/jobs/dj-1/staged" });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ discarded: true, job: { id: "dj-1", status: "discarded" } });
+    expect(app.pg.query).toHaveBeenCalledWith("DELETE FROM discovery_staged_relationships WHERE discovery_job_id = $1", ["dj-1"]);
+    expect(app.pg.query).toHaveBeenCalledWith("DELETE FROM discovery_staged_records WHERE discovery_job_id = $1", ["dj-1"]);
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("status = 'discarded'"), ["dj-1", expect.any(String)]);
+    expect(app.pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["discovery.staged_job_discarded", "DiscoveryJob", "dj-1"]));
+  });
+
+  it("prevents discarding committed discovery jobs", async () => {
+    const app = await buildApp();
+    (app as any).pg.queuedResults.push({ rows: [{ id: "dj-1", status: "completed" }] });
+
+    const response = await app.inject({ method: "DELETE", url: "/discovery/jobs/dj-1/staged" });
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error).toBe("Committed discovery jobs cannot be discarded");
   });
 
   it("approves safe staged records", async () => {

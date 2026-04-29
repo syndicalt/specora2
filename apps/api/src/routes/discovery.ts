@@ -47,6 +47,22 @@ function collectorRow(row: any) {
   };
 }
 
+function edgeDiscoveryJobRow(row: any) {
+  return {
+    id: row.id,
+    status: row.status,
+    capability: row.capability,
+    priority: Number(row.priority || 0),
+    attempt: Number(row.attempt || 0),
+    failureCode: row.failure_code || null,
+    detail: row.detail || null,
+    issuedAt: row.issued_at || null,
+    expiresAt: row.expires_at || null,
+    updatedAt: row.updated_at || null,
+    createdAt: row.created_at || null,
+  };
+}
+
 function hashEnrollmentToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -887,6 +903,65 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     return { datasets: result.rows.map(datasetRow) };
   });
 
+  fastify.get("/discovery/collectors/:id/jobs", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "read"))) return;
+    const { id } = request.params as { id: string };
+    const collector = await fastify.pg.query("SELECT id FROM discovery_collectors WHERE id = $1", [id]);
+    if (!collector.rows.length) return reply.status(404).send({ error: "Collector not found" });
+
+    const [statusResult, recentResult, evidenceResult, datasetResult] = await Promise.all([
+      fastify.pg.query(
+        `SELECT status, COUNT(*)::int AS count
+         FROM edge_discovery_jobs
+         WHERE collector_id = $1
+         GROUP BY status`,
+        [id]
+      ),
+      fastify.pg.query(
+        `SELECT id, status, capability, priority, attempt, failure_code, detail, issued_at, expires_at, created_at, updated_at
+         FROM edge_discovery_jobs
+         WHERE collector_id = $1
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT 20`,
+        [id]
+      ),
+      fastify.pg.query(
+        `SELECT COUNT(*)::int AS documents,
+                COUNT(*) FILTER (WHERE complete)::int AS complete_documents,
+                MAX(updated_at) AS latest_upload_at
+         FROM edge_evidence_documents
+         WHERE collector_id = $1`,
+        [id]
+      ),
+      fastify.pg.query(
+        `SELECT COUNT(*)::int AS datasets,
+                MAX(observed_end_at) AS latest_observed_at
+         FROM discovery_datasets
+         WHERE collector_id = $1`,
+        [id]
+      ),
+    ]);
+
+    const summary = statusResult.rows.reduce((acc: Record<string, number>, row: any) => {
+      acc[row.status] = Number(row.count || 0);
+      return acc;
+    }, {});
+    const evidence = evidenceResult.rows[0] || {};
+    const datasets = datasetResult.rows[0] || {};
+    return {
+      collectorId: id,
+      summary,
+      recentJobs: recentResult.rows.map(edgeDiscoveryJobRow),
+      evidence: {
+        documents: Number(evidence.documents || 0),
+        completeDocuments: Number(evidence.complete_documents || 0),
+        latestUploadAt: evidence.latest_upload_at || null,
+        datasets: Number(datasets.datasets || 0),
+        latestObservedAt: datasets.latest_observed_at || null,
+      },
+    };
+  });
+
   fastify.post("/discovery/collectors/:id/datasets", { onRequest: [fastify.authenticate] }, async (request, reply) => {
     if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
     const { id } = request.params as { id: string };
@@ -1448,6 +1523,34 @@ export async function discoveryRoutes(fastify: FastifyInstance) {
     const staged = await getStagedDiscoveryJob(fastify, id);
     if (!staged) return reply.status(404).send({ error: "Job not found" });
     return staged;
+  });
+
+  fastify.delete("/discovery/jobs/:id/staged", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    if (!(await requireDiscoveryPermission(fastify, request, reply, "write"))) return;
+    const { id } = request.params as { id: string };
+    const existing = await fastify.pg.query("SELECT id, status FROM discovery_jobs WHERE id = $1", [id]);
+    if (!existing.rows.length) return reply.status(404).send({ error: "Job not found" });
+    if (existing.rows[0].status === "completed") return reply.status(409).send({ error: "Committed discovery jobs cannot be discarded" });
+
+    await fastify.pg.query("DELETE FROM discovery_staged_relationships WHERE discovery_job_id = $1", [id]);
+    await fastify.pg.query("DELETE FROM discovery_staged_records WHERE discovery_job_id = $1", [id]);
+    const result = await fastify.pg.query(
+      `UPDATE discovery_jobs
+       SET status = 'discarded',
+           stats = COALESCE(stats, '{}'::jsonb) || $2::jsonb,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, status, stats, created_at, updated_at`,
+      [id, JSON.stringify({ discardedAt: new Date().toISOString(), discardedBy: (request.user as any)?.id || null })]
+    );
+    await recordRouteAudit(fastify, request, {
+      action: "discovery.staged_job_discarded",
+      entityType: "DiscoveryJob",
+      entityId: id,
+      newValues: result.rows[0],
+      metadata: { source: "api.discovery", surface: "discovery" },
+    });
+    return { discarded: true, job: result.rows[0] };
   });
 
   fastify.post("/discovery/jobs/:id/staged/approve-safe", { onRequest: [fastify.authenticate] }, async (request, reply) => {

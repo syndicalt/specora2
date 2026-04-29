@@ -104,6 +104,31 @@ type DiscoveryCollector = {
   lastSeenIp?: string | null;
 };
 
+type EdgeCollectorLifecycle = {
+  collectorId: string;
+  summary: Record<string, number>;
+  recentJobs: Array<{
+    id: string;
+    status: string;
+    capability: string;
+    priority: number;
+    attempt: number;
+    failureCode?: string | null;
+    detail?: string | null;
+    issuedAt?: string | null;
+    expiresAt?: string | null;
+    updatedAt?: string | null;
+    createdAt?: string | null;
+  }>;
+  evidence: {
+    documents: number;
+    completeDocuments: number;
+    latestUploadAt?: string | null;
+    datasets: number;
+    latestObservedAt?: string | null;
+  };
+};
+
 type EdgeObservationProfile = {
   entityType: string;
   recordCount: number;
@@ -485,6 +510,14 @@ function relationshipStatusClass(status?: PipelinePreview["relationships"][numbe
   }
 }
 
+function lifecycleCount(lifecycle: EdgeCollectorLifecycle | undefined, status: string): number {
+  return Number(lifecycle?.summary?.[status] || 0);
+}
+
+function edgeJobAge(job: EdgeCollectorLifecycle["recentJobs"][number]): string {
+  return freshnessLabel(job.updatedAt || job.createdAt);
+}
+
 const NODE_CATALOG: Array<{
   kind: DiscoveryNodeKind;
   title: string;
@@ -674,6 +707,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const [sources, setSources] = useState<DiscoverySource[]>([]);
   const [credentialRefs, setCredentialRefs] = useState<DiscoveryCredentialReference[]>([]);
   const [collectors, setCollectors] = useState<DiscoveryCollector[]>([]);
+  const [collectorLifecycles, setCollectorLifecycles] = useState<Record<string, EdgeCollectorLifecycle>>({});
   const [edgeProfiles, setEdgeProfiles] = useState<EdgeObservationProfile[]>([]);
   const [edgeDatasets, setEdgeDatasets] = useState<DiscoveryDataset[]>([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
@@ -741,6 +775,22 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   function clearDerivedRunState() {
     setPreview(null);
     setStaged(null);
+  }
+
+  async function loadCollectorLifecycle(collectorId: string) {
+    const res = await shellRef.current.fetch(`/discovery/collectors/${collectorId}/jobs`);
+    if (!res.ok) throw new Error(`Collector lifecycle request failed: ${res.status}`);
+    const data = await res.json();
+    setCollectorLifecycles((current) => ({ ...current, [collectorId]: data }));
+    return data as EdgeCollectorLifecycle;
+  }
+
+  async function refreshCollectorLifecycles(items: DiscoveryCollector[]) {
+    const visibleCollectors = items.slice(0, 25);
+    const results = await Promise.allSettled(visibleCollectors.map((collector) => loadCollectorLifecycle(collector.id)));
+    if (results.some((result) => result.status === "rejected")) {
+      throw new Error("Collector lifecycle could not be loaded");
+    }
   }
 
   function undoCanvasChange() {
@@ -907,7 +957,9 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
         const collectorRes = await api.fetch("/discovery/collectors");
         if (!collectorRes.ok) throw new Error(`Collector request failed: ${collectorRes.status}`);
         const collectorData = await collectorRes.json();
-        setCollectors(collectorData.collectors || []);
+        const nextCollectors = (collectorData.collectors || []) as DiscoveryCollector[];
+        setCollectors(nextCollectors);
+        await refreshCollectorLifecycles(nextCollectors);
       } catch {
         errorKey += "collectors";
       }
@@ -1389,6 +1441,23 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function discardStagedJob(jobId: string) {
+    setLoading(true);
+    try {
+      const res = await shell.fetch(`/discovery/jobs/${jobId}/staged`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Discard failed");
+      setStaged(null);
+      setRollbacks([]);
+      shell.notify("Staged discovery run discarded", "success");
+      refresh();
+    } catch (err: any) {
+      shell.notify(err.message || "Staged discovery run could not be discarded", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function applyRollback(rollbackId: string, jobId: string) {
     setLoading(true);
     try {
@@ -1507,6 +1576,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       shell.notify(`Queued ${data.jobs?.length || 0} host inventory jobs for ${collector.name}`, "success");
+      await loadCollectorLifecycle(collector.id);
     } catch (err: any) {
       shell.notify(`Failed to queue host inventory: ${err.message}`, "error");
     } finally {
@@ -1869,27 +1939,66 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
               </div>
               <button onClick={registerCollector} className="w-full rounded-md border border-cyan-500/40 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/10">Register collector</button>
             </div>
-            {collectors.length ? collectors.map((collector) => (
-              <div key={collector.id} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-gray-100">{collector.name}</div>
-                    <div className="mt-1 text-xs text-gray-500">{collector.site || "No site"}{collector.version ? ` · v${collector.version}` : ""}</div>
+            {collectors.length ? collectors.map((collector) => {
+              const lifecycle = collectorLifecycles[collector.id];
+              const latestJob = lifecycle?.recentJobs?.[0];
+              return (
+                <div key={collector.id} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-gray-100">{collector.name}</div>
+                      <div className="mt-1 text-xs text-gray-500">{collector.site || "No site"}{collector.version ? ` · v${collector.version}` : ""}</div>
+                    </div>
+                    <span className={`rounded px-2 py-0.5 text-xs ${collector.status === "healthy" ? "bg-emerald-500/10 text-emerald-300" : collector.status === "degraded" ? "bg-amber-500/10 text-amber-200" : "bg-gray-800 text-gray-400"}`}>{collector.status}</span>
                   </div>
-                  <span className={`rounded px-2 py-0.5 text-xs ${collector.status === "healthy" ? "bg-emerald-500/10 text-emerald-300" : collector.status === "degraded" ? "bg-amber-500/10 text-amber-200" : "bg-gray-800 text-gray-400"}`}>{collector.status}</span>
+                  <div className="mt-2 text-xs text-gray-500">
+                    {collector.lastHeartbeatAt ? `Last heartbeat ${new Date(collector.lastHeartbeatAt).toLocaleString()}` : "No heartbeat received"}
+                  </div>
+                  <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Runtime lifecycle</div>
+                      <button onClick={() => loadCollectorLifecycle(collector.id)} className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800">
+                        Refresh
+                      </button>
+                    </div>
+                    <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
+                      <div className="rounded bg-gray-900 p-2">
+                        <div className="text-gray-500">Queued</div>
+                        <div className="mt-1 text-base font-semibold text-cyan-200">{lifecycleCount(lifecycle, "queued")}</div>
+                      </div>
+                      <div className="rounded bg-gray-900 p-2">
+                        <div className="text-gray-500">Claimed</div>
+                        <div className="mt-1 text-base font-semibold text-amber-200">{lifecycleCount(lifecycle, "claimed")}</div>
+                      </div>
+                      <div className="rounded bg-gray-900 p-2">
+                        <div className="text-gray-500">Done</div>
+                        <div className="mt-1 text-base font-semibold text-emerald-200">{lifecycleCount(lifecycle, "succeeded")}</div>
+                      </div>
+                      <div className="rounded bg-gray-900 p-2">
+                        <div className="text-gray-500">Failed</div>
+                        <div className="mt-1 text-base font-semibold text-rose-200">{lifecycleCount(lifecycle, "failed") + lifecycleCount(lifecycle, "timed_out") + lifecycleCount(lifecycle, "executor_failed") + lifecycleCount(lifecycle, "invalid_evidence")}</div>
+                      </div>
+                    </div>
+                    <div className="mt-3 text-xs leading-5 text-gray-500">
+                      {lifecycle ? (
+                        <>
+                          <div>{lifecycle.evidence.completeDocuments} complete evidence docs · {lifecycle.evidence.datasets} datasets</div>
+                          <div>Latest evidence {freshnessLabel(lifecycle.evidence.latestObservedAt || lifecycle.evidence.latestUploadAt)}</div>
+                          {latestJob && <div>Latest job {latestJob.capability} · {latestJob.status} · {edgeJobAge(latestJob)}</div>}
+                        </>
+                      ) : "Lifecycle has not been loaded yet."}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => queueHostInventory(collector)}
+                    disabled={loading}
+                    className="mt-3 rounded-md border border-cyan-500/40 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50"
+                  >
+                    Queue host inventory
+                  </button>
                 </div>
-                <div className="mt-2 text-xs text-gray-500">
-                  {collector.lastHeartbeatAt ? `Last heartbeat ${new Date(collector.lastHeartbeatAt).toLocaleString()}` : "No heartbeat received"}
-                </div>
-                <button
-                  onClick={() => queueHostInventory(collector)}
-                  disabled={loading}
-                  className="mt-3 rounded-md border border-cyan-500/40 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50"
-                >
-                  Queue host inventory
-                </button>
-              </div>
-            )) : (
+              );
+            }) : (
               <div className="rounded-lg border border-dashed border-gray-800 p-5 text-center text-sm text-gray-500">No edge collectors registered.</div>
             )}
           </section>
@@ -1968,6 +2077,9 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                     <p className="mt-1 text-xs text-cyan-100/70">{staged.records.length} records and {staged.relationships.length} relationships staged.</p>
                   </div>
                   <div className="flex gap-2">
+                    <button onClick={() => discardStagedJob(staged.job.id)} disabled={loading || staged.job.status === "completed"} className="rounded-md border border-rose-500/40 px-3 py-2 text-sm font-medium text-rose-100 hover:bg-rose-500/10 disabled:opacity-50">
+                      Discard
+                    </button>
                     <button onClick={() => approveAllSafe(staged.job.id)} disabled={loading} className="rounded-md border border-cyan-300/50 px-3 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-50">
                       Approve Safe
                     </button>
