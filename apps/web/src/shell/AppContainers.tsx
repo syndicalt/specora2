@@ -421,73 +421,64 @@ function AppHost({ entry, instance }: { entry: RegistryEntry; instance: AppInsta
   );
 }
 
-export function CanvasArea() {
-  const { state, registry } = useShell();
-  const role = useMemo(() => getUserRole(), []);
-  const visibleRegistry = filterRegistryByRole(registry, role);
-  const activeInstance = state.instances.find(
-    (i) => i.id === state.activeCanvasId && i.mode === "canvas"
-  );
-
-  if (!activeInstance) {
-    return (
-      <div className="h-full w-full flex items-center justify-center bg-gray-950">
-        <div className="flex flex-col items-center gap-4">
-          <div className="relative w-16 h-16">
-            <svg viewBox="0 0 64 64" className="w-full h-full" fill="none">
-              <path
-                d="M32 4L58 18v28L32 60 6 46V18L32 4z"
-                className="stroke-indigo-500"
-                strokeWidth="2"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M32 14L48 24v20L32 54 16 44V24L32 14z"
-                className="stroke-indigo-400"
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-                opacity="0.6"
-              />
-              <circle cx="32" cy="34" r="6" className="fill-indigo-500" opacity="0.8" />
-            </svg>
-          </div>
-          <span className="text-sm font-medium tracking-widest text-gray-500 uppercase">Specora</span>
-        </div>
-      </div>
-    );
-  }
-
-  const entry = visibleRegistry.find((r) => r.id === activeInstance.id);
-  if (!entry) {
-    const exists = registry.find((r) => r.id === activeInstance.id);
-    return (
-      <div className="h-full w-full flex items-center justify-center text-gray-500">
-        {exists ? "Access denied" : `Unknown app: ${activeInstance.id}`}
-      </div>
-    );
-  }
-
+function EmptyCanvas() {
   return (
-    <div className="h-full w-full">
-      <AppHost entry={entry} instance={activeInstance} />
+    <div className="h-full w-full flex items-center justify-center bg-gray-950">
+      <div className="flex flex-col items-center gap-4">
+        <div className="relative w-16 h-16">
+          <svg viewBox="0 0 64 64" className="w-full h-full" fill="none">
+            <path
+              d="M32 4L58 18v28L32 60 6 46V18L32 4z"
+              className="stroke-indigo-500"
+              strokeWidth="2"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M32 14L48 24v20L32 54 16 44V24L32 14z"
+              className="stroke-indigo-400"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              opacity="0.6"
+            />
+            <circle cx="32" cy="34" r="6" className="fill-indigo-500" opacity="0.8" />
+          </svg>
+        </div>
+        <span className="text-sm font-medium tracking-widest text-gray-500 uppercase">Specora</span>
+      </div>
     </div>
   );
 }
 
-export function DormantApps() {
+function CanvasUnavailable({ appId, registry }: { appId: string; registry: RegistryEntry[] }) {
+  const exists = registry.find((r) => r.id === appId);
+  return (
+    <div className="h-full w-full flex items-center justify-center text-gray-500">
+      {exists ? "Access denied" : `Unknown app: ${appId}`}
+    </div>
+  );
+}
+
+export function CanvasLayer() {
   const { state, registry } = useShell();
   const role = useMemo(() => getUserRole(), []);
   const visibleRegistry = filterRegistryByRole(registry, role);
-  const dormantInstances = state.instances.filter((i) => i.state === "dormant" && i.mode === "canvas");
+  const canvasInstances = state.instances.filter((i) => i.mode === "canvas");
+  const hasActiveCanvas = canvasInstances.some((instance) => instance.id === state.activeCanvasId);
 
   return (
-    <div className="hidden">
-      {dormantInstances.map((instance) => {
+    <div className="relative h-full w-full overflow-hidden bg-gray-950">
+      {!hasActiveCanvas && <EmptyCanvas />}
+      {canvasInstances.map((instance) => {
         const entry = visibleRegistry.find((r) => r.id === instance.id);
-        if (!entry) return null;
+        const isActive = instance.id === state.activeCanvasId;
         return (
-          <div key={instance.instanceId} id={`dormant-${instance.instanceId}`}>
-            <AppHost entry={entry} instance={instance} />
+          <div
+            key={instance.instanceId}
+            aria-hidden={!isActive}
+            className={`absolute inset-0 h-full w-full ${isActive ? "z-10" : "z-0 pointer-events-none select-none opacity-0"}`}
+            style={{ visibility: isActive ? "visible" : "hidden" }}
+          >
+            {entry ? <AppHost entry={entry} instance={instance} /> : <CanvasUnavailable appId={instance.id} registry={registry} />}
           </div>
         );
       })}
