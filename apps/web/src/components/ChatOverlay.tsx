@@ -6,7 +6,7 @@ import { getApiBase } from "@/lib/runtimeApi";
 import { useShell } from "@/shell/AppContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, Calendar, Check, ChevronDown, ChevronRight, Clipboard, Clock, Compass, Plus, RotateCcw, Send, Sparkles, Square, Trash2, X } from "lucide-react";
+import { Bot, Calendar, Check, ChevronDown, ChevronRight, Clipboard, Clock, Compass, Plus, RotateCcw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 
 const API_URL = getApiBase();
 
@@ -99,6 +99,20 @@ function followUpPrompts(uiContext: Record<string, any>, activeApp: string) {
   return prompts.slice(0, 4);
 }
 
+function formatSessionTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const elapsed = Date.now() - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (elapsed < minute) return "Just now";
+  if (elapsed < hour) return `${Math.floor(elapsed / minute)}m ago`;
+  if (elapsed < day) return `${Math.floor(elapsed / hour)}h ago`;
+  if (elapsed < 7 * day) return `${Math.floor(elapsed / day)}d ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 function sanitizeXml(text: string): string {
   if (!text) return text;
   return text
@@ -168,6 +182,7 @@ export function ChatOverlay() {
     { role: "assistant", text: "Welcome to Specora. How can I help you today?" },
   ]);
   const [input, setInput] = useState("");
+  const [sessionQuery, setSessionQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [capabilityGroups, setCapabilityGroups] = useState<AppCapabilityGroup[]>([]);
@@ -184,6 +199,7 @@ export function ChatOverlay() {
   const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
   const chips = contextChips(uiContext, activeApp);
   const followUps = followUpPrompts(uiContext, activeApp);
+  const filteredSessions = sessions.filter((session) => session.title.toLowerCase().includes(sessionQuery.trim().toLowerCase()));
 
   // Auto-focus input on mount (panel opened) and when session changes
   useEffect(() => {
@@ -202,6 +218,13 @@ export function ChatOverlay() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    const element = inputRef.current;
+    if (!element) return;
+    element.style.height = "0px";
+    element.style.height = `${Math.min(element.scrollHeight, 144)}px`;
+  }, [input]);
 
   useEffect(() => {
     loadSessions();
@@ -321,6 +344,7 @@ export function ChatOverlay() {
       setSessionId(data.session.id);
       setMessages([{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
       setDropdownOpen(false);
+      setSessionQuery("");
       await loadSessions();
     } catch {
       // silent
@@ -331,6 +355,7 @@ export function ChatOverlay() {
     setSessionId(id);
     setLoading(true);
     setDropdownOpen(false);
+    setSessionQuery("");
     try {
       const res = await authFetch(`${API_URL}/api/chat/sessions/${id}/messages`);
       if (!res.ok) return;
@@ -602,36 +627,55 @@ export function ChatOverlay() {
               <ChevronDown className={`w-3.5 h-3.5 transition-transform ${dropdownOpen ? "rotate-180" : ""}`} />
             </button>
             {dropdownOpen && (
-              <div className="absolute top-full left-0 mt-1.5 w-64 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl overflow-hidden z-50">
+              <div className="absolute top-full left-0 z-50 mt-1.5 w-72 overflow-hidden rounded-xl border border-gray-700 bg-gray-800 shadow-2xl">
                 <div className="p-2 border-b border-gray-700">
                   <button
                     onClick={createNewSession}
-                    className="flex items-center gap-2 w-full px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors"
+                    className="flex w-full items-center gap-2 rounded-lg bg-cyan-500 px-3 py-2 text-sm text-gray-950 transition-colors hover:bg-cyan-400"
                   >
                     <Plus className="w-4 h-4" />
                     New Chat
                   </button>
                 </div>
+                {sessions.length > 0 && (
+                  <div className="border-b border-gray-700 p-2">
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+                      <input
+                        value={sessionQuery}
+                        onChange={(event) => setSessionQuery(event.target.value)}
+                        placeholder="Search chats"
+                        className="w-full rounded-lg border border-gray-700 bg-gray-900 py-2 pl-8 pr-3 text-sm text-gray-100 outline-none placeholder:text-gray-600 focus:border-cyan-500"
+                      />
+                    </div>
+                  </div>
+                )}
                 <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
-                  {sessions.map((s) => (
+                  {filteredSessions.map((s) => (
                     <div
                       key={s.id}
                       onClick={() => loadSession(s.id)}
-                      className={`group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+                      className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors ${
                         sessionId === s.id ? "bg-gray-700/60 text-white" : "text-gray-400 hover:bg-gray-700/40 hover:text-gray-200"
                       }`}
                     >
-                      <span className="truncate flex-1">{s.title}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{s.title}</span>
+                        <span className="block truncate text-[11px] text-gray-600">{formatSessionTime(s.updated_at)}</span>
+                      </span>
                       <button
                         onClick={(e) => deleteSession(s.id, e)}
                         className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-opacity ml-2"
+                        title="Delete chat"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   ))}
-                  {sessions.length === 0 && (
+                  {sessions.length === 0 ? (
                     <div className="px-3 py-4 text-center text-xs text-gray-500">No sessions yet</div>
+                  ) : filteredSessions.length === 0 && (
+                    <div className="px-3 py-4 text-center text-xs text-gray-500">No matching chats</div>
                   )}
                 </div>
               </div>
@@ -845,16 +889,28 @@ export function ChatOverlay() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleComposerKeyDown}
             placeholder="Ask about your CMDB, incidents, or services..."
-            className="max-h-36 min-h-[48px] w-full resize-none bg-transparent px-2 py-2 text-sm leading-5 text-gray-100 outline-none placeholder:text-gray-600"
+            rows={1}
+            className="max-h-36 min-h-[48px] w-full resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm leading-5 text-gray-100 outline-none placeholder:text-gray-600"
             disabled={loading}
           />
           <div className="flex items-center justify-between gap-2 border-t border-gray-800 px-1 pt-2">
-            <div className="flex items-center gap-1.5 text-[11px] text-gray-600">
-              <span>Enter to send</span>
-              <span className="text-gray-800">/</span>
-              <span>Shift+Enter newline</span>
+            <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-gray-600">
+              {chips.length > 0 && <span className="truncate">{chips.length} context {chips.length === 1 ? "item" : "items"}</span>}
             </div>
             <div className="flex items-center gap-1.5">
+              {input.trim() && !loading && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInput("");
+                    inputRef.current?.focus();
+                  }}
+                  className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-900 hover:text-gray-200"
+                  title="Clear draft"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
               {showDatePicker && (
                 <button
                   type="button"
