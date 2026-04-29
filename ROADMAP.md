@@ -67,6 +67,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - **Real-time events** — WebSocket pub/sub for platform events with short-lived ticket auth, Redis cross-instance fanout, REST polling fallback, and authenticated SSE fallback for environments where WebSocket upgrades are unavailable.
 - **Demo documentation** — Canonical user/admin guides, application screenshots, reusable Playwright screenshot capture, public demo smoke coverage, documentation validation, and Railway release checklist automation.
 - **UAT fixes** — App state preservation, chat investigation continuity, CMDB Explorer attribute projection, baseline app access rules for Arc and Customer Portal, executable access-matrix validation for app/chat tool visibility, Customer Portal self-service request polish, Admin Console RBAC access clarity, Specora Arc lifecycle governance polish, and deterministic chat finalization for tool-backed investigations.
+- **Platform hardening coverage pass** — Added regression coverage for streaming chat finalization, inherited group grants in Admin RBAC app explanations, AppLauncher role filtering/search/open behavior, and widened web coverage reporting to include tested shell surfaces.
 
 ## Next Up
 
@@ -86,8 +87,8 @@ No open product-polish blockers are tracked here. Continue capturing UAT feedbac
 
 ### Platform Hardening
 
-- **API coverage to 80%** — Focus Admin, GraphQL, Tables, Auth, Discovery, Chat, and app-tool services.
-- **Web coverage expansion** — Add shell/component/app tests beyond `src/lib/**/*.ts`, starting with AppLauncher, AppDock, Settings, ChatPanel, Service Map edit flows, and CI Class Manager.
+- **API coverage to 80%** — Current full-suite baseline: 70.94% statements, 54.84% branches, 82.08% functions, 74.83% lines. Next targets: GraphQL resolvers, Admin routes, app-tool services, Discovery execution, and Chat edge cases.
+- **Web coverage expansion** — Current full-suite baseline with lib plus AppLauncher shell coverage: 92.2% statements, 84.78% branches, 95.34% functions, 99.17% lines. Continue widening include scope to AppDock, Settings, ChatPanel, Service Map edit flows, and CI Class Manager as tests land.
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
 - **Enterprise identity maturity** — Add IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.
@@ -98,8 +99,8 @@ No open product-polish blockers are tracked here. Continue capturing UAT feedbac
 Detailed debt planning lives in [`docs-archive/technical-debt-roadmap.md`](docs-archive/technical-debt-roadmap.md).
 
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
-- **API coverage to 80%** — Current API coverage is materially below 80 on statements/branches/lines; focus Admin, GraphQL, Tables, Auth, Discovery, Chat, and app-tool services.
-- **Web coverage scope expansion** — Current web coverage is strong for `src/lib/**/*.ts`, but should expand into shell/components and critical app TSX surfaces.
+- **API coverage to 80%** — Current API coverage is 70.94% statements and 74.83% lines; focus GraphQL resolvers, Admin routes, app-tool services, Discovery execution, Tables, Auth, and Chat edge cases.
+- **Web coverage scope expansion** — Current web coverage includes `src/lib/**/*.ts`, `src/shell/AppAccess.ts`, and `src/shell/AppLauncher.tsx`; continue expanding only as shell/components/app TSX tests are added.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
 - **Web dev stability** — `pnpm dev:stable` remains the supported workaround for local Turbo/Next instability; periodically retest and remove when stable.
 - **Enterprise identity maturity** — Add IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.

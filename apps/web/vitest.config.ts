@@ -1,6 +1,12 @@
 import { defineConfig } from "vitest/config";
+import path from "node:path";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+    },
+  },
   oxc: {
     jsx: {
       runtime: "automatic",
@@ -14,7 +20,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],
-      include: ["src/lib/**/*.ts"],
+      include: ["src/lib/**/*.ts", "src/shell/AppAccess.ts", "src/shell/AppLauncher.tsx"],
       exclude: ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.d.ts"],
       thresholds: {
         lines: 80,

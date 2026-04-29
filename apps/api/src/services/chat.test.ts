@@ -1090,4 +1090,63 @@ describe("chatStream", () => {
     expect(result.toolCalls).toBeUndefined();
     expect(events.some((event) => event.type === "tool_call")).toBe(false);
   });
+
+  it("finalizes streaming answers from tool results when the model keeps promising more investigation", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "get_ci_details", arguments: "" },
+                }],
+              },
+            }],
+          };
+          yield {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  function: { arguments: JSON.stringify({ id: "ci-1" }) },
+                }],
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "I will now gather more details about its risk and relationships." } }] };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "I still need to check its dependencies before answering." } }] };
+        },
+      });
+
+    const fastify = mockFastify([
+      [{ get: (k: string) => k === "n" ? { properties: { id: "ci-1", name: "web-01", class: "Server", environment: "Production" } } : undefined }],
+      [{ get: (k: string) => {
+        if (k === "r") return { type: "DEPENDS_ON", start: "ci-1", end: "db-1" };
+        if (k === "target") return { properties: { id: "db-1", name: "postgres", class: "Database" } };
+        return undefined;
+      } }],
+    ]);
+
+    const events: any[] = [];
+    const result = await chatStream([{ role: "user", content: "Investigate web-01" }], fastify, (ev) => events.push(ev));
+
+    expect(result.content).toContain("web-01");
+    expect(result.content).toContain("DEPENDS_ON postgres");
+    expect(result.content).toContain("[[action|open-ci-details|id=ci-1|View CI Details]]");
+    expect(result.content.toLowerCase()).not.toContain("i will");
+    expect(result.content.toLowerCase()).not.toContain("need to check");
+    expect(events.some((event) => event.type === "tool_call" && event.name === "get_ci_details")).toBe(true);
+  });
 });
