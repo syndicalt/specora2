@@ -7,7 +7,20 @@ import { useShell } from "@/shell/AppContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, Calendar, Check, ChevronDown, ChevronRight, Clipboard, Clock, Compass, Plus, RotateCcw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
-import { contextChips, followUpPrompts, formatSessionTime, parseActions, sanitizeXml } from "./ChatOverlay.helpers";
+import {
+  contextChips,
+  followUpPrompts,
+  formatSessionTime,
+  parseActions,
+  parseSseChunk,
+  resultCardForTool,
+  sanitizeXml,
+  toolLabel,
+  updateWorkStep,
+  type PendingApproval,
+  type ResultCard,
+  type WorkStep,
+} from "./ChatOverlay.helpers";
 
 const API_URL = getApiBase();
 
@@ -42,40 +55,6 @@ interface AppCapabilityGroup {
   appName: string;
   capabilities: Capability[];
 }
-
-type WorkStep = {
-  id: string;
-  label: string;
-  status: "active" | "completed" | "error";
-};
-
-type PendingApproval = {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-  risk: "high";
-  reason: string;
-};
-
-type ResultCard =
-  | {
-      id: string;
-      type: "ci";
-      ci: {
-        id: string;
-        name: string;
-        class?: string;
-        environment?: string;
-        relationships?: Array<{ type?: string; direction?: string; target?: { id?: string; name?: string; class?: string } }>;
-      };
-    }
-  | {
-      id: string;
-      type: "service-map";
-      rootId: string;
-      nodes: Array<{ id: string; name?: string; class?: string }>;
-      edges: Array<{ type?: string; sourceId?: string; targetId?: string }>;
-    };
 
 function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
   const [date, setDate] = useState("");
@@ -127,19 +106,6 @@ function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
       </form>
     </div>
   );
-}
-
-function toolLabel(name: string) {
-  return name
-    .replace(/_/g, " ")
-    .replace(/-/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function updateWorkStep(steps: WorkStep[], next: WorkStep) {
-  const index = steps.findIndex((step) => step.id === next.id);
-  if (index === -1) return [...steps, next];
-  return steps.map((step, itemIndex) => itemIndex === index ? { ...step, ...next } : step);
 }
 
 function WorkingTrace({ steps }: { steps: WorkStep[] }) {
@@ -214,33 +180,6 @@ function ApprovalCard({
   );
 }
 
-function resultCardForTool(name: string, result: any): ResultCard | null {
-  if (!result || typeof result !== "object" || result.error) return null;
-  if (name === "get_ci_details" && result.id && result.name) {
-    return {
-      id: `ci:${result.id}:${Date.now()}`,
-      type: "ci",
-      ci: {
-        id: String(result.id),
-        name: String(result.name),
-        class: result.class ? String(result.class) : undefined,
-        environment: result.environment ? String(result.environment) : undefined,
-        relationships: Array.isArray(result.relationships) ? result.relationships : [],
-      },
-    };
-  }
-  if (name === "get_service_map" && result.rootId && Array.isArray(result.nodes) && Array.isArray(result.edges)) {
-    return {
-      id: `service-map:${result.rootId}:${Date.now()}`,
-      type: "service-map",
-      rootId: String(result.rootId),
-      nodes: result.nodes,
-      edges: result.edges,
-    };
-  }
-  return null;
-}
-
 function ResultCardView({ card, onAction }: { card: ResultCard; onAction: (type: string, payload: string) => void }) {
   if (card.type === "ci") {
     const relationshipCount = card.ci.relationships?.length || 0;
@@ -309,20 +248,6 @@ function ResultCardView({ card, onAction }: { card: ResultCard; onAction: (type:
       </div>
     </div>
   );
-}
-
-function parseSseChunk(chunk: string) {
-  const data = chunk
-    .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trim())
-    .join("\n");
-  if (!data) return null;
-  try {
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
 }
 
 export function ChatOverlay() {

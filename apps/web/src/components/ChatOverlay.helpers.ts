@@ -4,6 +4,40 @@ export type ContextChip = {
   detail?: string;
 };
 
+export type WorkStep = {
+  id: string;
+  label: string;
+  status: "active" | "completed" | "error";
+};
+
+export type PendingApproval = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  risk: "high";
+  reason: string;
+};
+
+export type ResultCard =
+  | {
+      id: string;
+      type: "ci";
+      ci: {
+        id: string;
+        name: string;
+        class?: string;
+        environment?: string;
+        relationships?: Array<{ type?: string; direction?: string; target?: { id?: string; name?: string; class?: string } }>;
+      };
+    }
+  | {
+      id: string;
+      type: "service-map";
+      rootId: string;
+      nodes: Array<{ id: string; name?: string; class?: string }>;
+      edges: Array<{ type?: string; sourceId?: string; targetId?: string }>;
+    };
+
 export function parseActions(text: string) {
   const actionRegex = /\[\[action\|([^|]+)\|([^|]+)\|([^\[\]]+)\]\]/g;
   const actions: { type: string; payload: string; label: string }[] = [];
@@ -23,6 +57,19 @@ export function appLabel(value: string | undefined) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+export function toolLabel(name: string) {
+  return name
+    .replace(/_/g, " ")
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function updateWorkStep(steps: WorkStep[], next: WorkStep) {
+  const index = steps.findIndex((step) => step.id === next.id);
+  if (index === -1) return [...steps, next];
+  return steps.map((step, itemIndex) => itemIndex === index ? { ...step, ...next } : step);
 }
 
 export function contextChips(uiContext: Record<string, any>, activeApp: string): ContextChip[] {
@@ -77,4 +124,45 @@ export function sanitizeXml(text: string): string {
     .replace(/<result>[\s\S]*?<\/result>/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+export function resultCardForTool(name: string, result: any): ResultCard | null {
+  if (!result || typeof result !== "object" || result.error) return null;
+  if (name === "get_ci_details" && result.id && result.name) {
+    return {
+      id: `ci:${result.id}:${Date.now()}`,
+      type: "ci",
+      ci: {
+        id: String(result.id),
+        name: String(result.name),
+        class: result.class ? String(result.class) : undefined,
+        environment: result.environment ? String(result.environment) : undefined,
+        relationships: Array.isArray(result.relationships) ? result.relationships : [],
+      },
+    };
+  }
+  if (name === "get_service_map" && result.rootId && Array.isArray(result.nodes) && Array.isArray(result.edges)) {
+    return {
+      id: `service-map:${result.rootId}:${Date.now()}`,
+      type: "service-map",
+      rootId: String(result.rootId),
+      nodes: result.nodes,
+      edges: result.edges,
+    };
+  }
+  return null;
+}
+
+export function parseSseChunk(chunk: string) {
+  const data = chunk
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .join("\n");
+  if (!data) return null;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
 }
