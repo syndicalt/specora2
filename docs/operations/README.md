@@ -109,6 +109,33 @@ Before demo or production validation:
 - Confirm global chat can respond.
 - Confirm discovery jobs and edge enrollment routes are reachable if demonstrating discovery.
 
+## Railway Release Checklist
+
+Use the checked-in Railway checklist after each deployment to validate the public web/API boundary and the demo-ready app registry.
+
+```bash
+SPECORA_WEB_URL=https://specora-dev.specora.org \
+SPECORA_API_URL=https://gateway-dev.specora.org \
+SPECORA_ADMIN_EMAIL=admin@specora.org \
+SPECORA_ADMIN_PASSWORD='<admin password>' \
+pnpm railway:check
+```
+
+The script checks:
+
+- Web `/login` and root app shell reachability.
+- API `/healthz`, `/ready`, and `/graphql` reachability.
+- Admin password login when credentials are provided.
+- Authenticated app registry presence for Admin Console, Customer Portal, Settings, and Specora Arc.
+- Migration status when `DATABASE_URL` is set.
+- Documentation screenshot catalog presence.
+
+When checking migrations from a workstation, export the Railway PostgreSQL connection string first:
+
+```bash
+DATABASE_URL='<railway postgres public url>' pnpm railway:check
+```
+
 Related:
 
 - [Admin Guide](../admin/README.md)

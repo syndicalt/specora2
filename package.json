@@ -20,6 +20,7 @@
     "docs:screenshots": "node scripts/capture-docs-screenshots.mjs",
     "restore:rehearsal": "bash scripts/restore-rehearsal.sh",
     "release:check": "bash scripts/release-check.sh",
+    "railway:check": "bash scripts/railway-release-check.sh",
     "prod:ready": "RELEASE_CHECK_MODE=full bash scripts/release-check.sh",
     "certs:localhost": "bash scripts/generate-localhost-certs.sh"
   },
