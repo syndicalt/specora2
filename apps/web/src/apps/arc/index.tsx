@@ -113,14 +113,25 @@ export default function ArcApp() {
   const nativeApps = registry.filter((r) => r.source === "built-in" && !isOptionalPackage(r));
   const packageApps = registry.filter(isOptionalPackage);
   const externalApps = registry.filter((r) => r.source === "external");
+  const optionalPackagesAvailable = availableRegistry.filter(isOptionalPackage).length;
 
   return (
     <div className="h-full w-full flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
-        <h2 className="font-semibold text-sm flex items-center gap-2">
-          <Compass className="w-4 h-4 text-indigo-400" />
-          Specora Arc
-        </h2>
+      <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-gray-800 shrink-0">
+        <div>
+          <h2 className="font-semibold text-sm flex items-center gap-2">
+            <Compass className="w-4 h-4 text-indigo-400" />
+            Specora Arc
+          </h2>
+          <p className="mt-1 text-xs text-gray-500">
+            Admin-only governance for bundled platform apps, optional packages, and reviewed external Arc applications.
+          </p>
+        </div>
+        <div className="hidden items-center gap-2 md:flex">
+          <LifecycleBadge label={`${nativeApps.length} bundled`} tone="emerald" />
+          <LifecycleBadge label={`${optionalPackagesAvailable} packages`} tone="amber" />
+          <LifecycleBadge label={`${externalApps.length} external`} tone="indigo" />
+        </div>
       </div>
       <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 shrink-0">
         {(["discover", "installed", "submit"] as const).map((t) => (
@@ -137,6 +148,23 @@ export default function ArcApp() {
         )}
       </div>
       <div className="flex-1 overflow-auto p-4 pb-24">
+        <div className="mb-4 grid gap-3 lg:grid-cols-3">
+          <GovernanceNote
+            title="Platform bundled"
+            detail="Native Specora apps ship with the platform. Arc shows them for governance, but they cannot be uninstalled here."
+            tone="emerald"
+          />
+          <GovernanceNote
+            title="Optional packages"
+            detail="Package apps are installed or removed through API-backed provisioning jobs with auditable retention choices."
+            tone="amber"
+          />
+          <GovernanceNote
+            title="External Arc apps"
+            detail="Marketplace submissions require review before installation. Installed external apps remain separate from platform-bundled apps."
+            tone="indigo"
+          />
+        </div>
         {loading && tab !== "installed" ? (
           <div className="text-center text-gray-500 py-8 animate-pulse">Loading...</div>
         ) : tab === "discover" ? (
@@ -159,12 +187,18 @@ export default function ArcApp() {
                       </div>
                     </div>
                     <p className="text-xs text-gray-400 mt-2 line-clamp-2">{entry.description || "No description"}</p>
+                    <div className="mt-3">
+                      <LifecycleBadge
+                        label={optionalPackage ? `Optional package${entry.packageName ? ` · ${entry.packageName}` : ""}` : "Platform bundled"}
+                        tone={optionalPackage ? "amber" : "emerald"}
+                      />
+                    </div>
                     <div className="flex items-center justify-between mt-3">
                       <span className="text-xs text-gray-500">v{entry.version}</span>
                       {optionalPackage && !installed ? (
                         <button data-testid={`arc-install-${entry.id}`} onClick={() => handleInstallOptional(entry.id, entry.name)}
                           className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs text-white transition-colors">
-                          <Download className="w-3 h-3" /> Install
+                          <Download className="w-3 h-3" /> Install package
                         </button>
                       ) : (
                         <span className={`text-xs flex items-center gap-1 ${optionalPackage ? "text-amber-300" : "text-emerald-400"}`}>
@@ -191,6 +225,9 @@ export default function ArcApp() {
                     </div>
                   </div>
                   <p className="text-xs text-gray-400 mt-2 line-clamp-2">{app.description || "No description"}</p>
+                  <div className="mt-3">
+                    <LifecycleBadge label="Reviewed marketplace app" tone="indigo" />
+                  </div>
                   <div className="flex items-center justify-between mt-3">
                     <span className="text-xs text-gray-500">v{app.version}</span>
                     {installed ? (
@@ -198,7 +235,7 @@ export default function ArcApp() {
                     ) : (
                       <button onClick={() => handleInstall(app)}
                         className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs text-white transition-colors">
-                        <Download className="w-3 h-3" /> Install
+                        <Download className="w-3 h-3" /> Install external
                       </button>
                     )}
                   </div>
@@ -210,7 +247,10 @@ export default function ArcApp() {
           <div className="space-y-6">
             {/* Specora Native */}
             <div>
-              <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Specora Native</h3>
+              <div className="mb-2">
+                <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider">Platform-bundled native apps</h3>
+                <p className="mt-1 text-xs text-gray-600">Always installed with Specora; role permissions control visibility and operation.</p>
+              </div>
               {nativeApps.length === 0 ? (
                 <div className="text-center text-gray-500 py-6 text-sm">No native apps</div>
               ) : (
@@ -239,7 +279,10 @@ export default function ArcApp() {
 
             {/* Premium Packages */}
             <div>
-              <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Premium Packages</h3>
+              <div className="mb-2">
+                <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider">Optional package apps</h3>
+                <p className="mt-1 text-xs text-gray-600">Installed through provisioning jobs; uninstall can retain or clear package-owned data.</p>
+              </div>
               {packageApps.length === 0 ? (
                 <div className="text-center text-gray-500 py-6 text-sm">No premium package apps installed</div>
               ) : (
@@ -269,7 +312,10 @@ export default function ArcApp() {
 
             {/* Arc Applications */}
             <div>
-              <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Arc Applications</h3>
+              <div className="mb-2">
+                <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider">External Arc applications</h3>
+                <p className="mt-1 text-xs text-gray-600">Reviewed marketplace apps loaded through the shell sandbox and governed by declared permissions.</p>
+              </div>
               {externalApps.length === 0 ? (
                 <div className="text-center text-gray-500 py-6 text-sm">No Arc apps installed</div>
               ) : (
@@ -335,6 +381,25 @@ export default function ArcApp() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function lifecycleTone(tone: "emerald" | "amber" | "indigo") {
+  if (tone === "amber") return "border-amber-500/30 bg-amber-500/10 text-amber-100";
+  if (tone === "indigo") return "border-indigo-500/30 bg-indigo-500/10 text-indigo-100";
+  return "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
+}
+
+function LifecycleBadge({ label, tone }: { label: string; tone: "emerald" | "amber" | "indigo" }) {
+  return <span className={`inline-flex items-center rounded-full border px-2 py-1 text-xs ${lifecycleTone(tone)}`}>{label}</span>;
+}
+
+function GovernanceNote({ title, detail, tone }: { title: string; detail: string; tone: "emerald" | "amber" | "indigo" }) {
+  return (
+    <div className={`rounded-lg border p-3 ${lifecycleTone(tone)}`}>
+      <div className="text-sm font-medium">{title}</div>
+      <p className="mt-1 text-xs leading-5 opacity-80">{detail}</p>
     </div>
   );
 }
