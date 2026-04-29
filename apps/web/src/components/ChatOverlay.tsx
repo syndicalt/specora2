@@ -57,6 +57,26 @@ type PendingApproval = {
   reason: string;
 };
 
+type ResultCard =
+  | {
+      id: string;
+      type: "ci";
+      ci: {
+        id: string;
+        name: string;
+        class?: string;
+        environment?: string;
+        relationships?: Array<{ type?: string; direction?: string; target?: { id?: string; name?: string; class?: string } }>;
+      };
+    }
+  | {
+      id: string;
+      type: "service-map";
+      rootId: string;
+      nodes: Array<{ id: string; name?: string; class?: string }>;
+      edges: Array<{ type?: string; sourceId?: string; targetId?: string }>;
+    };
+
 function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -194,6 +214,103 @@ function ApprovalCard({
   );
 }
 
+function resultCardForTool(name: string, result: any): ResultCard | null {
+  if (!result || typeof result !== "object" || result.error) return null;
+  if (name === "get_ci_details" && result.id && result.name) {
+    return {
+      id: `ci:${result.id}:${Date.now()}`,
+      type: "ci",
+      ci: {
+        id: String(result.id),
+        name: String(result.name),
+        class: result.class ? String(result.class) : undefined,
+        environment: result.environment ? String(result.environment) : undefined,
+        relationships: Array.isArray(result.relationships) ? result.relationships : [],
+      },
+    };
+  }
+  if (name === "get_service_map" && result.rootId && Array.isArray(result.nodes) && Array.isArray(result.edges)) {
+    return {
+      id: `service-map:${result.rootId}:${Date.now()}`,
+      type: "service-map",
+      rootId: String(result.rootId),
+      nodes: result.nodes,
+      edges: result.edges,
+    };
+  }
+  return null;
+}
+
+function ResultCardView({ card, onAction }: { card: ResultCard; onAction: (type: string, payload: string) => void }) {
+  if (card.type === "ci") {
+    const relationshipCount = card.ci.relationships?.length || 0;
+    const incoming = card.ci.relationships?.filter((relationship) => relationship.direction === "incoming").length || 0;
+    const outgoing = Math.max(relationshipCount - incoming, 0);
+    return (
+      <div className="rounded-2xl border border-cyan-500/25 bg-cyan-500/10 p-3 text-sm text-cyan-50">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-base font-semibold">{card.ci.name}</div>
+            <div className="mt-0.5 flex flex-wrap gap-2 text-xs text-cyan-100/70">
+              {card.ci.class && <span>{card.ci.class}</span>}
+              {card.ci.environment && <span>{card.ci.environment}</span>}
+              <span>{relationshipCount} relationships</span>
+            </div>
+          </div>
+          <span className="rounded-full bg-cyan-400/15 px-2 py-1 text-[11px] font-semibold uppercase text-cyan-100">CI</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-xl border border-cyan-400/20 bg-gray-950/40 p-2">
+            <div className="text-cyan-100/50">Upstream</div>
+            <div className="mt-1 text-lg font-semibold text-cyan-50">{incoming}</div>
+          </div>
+          <div className="rounded-xl border border-cyan-400/20 bg-gray-950/40 p-2">
+            <div className="text-cyan-100/50">Downstream</div>
+            <div className="mt-1 text-lg font-semibold text-cyan-50">{outgoing}</div>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" onClick={() => onAction("open-ci-details", `id=${card.ci.id}`)} className="rounded-lg bg-cyan-300 px-3 py-1.5 text-xs font-medium text-gray-950 hover:bg-cyan-200">
+            Open CI
+          </button>
+          <button type="button" onClick={() => onAction("open-service-map", `rootId=${card.ci.id}`)} className="rounded-lg border border-cyan-400/30 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-400/10">
+            Service Map
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const root = card.nodes.find((node) => node.id === card.rootId);
+  const classes = Array.from(new Set(card.nodes.map((node) => node.class).filter(Boolean))).slice(0, 3);
+  return (
+    <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-50">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-base font-semibold">{root?.name || card.rootId}</div>
+          <div className="mt-0.5 truncate text-xs text-emerald-100/70">{classes.length ? classes.join(" | ") : "Service map"}</div>
+        </div>
+        <span className="rounded-full bg-emerald-400/15 px-2 py-1 text-[11px] font-semibold uppercase text-emerald-100">Map</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-xl border border-emerald-400/20 bg-gray-950/40 p-2">
+          <div className="text-emerald-100/50">Nodes</div>
+          <div className="mt-1 text-lg font-semibold text-emerald-50">{card.nodes.length}</div>
+        </div>
+        <div className="rounded-xl border border-emerald-400/20 bg-gray-950/40 p-2">
+          <div className="text-emerald-100/50">Relationships</div>
+          <div className="mt-1 text-lg font-semibold text-emerald-50">{card.edges.length}</div>
+        </div>
+      </div>
+      <div className="mt-3">
+        <button type="button" onClick={() => onAction("open-service-map", `rootId=${card.rootId}`)} className="rounded-lg bg-emerald-300 px-3 py-1.5 text-xs font-medium text-gray-950 hover:bg-emerald-200">
+          Open Service Map
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function parseSseChunk(chunk: string) {
   const data = chunk
     .split("\n")
@@ -230,6 +347,7 @@ export function ChatOverlay() {
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [workSteps, setWorkSteps] = useState<WorkStep[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
+  const [resultCards, setResultCards] = useState<ResultCard[]>([]);
   const doSendRef = useRef<(text: string, options?: { approvedToolNames?: string[] }) => Promise<void>>(async () => {});
   const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
   const chips = contextChips(uiContext, activeApp);
@@ -378,6 +496,7 @@ export function ChatOverlay() {
       const data = await res.json();
       setSessionId(data.session.id);
       setMessages([{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
+      setResultCards([]);
       setDropdownOpen(false);
       setSessionQuery("");
       await loadSessions();
@@ -391,6 +510,7 @@ export function ChatOverlay() {
     setLoading(true);
     setDropdownOpen(false);
     setSessionQuery("");
+    setResultCards([]);
     try {
       const res = await authFetch(`${API_URL}/api/chat/sessions/${id}/messages`);
       if (!res.ok) return;
@@ -414,6 +534,7 @@ export function ChatOverlay() {
       if (sessionId === id) {
         setSessionId(null);
         setMessages([{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
+        setResultCards([]);
       }
       await loadSessions();
     } catch {
@@ -545,6 +666,8 @@ export function ChatOverlay() {
           } else if (event.type === "tool_result") {
             const id = `tool:${event.name}`;
             setWorkSteps((steps) => updateWorkStep(steps, { id, label: `Ran ${toolLabel(event.name)}`, status: "completed" }));
+            const card = resultCardForTool(event.name, event.result);
+            if (card) setResultCards((cards) => [...cards, card]);
           } else if (event.type === "approval_required") {
             const approval: PendingApproval = {
               id: `${event.name}:${Date.now()}`,
@@ -943,6 +1066,13 @@ export function ChatOverlay() {
                 onApprove={approveAction}
                 onCancel={cancelAction}
               />
+            ))}
+          </div>
+        )}
+        {resultCards.length > 0 && (
+          <div className="space-y-3">
+            {resultCards.slice(-4).map((card) => (
+              <ResultCardView key={card.id} card={card} onAction={handleAction} />
             ))}
           </div>
         )}
