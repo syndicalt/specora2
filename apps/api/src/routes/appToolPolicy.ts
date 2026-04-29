@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { hasPermission } from "../services/rbac";
+import { hasPermission, resolveUserRole } from "../services/rbac";
 import { recordAuditEvent } from "../services/auditLog";
 
 export type AppToolUser = { id?: string; role?: string } | null;
@@ -57,8 +57,10 @@ export function resolveAppToolPolicy(appId: string, toolName: string): AppToolPo
 }
 
 export async function authorizeAppTool(fastify: FastifyInstance, user: AppToolUser, policy: AppToolPolicy) {
-  if (!user?.role) return { allowed: true, ...policy };
-  const allowed = await hasPermission(fastify.pg, { role: user.role, resource: policy.resource, action: policy.action });
+  if (policy.resource === "customer-portal") return { allowed: Boolean(user?.id), ...policy };
+  const role = await resolveUserRole(fastify.pg, user);
+  if (!role) return { allowed: false, ...policy };
+  const allowed = await hasPermission(fastify.pg, { role, resource: policy.resource, action: policy.action, userId: user?.id });
   return { allowed, ...policy };
 }
 

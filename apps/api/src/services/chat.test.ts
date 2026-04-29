@@ -133,6 +133,33 @@ describe("chat", () => {
     expect(result.content).toBe("Found 1 CI");
   });
 
+  it("does not expose or execute CMDB tools for users without roles", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-1",
+              function: { name: "search_cis", arguments: JSON.stringify({ name: "web" }) },
+            }],
+          },
+        }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "I cannot access CMDB data for this account." } }],
+      });
+
+    const fastify = mockFastify();
+    const result = await chat([{ role: "user", content: "Find servers" }], fastify, undefined, undefined, { id: "basic-1" });
+    const firstCall = mockCreate.mock.calls[0]?.[0] as any;
+
+    expect((firstCall.tools ?? []).some((tool: any) => tool.function.name === "search_cis")).toBe(false);
+    expect(fastify.neo4j.session).not.toHaveBeenCalled();
+    expect(result.toolCalls?.[0].result).toEqual({ error: "Forbidden: this account cannot read CMDB data." });
+    expect(result.content).toBe("I cannot access CMDB data for this account.");
+  });
+
   it("executes search_cis tool with no filters", async () => {
     mockCreate
       .mockResolvedValueOnce({

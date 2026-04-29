@@ -50,8 +50,26 @@ async function callProvara(
   return (await response.json()) as OpenAI.Chat.ChatCompletion;
 }
 
-function buildSystemPrompt(uiContext?: string): string {
+type ChatUser = { id?: string; role?: string } | undefined;
+
+type ChatAccessProfile = {
+  canUseCmdbTools: boolean;
+};
+
+function buildSystemPrompt(uiContext?: string, access: ChatAccessProfile = { canUseCmdbTools: true }): string {
   let prompt = `You are Specora Assistant, an AI-native IT Service Management expert. You have ZERO knowledge of the actual CMDB. Every fact about CIs, servers, databases, dependencies, or service maps must come from tool calls. Never guess or hallucinate.
+
+ACCESS CONTROL:
+Only answer with data and action links for tools that are available in this request. If the user asks about a module, app, CI, service map, report, or operational record they cannot access, explain that their current access does not include that workspace or data and route them to Customer Portal or an administrator. You may provide brief general product education, but do not expose operational data from restricted modules.`;
+
+  if (!access.canUseCmdbTools) {
+    prompt += `
+
+CURRENT USER ACCESS:
+This user does not have CMDB or relationship read access. Do not claim to search, retrieve, inspect, summarize, or open CIs, service maps, infrastructure relationships, discovery data, incidents, changes, assets, knowledge, health findings, reports, admin records, or audit records. Keep help focused on Customer Portal self-service, profile/settings, and general non-sensitive navigation.`;
+  }
+
+  prompt += `
 
 HOW TO ANSWER QUESTIONS:
 1. When the user asks about infrastructure, CIs, or dependencies, immediately call the relevant tool(s). Use search_cis, get_ci_details, get_service_map, count_cis, or other available tools.
@@ -489,19 +507,30 @@ function toolToAction(toolName: string): string {
   return writePrefixes.some((prefix) => toolName.startsWith(prefix)) ? "write" : "read";
 }
 
-async function canUseAppTool(fastify: FastifyInstance, user: { role?: string } | undefined, fullToolName: string): Promise<boolean> {
-  if (!user?.role) return false;
-  if (user.role === "admin" || user.role === "security_admin") return true;
+async function canUseAppTool(fastify: FastifyInstance, user: ChatUser, fullToolName: string): Promise<boolean> {
   const separator = fullToolName.indexOf("_");
   if (separator < 0) return false;
   const appId = fullToolName.slice(0, separator);
+  if (!user?.role) return appId === "customer-portal";
+  if (user.role === "admin" || user.role === "security_admin") return true;
   const toolName = fullToolName.slice(separator + 1);
   const resource = APP_TOOL_RESOURCE_MAP[appId] || appId;
   const action = toolToAction(toolName);
-  return hasPermission(fastify.pg, { role: user.role, resource, action });
+  return hasPermission(fastify.pg, { role: user.role, resource, action, userId: user.id });
 }
 
-async function getAllTools(fastify: FastifyInstance, user?: { role?: string }): Promise<OpenAI.Chat.ChatCompletionTool[]> {
+async function canUseCmdbTools(fastify: FastifyInstance, user: ChatUser): Promise<boolean> {
+  if (user === undefined) return true;
+  if (!user?.role) return false;
+  if (user.role === "admin" || user.role === "security_admin") return true;
+  return hasPermission(fastify.pg, { role: user.role, resource: "cmdb", action: "read", userId: user.id });
+}
+
+async function getAccessProfile(fastify: FastifyInstance, user: ChatUser): Promise<ChatAccessProfile> {
+  return { canUseCmdbTools: await canUseCmdbTools(fastify, user) };
+}
+
+async function getAllTools(fastify: FastifyInstance, user?: { id?: string; role?: string }): Promise<OpenAI.Chat.ChatCompletionTool[]> {
   const appTools = [];
   for (const tool of getToolsForSession("system")) {
     if (await canUseAppTool(fastify, user, tool.name)) {
@@ -516,7 +545,8 @@ async function getAllTools(fastify: FastifyInstance, user?: { role?: string }): 
       parameters: tool.parameters as any,
     },
   }));
-  return [...CORE_TOOLS, ...mappedAppTools];
+  const coreTools = await canUseCmdbTools(fastify, user) ? CORE_TOOLS : [];
+  return [...coreTools, ...mappedAppTools];
 }
 
 async function executeCoreTool(
@@ -732,12 +762,19 @@ async function executeCoreTool(
 async function executeTool(
   name: string,
   args: any,
-  fastify: FastifyInstance
+  fastify: FastifyInstance,
+  user?: { id?: string; role?: string }
 ): Promise<any> {
   // Check if it's a core tool
   const isCoreTool = CORE_TOOLS.some((t) => t.function?.name === name);
   if (isCoreTool) {
+    if (!(await canUseCmdbTools(fastify, user))) {
+      return { error: "Forbidden: this account cannot read CMDB data." };
+    }
     return executeCoreTool(name, args, fastify);
+  }
+  if (!(await canUseAppTool(fastify, user, name))) {
+    return { error: "Forbidden: this account cannot use that app tool." };
   }
   // Otherwise, delegate to app tool registry
   return executeAppTool(name, args, fastify);
@@ -821,7 +858,7 @@ export async function chat(
 
   const MAX_TOOL_ROUNDS = 3;
   let currentMessages: any[] = [
-    { role: "system" as const, content: buildSystemPrompt(uiContext) },
+    { role: "system" as const, content: buildSystemPrompt(uiContext, await getAccessProfile(fastify, user)) },
     ...recentMessages.map((m) => ({
       role: m.role as any,
       content: m.content,
@@ -935,7 +972,7 @@ export async function chat(
 
       let result: any;
       try {
-        result = await executeTool(toolCall.function.name, args, fastify);
+        result = await executeTool(toolCall.function.name, args, fastify, user);
         await toolSpan?.end({ status: "completed", toolResult: result });
       } catch (err: any) {
         await toolSpan?.end({ status: "failed", error: err.message });
@@ -1288,7 +1325,7 @@ export async function chatStream(
 
   const MAX_TOOL_ROUNDS = 3;
   let currentMessages: any[] = [
-    { role: "system" as const, content: buildSystemPrompt(uiContext) },
+    { role: "system" as const, content: buildSystemPrompt(uiContext, await getAccessProfile(fastify, user)) },
     ...recentMessages.map((m) => ({
       role: m.role as any,
       content: m.content,
@@ -1415,7 +1452,7 @@ export async function chatStream(
 
       let result: any;
       try {
-        result = await executeTool(toolCall.function.name, args, fastify);
+        result = await executeTool(toolCall.function.name, args, fastify, user);
         await toolSpan?.end({ status: "completed", toolResult: result });
       } catch (err: any) {
         await toolSpan?.end({ status: "failed", error: err.message });

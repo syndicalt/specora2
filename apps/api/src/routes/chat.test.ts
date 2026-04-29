@@ -40,6 +40,18 @@ describe("POST /api/chat", () => {
     expect(body.sessionId).toBeDefined();
   });
 
+  it("filters chat capabilities to apps visible to the signed-in user", async () => {
+    const app = await buildApp([]);
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/chat/capabilities",
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.capabilities.map((group: any) => group.appId)).toEqual(["customer-portal"]);
+  });
+
   it("returns assistant response with existing sessionId", async () => {
     vi.spyOn(chatService, "chat").mockResolvedValue({ content: "Hello again" });
     const app = await buildApp([

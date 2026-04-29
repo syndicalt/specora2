@@ -10,7 +10,7 @@ vi.mock("@specora/sdk", () => ({
 }));
 
 describe("appToolRoutes", () => {
-  async function buildApp() {
+  async function buildApp(user: { id?: string; role?: string } = { id: "admin-1", role: "admin" }) {
     const app = Fastify();
     app.decorate("pg", {
       query: vi.fn(async () => ({
@@ -27,7 +27,9 @@ describe("appToolRoutes", () => {
         }],
       })),
     });
-    app.decorate("authenticate", async () => {});
+    app.decorate("authenticate", async (request: any) => {
+      request.user = user;
+    });
     await app.register(appToolRoutes);
     return app;
   }
@@ -83,10 +85,34 @@ describe("appToolRoutes", () => {
         appId: "health-monitor",
         toolName: "find_cycles",
         args: { maxDepth: 5 },
-        user: { id: undefined, role: undefined },
+        user: { id: "admin-1", role: "admin" },
       }),
       0,
     ]);
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["app_tool.queued", "AppTool", "health-monitor_find_cycles"]));
+  });
+
+  it("does not expose non-portal tools to users without roles", async () => {
+    const app = await buildApp({ id: "basic-1" });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/apps/health-monitor/tools",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload)).toEqual([]);
+  });
+
+  it("denies non-portal tool execution for users without roles", async () => {
+    const app = await buildApp({ id: "basic-1" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/apps/health-monitor/tools/find_cycles",
+      payload: { maxDepth: 5 },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.payload).error).toContain("cannot read health-monitor");
   });
 });

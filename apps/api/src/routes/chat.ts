@@ -10,6 +10,8 @@ import {
   setSessionTraceId,
 } from "../services/chatSession";
 import { SessionTrace } from "../services/pathlightSession";
+import { getVisibleApps } from "../services/appRegistry";
+import { resolveUserRole } from "../services/rbac";
 
 const BUILTIN_CHAT_CAPABILITIES = [
   {
@@ -116,8 +118,10 @@ const BUILTIN_CHAT_CAPABILITIES = [
 
 export async function chatRoutes(fastify: FastifyInstance) {
   // Chat capabilities catalog
-  fastify.get("/api/chat/capabilities", { onRequest: [fastify.authenticate] }, async (_request, _reply) => {
-    return { capabilities: BUILTIN_CHAT_CAPABILITIES };
+  fastify.get("/api/chat/capabilities", { onRequest: [fastify.authenticate] }, async (request, _reply) => {
+    const user = request.user as { id?: string; email?: string; role?: string } | null;
+    const visibleAppIds = new Set((await getVisibleApps(fastify, user)).map((app) => app.id));
+    return { capabilities: BUILTIN_CHAT_CAPABILITIES.filter((group) => visibleAppIds.has(group.appId)) };
   });
 
   // List sessions
@@ -182,7 +186,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
     onRequest: [fastify.authenticate],
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
   }, async (request, reply) => {
-    const user = request.user as { id: string; email: string };
+    const authenticatedUser = request.user as { id: string; email: string; role?: string };
+    const role = await resolveUserRole(fastify.pg, authenticatedUser);
+    const user = { ...authenticatedUser, role: role ?? undefined };
     const body = request.body as {
       messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[];
       sessionId?: string;
@@ -307,7 +313,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
     onRequest: [fastify.authenticate],
     config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
   }, async (request, reply) => {
-    const user = request.user as { id: string; email: string; role?: string };
+    const authenticatedUser = request.user as { id: string; email: string; role?: string };
+    const role = await resolveUserRole(fastify.pg, authenticatedUser);
+    const user = { ...authenticatedUser, role: role ?? undefined };
     const body = request.body as {
       messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[];
       sessionId?: string;
