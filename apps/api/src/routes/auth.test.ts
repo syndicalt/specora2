@@ -379,7 +379,7 @@ describe("auth routes", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/register",
-      payload: { email: "bob@specora.dev", password: "secret", name: "Bob" },
+      payload: { email: "bob@specora.dev", password: "secret123", name: "Bob" },
     });
 
     expect(res.statusCode).toBe(200);
