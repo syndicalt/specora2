@@ -43,6 +43,12 @@ interface AppCapabilityGroup {
   capabilities: Capability[];
 }
 
+type WorkStep = {
+  id: string;
+  label: string;
+  status: "active" | "completed" | "error";
+};
+
 function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -95,6 +101,53 @@ function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
   );
 }
 
+function toolLabel(name: string) {
+  return name
+    .replace(/_/g, " ")
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function updateWorkStep(steps: WorkStep[], next: WorkStep) {
+  const index = steps.findIndex((step) => step.id === next.id);
+  if (index === -1) return [...steps, next];
+  return steps.map((step, itemIndex) => itemIndex === index ? { ...step, ...next } : step);
+}
+
+function WorkingTrace({ steps }: { steps: WorkStep[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <div className="rounded-2xl rounded-bl-md border border-gray-800 bg-gray-900/80 px-3 py-2 text-xs text-gray-400">
+      <div className="mb-1.5 flex items-center gap-2 font-medium text-gray-300">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
+        Working steps
+      </div>
+      <div className="space-y-1">
+        {steps.map((step) => (
+          <div key={step.id} className="flex items-center gap-2">
+            <span className={`h-1.5 w-1.5 rounded-full ${step.status === "completed" ? "bg-emerald-300" : step.status === "error" ? "bg-red-300" : "bg-cyan-300"}`} />
+            <span className={step.status === "active" ? "text-gray-200" : "text-gray-500"}>{step.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function parseSseChunk(chunk: string) {
+  const data = chunk
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .join("\n");
+  if (!data) return null;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
 export function ChatOverlay() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -115,6 +168,7 @@ export function ChatOverlay() {
   const [uiContext, setUiContext] = useState<Record<string, any>>({});
   const [forceDatePicker, setForceDatePicker] = useState(false);
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
+  const [workSteps, setWorkSteps] = useState<WorkStep[]>([]);
   const doSendRef = useRef<(text: string) => Promise<void>>(async () => {});
   const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
   const chips = contextChips(uiContext, activeApp);
@@ -362,13 +416,14 @@ export function ChatOverlay() {
     if (uiContext.selectedCI) contextParts.push(`Selected CI in CMDB Explorer: ${uiContext.selectedCI.name} (${uiContext.selectedCI.id})`);
     const uiContextString = contextParts.join("\n");
 
-    // Use non-streaming endpoint for reliable tool calling
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       const controller = new AbortController();
       abortRef.current = controller;
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      timeoutId = setTimeout(() => controller.abort(), 120000);
+      setWorkSteps([{ id: "context", label: "Preparing platform context", status: "active" }]);
 
-      const res = await authFetch(`${API_URL}/api/chat`, {
+      const res = await authFetch(`${API_URL}/api/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -380,37 +435,88 @@ export function ChatOverlay() {
         }),
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error(`Chat failed with ${res.status}`);
+      if (!res.body) throw new Error("Chat stream unavailable");
 
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      setWorkSteps((steps) => updateWorkStep(updateWorkStep(steps, { id: "context", label: "Preparing platform context", status: "completed" }), { id: "assistant", label: "Asking assistant", status: "active" }));
 
-      const text = sanitizeXml(data.content || "");
-      const { actions } = parseActions(text);
-      // Only add assistant message if it has text or actions (buttons)
-      if (text.trim() || actions.length > 0) {
-        setMessages((prev) => [...prev, { role: "assistant", text }]);
-      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamedText = "";
 
-      if (data.sessionId && !sessionId) {
-        setSessionId(data.sessionId);
-        await loadSessions();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+
+        for (const chunk of chunks) {
+          const event = parseSseChunk(chunk);
+          if (!event) continue;
+
+          if (event.type === "token") {
+            streamedText += event.content || "";
+            setWorkSteps((steps) => updateWorkStep(steps, { id: "assistant", label: "Drafting response", status: "active" }));
+            setMessages((prev) => {
+              const next = [...prev];
+              if (next[next.length - 1]?.role === "assistant") {
+                next[next.length - 1] = { role: "assistant", text: streamedText };
+              } else {
+                next.push({ role: "assistant", text: streamedText });
+              }
+              return next;
+            });
+          } else if (event.type === "tool_call") {
+            const id = `tool:${event.name}`;
+            setWorkSteps((steps) => updateWorkStep(updateWorkStep(steps, { id: "assistant", label: "Asking assistant", status: "completed" }), { id, label: `Running ${toolLabel(event.name)}`, status: "active" }));
+          } else if (event.type === "tool_result") {
+            const id = `tool:${event.name}`;
+            setWorkSteps((steps) => updateWorkStep(steps, { id, label: `Ran ${toolLabel(event.name)}`, status: "completed" }));
+          } else if (event.type === "done") {
+            const text = sanitizeXml(event.content || streamedText);
+            const { actions } = parseActions(text);
+            if (text.trim() || actions.length > 0) {
+              setMessages((prev) => {
+                const next = [...prev];
+                if (next[next.length - 1]?.role === "assistant") {
+                  next[next.length - 1] = { role: "assistant", text };
+                } else {
+                  next.push({ role: "assistant", text });
+                }
+                return next;
+              });
+            }
+            if (event.sessionId && !sessionId) {
+              setSessionId(event.sessionId);
+              await loadSessions();
+            }
+            setWorkSteps((steps) => updateWorkStep(steps, { id: "assistant", label: "Drafted response", status: "completed" }));
+          } else if (event.type === "error") {
+            throw new Error(event.message || "Chat failed");
+          }
+        }
       }
     } catch (err: any) {
       if (err?.name === "AbortError") {
+        setWorkSteps((steps) => updateWorkStep(steps, { id: "assistant", label: "Stopped response", status: "error" }));
         setMessages((prev) => [
           ...prev,
           { role: "assistant", text: "Stopped." },
         ]);
         return;
       }
+      setWorkSteps((steps) => updateWorkStep(steps, { id: "assistant", label: "Chat failed", status: "error" }));
       setMessages((prev) => [
         ...prev,
         { role: "assistant", text: `Error: ${err.message || "Failed to reach AI backend"}` },
       ]);
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
       abortRef.current = null;
       setLoading(false);
+      window.setTimeout(() => setWorkSteps([]), 1600);
     }
   }, [activeApp, messages, loading, sessionId, uiContext]);
   doSendRef.current = doSend;
@@ -791,10 +897,7 @@ export function ChatOverlay() {
 
         {loading && (
           <div className="flex justify-start">
-            <div className="flex items-center gap-2 rounded-2xl rounded-bl-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-400">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
-              Working with platform context...
-            </div>
+            <WorkingTrace steps={workSteps.length > 0 ? workSteps : [{ id: "assistant", label: "Working with platform context", status: "active" }]} />
           </div>
         )}
         <div ref={messagesEndRef} />
