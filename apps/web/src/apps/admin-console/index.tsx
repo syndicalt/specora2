@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { getToken } from "@/lib/auth";
-import { getApiBase } from "@/lib/runtimeApi";
 import { DEFAULT_PASSWORD_POLICY, normalizePasswordPolicy } from "@/lib/passwordPolicy";
 import {
   Activity,
@@ -85,6 +84,7 @@ import type {
   ToolAccessExplanation,
   AdminScreenContextInput,
 } from "./types";
+import { ADMIN_API_URL, adminGraphql } from "./adminApi";
 
 
 
@@ -269,26 +269,12 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [showCredentialSecret, setShowCredentialSecret] = useState(false);
   const [newSequence, setNewSequence] = useState({ appId: "", tableName: "", recordType: "", prefix: "", nextValue: "1", padding: "6" });
 
-  const API_URL = getApiBase();
+  const API_URL = ADMIN_API_URL;
 
   useEffect(() => {
     fetchData();
     fetchEnvironmentChoices();
   }, []);
-
-  async function adminGraphql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-    const token = getToken();
-    const res = await fetch(`${API_URL}/graphql`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
-      body: JSON.stringify({ query, variables }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.errors?.length) {
-      throw new Error(data.errors?.[0]?.message || "GraphQL request failed");
-    }
-    return data.data as T;
-  }
 
   async function fetchEnvironmentChoices() {
     try {
