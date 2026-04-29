@@ -402,6 +402,64 @@ describe("appTools", () => {
     expect(gap.confidence).toBe(0);
   });
 
+  it("knowledge tools list details, draft from records, and return stewardship work", async () => {
+    await register();
+    const { executeTool } = await import("@specora/sdk");
+    const list = tool("knowledge-core_list_knowledge");
+    const details = tool("knowledge-core_get_knowledge_details");
+    const draft = tool("knowledge-core_draft_from_record");
+    const stewardship = tool("knowledge-core_stewardship_queue");
+
+    vi.mocked(executeTool).mockReset();
+    vi.mocked(executeTool).mockResolvedValue({ id: "kb-draft", title: "Known error: API outage" });
+    const pg = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT * FROM knowledge_items WHERE 1=1")) {
+          return { rows: [{ id: "kb-1", title: "API runbook", status: "published", type: "runbook", tags: ["api"], trust_score: 0.8, reuse_count: 10, deflection_count: 2, last_validated_at: new Date().toISOString() }] };
+        }
+        if (sql === "SELECT * FROM knowledge_items WHERE id = $1") {
+          return { rows: [{ id: "kb-1", title: "API runbook", content: "Restart API", status: "published", trust_score: 0.8, reuse_count: 10, deflection_count: 2, last_validated_at: new Date().toISOString() }] };
+        }
+        if (sql.includes("SELECT * FROM knowledge_links")) return { rows: [{ id: "link-1", target_type: "incident", target_id: "inc-1" }] };
+        if (sql.includes("FROM knowledge_feedback")) return { rows: [{ id: "fb-1", outcome: "solved", user_name: "Ada" }] };
+        if (sql.includes("FROM knowledge_events")) return { rows: [{ id: "evt-1", type: "created", actor: "Ada" }] };
+        if (sql.includes("FROM incidents WHERE id = $1")) {
+          return { rows: [{ title: "API outage", description: "Errors spiked", service: "Payments", ci_id: "ci-1", ai_summary: "Deploy correlated", ai_next_action: "Rollback check" }] };
+        }
+        if (sql.includes("FROM change_requests WHERE id = $1")) {
+          return { rows: [{ title: "Patch API", description: "Apply patch", ci_id: "ci-1", priority: "medium" }] };
+        }
+        if (sql.includes("WHERE status IN ('draft', 'review')")) return { rows: [{ id: "kb-stale", title: "Old article", status: "draft", trust_score: 0.4 }] };
+        if (sql.includes("FROM knowledge_gaps")) return { rows: [{ id: "gap-1", query: "vpn reset", demand_count: 4 }] };
+        return { rows: [] };
+      }),
+    };
+
+    const listed = await list({ type: "runbook", status: "published", tag: "API", ciId: "ci-1", limit: 999 }, { pg });
+    expect(listed).toHaveLength(1);
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("AND $3 = ANY(tags)"), ["runbook", "published", "api", "ci-1", 250]);
+
+    await expect(details({ knowledgeId: "missing" }, { pg: { query: vi.fn(async () => ({ rows: [] })) } })).resolves.toEqual({ error: "Knowledge not found" });
+    expect(await details({ knowledgeId: "kb-1" }, { pg })).toMatchObject({
+      id: "kb-1",
+      links: [{ id: "link-1" }],
+      feedback: [{ id: "fb-1" }],
+      events: [{ id: "evt-1" }],
+    });
+    expect(await draft({ sourceType: "incident", sourceId: "inc-1", _userId: "u1" }, { pg })).toMatchObject({ id: "kb-draft" });
+    expect(vi.mocked(executeTool)).toHaveBeenCalledWith("knowledge-core_create_knowledge", expect.objectContaining({
+      title: "Known error: API outage",
+      type: "known_error",
+      service: "Payments",
+      ciId: "ci-1",
+    }), { pg });
+    expect(await draft({ sourceType: "change", sourceId: "rfc-1", _userId: "u1" }, { pg })).toMatchObject({ id: "kb-draft" });
+
+    const queue = await stewardship({ limit: 999 }, { pg });
+    expect(queue).toMatchObject({ items: [{ id: "kb-stale" }], gaps: [{ id: "gap-1" }] });
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("FROM knowledge_gaps"), [100]);
+  });
+
   it("prevention tools create, list, propose, and transition candidates", async () => {
     await register();
     const create = tool("prevention-center_create_candidate");
@@ -423,6 +481,58 @@ describe("appTools", () => {
     expect(await list({ status: "candidate" }, { pg })).toHaveLength(1);
     expect(await details({ preventionId: "p1" }, { pg })).toMatchObject({ id: "p1", actions: [] });
     expect(await transition({ preventionId: "p1", status: "monitoring" }, { pg })).toMatchObject({ status: "monitoring" });
+  });
+
+  it("prevention tools detect recurring candidates, propose actions, and create known errors", async () => {
+    await register();
+    const { executeTool } = await import("@specora/sdk");
+    const detect = tool("prevention-center_detect_candidates");
+    const propose = tool("prevention-center_propose_actions");
+    const createKnownError = tool("prevention-center_create_known_error");
+    const details = tool("prevention-center_get_candidate_details");
+
+    vi.mocked(executeTool).mockReset();
+    vi.mocked(executeTool)
+      .mockResolvedValueOnce({ error: "Prevention record not found" })
+      .mockResolvedValueOnce({ id: "p1", title: "Prevent API repeats", description: "Recurring API failures", service: "Payments", ci_id: "ci-1" })
+      .mockResolvedValueOnce({ id: "p1", title: "Prevent API repeats", description: "Recurring API failures", service: "Payments", ci_id: "ci-1" })
+      .mockResolvedValueOnce({ id: "kb-1", title: "Known error: Prevent API repeats" });
+    const pg = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("FROM incidents")) {
+          return { rows: [{ cluster_key: "Payments", service: "Payments", ci_id: "ci-1", recurrence_count: 4, max_severity: "high", examples: "API down; API slow" }] };
+        }
+        if (sql.includes("INSERT INTO prevention_records")) {
+          return { rows: [{ id: "p1", title: "Prevent recurring incidents for Payments", priority: 1, service: "Payments" }] };
+        }
+        if (sql.includes("INSERT INTO prevention_actions")) {
+          return { rows: [{ id: `pa-${Math.random()}`, prevention_id: "p1", type: "known_error" }] };
+        }
+        if (sql.includes("SELECT * FROM prevention_records WHERE id = $1")) {
+          return { rows: [{ id: "p1", title: "Prevent API repeats", known_error_id: "kb-1" }] };
+        }
+        if (sql.includes("SELECT * FROM prevention_evidence")) return { rows: [{ id: "ev-1", source_type: "incident" }] };
+        if (sql.includes("SELECT * FROM prevention_actions")) return { rows: [{ id: "act-1", type: "known_error" }] };
+        if (sql.includes("FROM prevention_events")) return { rows: [{ id: "evt-1", type: "detected" }] };
+        if (sql.includes("FROM knowledge_items WHERE id = $1")) return { rows: [{ id: "kb-1", title: "Known error", status: "draft" }] };
+        return { rows: [] };
+      }),
+    };
+
+    const detected = await detect({ windowDays: 14, minRecurrence: 3, _userId: "u1" }, { pg });
+    expect(detected).toMatchObject({ count: 1, candidates: [{ id: "p1", service: "Payments" }] });
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("HAVING COUNT(*) >= $2"), [14, 3]);
+
+    await expect(propose({ preventionId: "missing" }, { pg })).resolves.toEqual({ error: "Prevention record not found" });
+    expect(await propose({ preventionId: "p1", _userId: "u1" }, { pg })).toMatchObject({ preventionId: "p1", actions: expect.any(Array) });
+    expect(await details({ preventionId: "p1" }, { pg })).toMatchObject({ id: "p1", knownError: { id: "kb-1" } });
+    expect(await createKnownError({ preventionId: "p1", _userId: "u1" }, { pg })).toMatchObject({ id: "kb-1" });
+    expect(vi.mocked(executeTool)).toHaveBeenCalledWith("knowledge-core_create_knowledge", expect.objectContaining({
+      title: "Known error: Prevent API repeats",
+      source: "prevention",
+      sourceRef: "p1",
+      links: [{ targetType: "prevention", targetId: "p1", relationship: "known_error_for" }],
+    }), { pg });
   });
 
   it("incident tools create, list, load details, and map CI context", async () => {
@@ -536,6 +646,7 @@ describe("appTools", () => {
     const stakeholder = tool("incident-manager_draft_stakeholder_update");
     const postmortem = tool("incident-manager_generate_postmortem");
 
+    vi.mocked(executeTool).mockReset();
     vi.mocked(executeTool).mockResolvedValue({
       id: "inc-1",
       title: "Payments outage",
