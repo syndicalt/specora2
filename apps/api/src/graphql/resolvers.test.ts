@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import neo4j from "neo4j-driver";
+import bcrypt from "bcryptjs";
 import { resolvers } from "./resolvers";
 import { clearPermissionCache } from "../services/rbac";
 
@@ -1091,11 +1092,14 @@ describe("Mutation.updateRelationship", () => {
 
 describe("Query.me", () => {
   it("returns user when authenticated", async () => {
-    const pg = mockPg([{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice", email: "alice@specora.dev", preferences: { theme: "dark" } }]);
+    const hash = await bcrypt.hash("secret123", 4);
+    const pg = mockPg([{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice", email: "alice@specora.dev", preferences: { theme: "dark" }, role: "admin", password_hash: hash, password_change_required: true, oauth_accounts: 0 }]);
     const result = await resolvers.Query.me(null, {}, mockContextWithPg(mockNeo4jSession(), pg));
     expect(result.id).toBe("550e8400-e29b-41d4-a716-446655440001");
     expect(result.name).toBe("Alice");
     expect(result.preferences).toEqual({ theme: "dark" });
+    expect(result.canChangePassword).toBe(true);
+    expect(result.passwordChangeRequired).toBe(true);
   });
 
   it("returns null when not authenticated", async () => {
@@ -1137,6 +1141,53 @@ describe("Mutation.updateProfile", () => {
     await expect(
       resolvers.Mutation.updateProfile(null, { name: "A" }, mockContextWithPg(mockNeo4jSession(), mockPg()))
     ).rejects.toThrow("Display name must be between 2 and 120 characters");
+  });
+});
+
+describe("Mutation.changePassword", () => {
+  it("changes a local password and clears first-login rotation", async () => {
+    const oldHash = await bcrypt.hash("secret123", 4);
+    const pg = mockPgSequence([
+      { rows: [{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice", email: "alice@specora.dev", preferences: {}, role: "admin", password_hash: oldHash, password_change_required: true, oauth_accounts: 0 }] },
+      { rows: [{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice", email: "alice@specora.dev", preferences: {}, role: "admin", password_hash: "new-hash", password_change_required: false, oauth_accounts: 0 }] },
+    ]);
+
+    const result = await resolvers.Mutation.changePassword(
+      null,
+      { currentPassword: "secret123", newPassword: "new-secret123" },
+      mockContextWithPg(mockNeo4jSession(), pg)
+    );
+
+    expect(result.passwordChangeRequired).toBe(false);
+    expect(result.canChangePassword).toBe(true);
+    expect(pg.query).toHaveBeenLastCalledWith(
+      expect.stringContaining("password_change_required = FALSE"),
+      [expect.any(String), "550e8400-e29b-41d4-a716-446655440001"]
+    );
+  });
+
+  it("rejects bad password changes and federated-only accounts", async () => {
+    const oldHash = await bcrypt.hash("secret123", 4);
+    await expect(
+      resolvers.Mutation.changePassword(null, { currentPassword: "secret123", newPassword: "short" }, mockContextWithPg(mockNeo4jSession(), mockPg()))
+    ).rejects.toThrow("New password must be between 8 and 128 characters");
+    await expect(
+      resolvers.Mutation.changePassword(null, { currentPassword: "secret123", newPassword: "secret123" }, mockContextWithPg(mockNeo4jSession(), mockPg()))
+    ).rejects.toThrow("New password must be different");
+    await expect(
+      resolvers.Mutation.changePassword(
+        null,
+        { currentPassword: "wrong", newPassword: "new-secret123" },
+        mockContextWithPg(mockNeo4jSession(), mockPg([{ id: "550e8400-e29b-41d4-a716-446655440001", password_hash: oldHash, role: "admin" }]))
+      )
+    ).rejects.toThrow("Current password is incorrect");
+    await expect(
+      resolvers.Mutation.changePassword(
+        null,
+        { currentPassword: "secret123", newPassword: "new-secret123" },
+        mockContextWithPg(mockNeo4jSession(), mockPg([{ id: "550e8400-e29b-41d4-a716-446655440001", password_hash: "sso:saml:abc", role: "admin" }]))
+      )
+    ).rejects.toThrow("Password changes are only available for local password accounts");
   });
 });
 

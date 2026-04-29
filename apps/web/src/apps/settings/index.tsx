@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Palette, Save, Trash2, User } from "lucide-react";
+import { AlertTriangle, Check, Eye, EyeOff, Lock, Palette, Save, Trash2, User } from "lucide-react";
 import type { ShellAPI } from "@/sdk/types";
 import { applyTheme, DEFAULT_THEME, isThemeId, THEME_OPTIONS, type ThemeId } from "@/lib/themes";
 
-const ME_QUERY = `query { me { id name email role preferences } }`;
+const ME_QUERY = `query { me { id name email role preferences authMethod canChangePassword passwordChangeRequired } }`;
 
 const UPDATE_PREFS_MUTATION = `
   mutation UpdatePreferences($preferences: JSON!) {
@@ -15,7 +15,15 @@ const UPDATE_PREFS_MUTATION = `
 
 const UPDATE_PROFILE_MUTATION = `
   mutation UpdateProfile($name: String!) {
-    updateProfile(name: $name) { id name email role preferences }
+    updateProfile(name: $name) { id name email role preferences authMethod canChangePassword passwordChangeRequired }
+  }
+`;
+
+const CHANGE_PASSWORD_MUTATION = `
+  mutation ChangePassword($currentPassword: String!, $newPassword: String!) {
+    changePassword(currentPassword: $currentPassword, newPassword: $newPassword) {
+      id name email role preferences authMethod canChangePassword passwordChangeRequired
+    }
   }
 `;
 
@@ -24,6 +32,9 @@ type SettingsUser = {
   email: string;
   name: string;
   role?: string;
+  authMethod?: string;
+  canChangePassword?: boolean;
+  passwordChangeRequired?: boolean;
   preferences?: Record<string, any>;
 };
 
@@ -34,6 +45,42 @@ function initialsFor(name?: string, email?: string) {
   return initials || "U";
 }
 
+function PasswordField({
+  label,
+  value,
+  onChange,
+  autoComplete,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  autoComplete: string;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-gray-500">{label}</span>
+      <div className="relative mt-1">
+        <input
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          type={visible ? "text" : "password"}
+          autoComplete={autoComplete}
+          className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 pr-10 text-sm text-gray-100 outline-none transition-colors focus:border-cyan-400"
+        />
+        <button
+          type="button"
+          onClick={() => setVisible((current) => !current)}
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 transition-colors hover:bg-gray-800 hover:text-gray-200"
+          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
+        >
+          {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+    </label>
+  );
+}
+
 export default function SettingsApp({ shell }: { shell: ShellAPI }) {
   const [user, setUser] = useState<SettingsUser | null>(null);
   const [theme, setTheme] = useState<ThemeId>(DEFAULT_THEME);
@@ -41,6 +88,10 @@ export default function SettingsApp({ shell }: { shell: ShellAPI }) {
   const [saved, setSaved] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingTheme, setSavingTheme] = useState<ThemeId | null>(null);
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const themeTouchedRef = useRef(false);
 
   useEffect(() => {
@@ -108,6 +159,35 @@ export default function SettingsApp({ shell }: { shell: ShellAPI }) {
     }
   }
 
+  async function changePassword() {
+    if (!user?.canChangePassword || savingPassword) return;
+    if (newPassword.length < 8) {
+      shell.notify("New password must be at least 8 characters", "error");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      shell.notify("New password confirmation does not match", "error");
+      return;
+    }
+    setSavingPassword(true);
+    setSaved(false);
+    try {
+      const data = await shell.mutate(CHANGE_PASSWORD_MUTATION, { currentPassword, newPassword });
+      const nextUser = data?.changePassword;
+      if (nextUser) setUser(nextUser);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setSaved(true);
+      shell.notify("Password changed", "success");
+      window.setTimeout(() => setSaved(false), 2000);
+    } catch (error: any) {
+      shell.notify(error?.message || "Password could not be changed", "error");
+    } finally {
+      setSavingPassword(false);
+    }
+  }
+
   const handleClearData = () => {
     if (confirm("This will clear local app data and reload the page. Continue?")) {
       localStorage.clear();
@@ -160,8 +240,43 @@ export default function SettingsApp({ shell }: { shell: ShellAPI }) {
             </label>
             <div className="grid gap-2 text-xs text-gray-500 sm:grid-cols-2">
               <div className="truncate">Role: <span className="text-gray-400">{user?.role || "-"}</span></div>
-              <div className="truncate font-mono">ID: {user?.id || "-"}</div>
+              <div className="truncate">Sign-in: <span className="text-gray-400">{user?.authMethod || "-"}</span></div>
+              <div className="truncate font-mono sm:col-span-2">ID: {user?.id || "-"}</div>
             </div>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+            <Lock className="h-3.5 w-3.5" />
+            Password
+          </h3>
+          <div className="space-y-3 rounded-lg border border-gray-700/50 bg-gray-800/50 p-4">
+            {user?.canChangePassword ? (
+              <>
+                {user.passwordChangeRequired && (
+                  <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                    Your administrator requires a password change before continuing.
+                  </div>
+                )}
+                <PasswordField label="Current password" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
+                <PasswordField label="New password" value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
+                <PasswordField label="Confirm new password" value={confirmPassword} onChange={setConfirmPassword} autoComplete="new-password" />
+                <button
+                  type="button"
+                  onClick={changePassword}
+                  disabled={savingPassword || !currentPassword || !newPassword || !confirmPassword}
+                  className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-gray-950 transition-colors hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Save className="h-4 w-4" />
+                  {savingPassword ? "Changing..." : "Change password"}
+                </button>
+              </>
+            ) : (
+              <div className="text-sm leading-6 text-gray-400">
+                Password changes are managed by your identity provider for this account.
+              </div>
+            )}
           </div>
         </div>
 

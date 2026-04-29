@@ -1405,7 +1405,8 @@ function userManagementRow(row: any) {
     highRiskGrants: Number(row.high_risk_grants || 0),
     ownedRecords: Number(row.owned_records || 0),
     status: activeSessions > 0 ? "active" : lastLoginAt ? "idle" : "never_signed_in",
-    authMethod: Number(row.oauth_accounts || 0) > 0 ? "oauth" : "password",
+    authMethod: Number(row.oauth_accounts || 0) > 0 ? "sso" : "password",
+    passwordChangeRequired: Boolean(row.password_change_required),
   };
 }
 
@@ -1670,7 +1671,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.get("/api/admin/users", { onRequest: [fastify.authenticate, requirePermission("users", "read")] }, async (_request, reply) => {
     try {
       const result = await fastify.pg.query(
-        `SELECT u.id, u.name, u.email, u.role, u.created_at, u.updated_at,
+        `SELECT u.id, u.name, u.email, u.role, u.password_change_required, u.created_at, u.updated_at,
                 MAX(CASE WHEN a.action = 'auth.login.success' THEN a.created_at ELSE NULL END) AS last_login_at,
                 COUNT(DISTINCT CASE WHEN s.revoked_at IS NULL AND s.expires_at > NOW() THEN s.id ELSE NULL END)::int AS active_sessions,
                 COUNT(DISTINCT gm.group_id)::int AS group_count,
@@ -1701,7 +1702,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     try {
       const { id } = request.params as { id: string };
       const userResult = await fastify.pg.query(
-        `SELECT u.id, u.name, u.email, u.role, u.created_at, u.updated_at,
+        `SELECT u.id, u.name, u.email, u.role, u.password_change_required, u.created_at, u.updated_at,
                 MAX(CASE WHEN a.action = 'auth.login.success' THEN a.created_at ELSE NULL END) AS last_login_at,
                 COUNT(DISTINCT CASE WHEN s.revoked_at IS NULL AND s.expires_at > NOW() THEN s.id ELSE NULL END)::int AS active_sessions,
                 COUNT(DISTINCT gm.group_id)::int AS group_count,
@@ -1783,9 +1784,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       const id = randomUUID();
       const passwordHash = await bcrypt.hash(body.password, 10);
       const result = await fastify.pg.query(
-        `INSERT INTO users (id, email, name, password_hash, role)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, name, email, role, created_at, updated_at`,
+        `INSERT INTO users (id, email, name, password_hash, role, password_change_required)
+         VALUES ($1, $2, $3, $4, $5, TRUE)
+         RETURNING id, name, email, role, password_change_required, created_at, updated_at`,
         [id, email, name, passwordHash, role]
       );
       await recordAuditEvent(fastify, {

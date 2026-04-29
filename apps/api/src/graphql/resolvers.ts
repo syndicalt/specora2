@@ -1,5 +1,6 @@
 import { GraphQLError } from "graphql";
 import neo4j from "neo4j-driver";
+import bcrypt from "bcryptjs";
 import {
   CreateCIInputSchema,
   UpdateCIInputSchema,
@@ -47,6 +48,22 @@ function mapEnvironmentChoice(row: any) {
     isProductionLike: row.is_production_like,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapUserRow(row: any) {
+  const passwordHash = String(row.password_hash || "");
+  const federatedOnly = passwordHash.startsWith("oauth:") || passwordHash.startsWith("sso:");
+  const oauthAccounts = Number(row.oauth_accounts || 0);
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    preferences: row.preferences || {},
+    role: row.role,
+    authMethod: federatedOnly || oauthAccounts > 0 ? "sso" : "password",
+    canChangePassword: Boolean(passwordHash) && !federatedOnly,
+    passwordChangeRequired: Boolean(row.password_change_required) && Boolean(passwordHash) && !federatedOnly,
   };
 }
 
@@ -517,16 +534,26 @@ LIMIT 50`;
     async me(_parent: any, _args: any, context: any) {
       if (!context.user?.id) return null;
       let result = await context.pg.query(
-        "SELECT id, name, email, preferences, role FROM users WHERE id = $1",
+        `SELECT u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required,
+                COUNT(oa.id)::int AS oauth_accounts
+         FROM users u
+         LEFT JOIN oauth_accounts oa ON oa.user_id = u.id
+         WHERE u.id = $1
+         GROUP BY u.id`,
         [context.user.id]
       );
       if (!result.rows.length && context.user?.email) {
         result = await context.pg.query(
-          "SELECT id, name, email, preferences, role FROM users WHERE email = $1",
+          `SELECT u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required,
+                  COUNT(oa.id)::int AS oauth_accounts
+           FROM users u
+           LEFT JOIN oauth_accounts oa ON oa.user_id = u.id
+           WHERE u.email = $1
+           GROUP BY u.id`,
           [context.user.email]
         );
       }
-      return result.rows[0] || null;
+      return result.rows[0] ? mapUserRow(result.rows[0]) : null;
     },
     async marketplaceApps(_parent: any, args: { status?: string }, context: any) {
       const status = args.status || "approved";
@@ -1186,19 +1213,89 @@ LIMIT 50`;
         throw new GraphQLError("Display name must be between 2 and 120 characters", { extensions: { code: "BAD_USER_INPUT" } });
       }
       let result = await context.pg.query(
-        "UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name, email, preferences, role",
+        `WITH updated AS (
+           UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING *
+         )
+         SELECT u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required,
+                COUNT(oa.id)::int AS oauth_accounts
+         FROM updated u
+         LEFT JOIN oauth_accounts oa ON oa.user_id = u.id
+         GROUP BY u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required`,
         [name, context.user.id]
       );
       if (!result.rows.length && context.user?.email) {
         result = await context.pg.query(
-          "UPDATE users SET name = $1, updated_at = NOW() WHERE email = $2 RETURNING id, name, email, preferences, role",
+          `WITH updated AS (
+             UPDATE users SET name = $1, updated_at = NOW() WHERE email = $2 RETURNING *
+           )
+           SELECT u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required,
+                  COUNT(oa.id)::int AS oauth_accounts
+           FROM updated u
+           LEFT JOIN oauth_accounts oa ON oa.user_id = u.id
+           GROUP BY u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required`,
           [name, context.user.email]
         );
       }
       if (!result.rows.length) {
         throw new GraphQLError("User not found", { extensions: { code: "NOT_FOUND" } });
       }
-      return result.rows[0];
+      return mapUserRow(result.rows[0]);
+    },
+    async changePassword(_parent: any, args: { currentPassword: string; newPassword: string }, context: any) {
+      if (!context.user?.id) {
+        throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
+      }
+      const currentPassword = String(args.currentPassword || "");
+      const newPassword = String(args.newPassword || "");
+      if (newPassword.length < 8 || newPassword.length > 128) {
+        throw new GraphQLError("New password must be between 8 and 128 characters", { extensions: { code: "BAD_USER_INPUT" } });
+      }
+      if (newPassword === currentPassword) {
+        throw new GraphQLError("New password must be different from the current password", { extensions: { code: "BAD_USER_INPUT" } });
+      }
+
+      let userResult = await context.pg.query(
+        `SELECT u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required,
+                COUNT(oa.id)::int AS oauth_accounts
+         FROM users u
+         LEFT JOIN oauth_accounts oa ON oa.user_id = u.id
+         WHERE u.id = $1
+         GROUP BY u.id`,
+        [context.user.id]
+      );
+      if (!userResult.rows.length && context.user?.email) {
+        userResult = await context.pg.query(
+          `SELECT u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required,
+                  COUNT(oa.id)::int AS oauth_accounts
+           FROM users u
+           LEFT JOIN oauth_accounts oa ON oa.user_id = u.id
+           WHERE u.email = $1
+           GROUP BY u.id`,
+          [context.user.email]
+        );
+      }
+      const user = userResult.rows[0];
+      if (!user) throw new GraphQLError("User not found", { extensions: { code: "NOT_FOUND" } });
+      const currentHash = String(user.password_hash || "");
+      if (!currentHash || currentHash.startsWith("oauth:") || currentHash.startsWith("sso:")) {
+        throw new GraphQLError("Password changes are only available for local password accounts", { extensions: { code: "FORBIDDEN" } });
+      }
+      const valid = await bcrypt.compare(currentPassword, currentHash);
+      if (!valid) {
+        throw new GraphQLError("Current password is incorrect", { extensions: { code: "BAD_USER_INPUT" } });
+      }
+      const nextHash = await bcrypt.hash(newPassword, 10);
+      const result = await context.pg.query(
+        `UPDATE users
+         SET password_hash = $1,
+             password_change_required = FALSE,
+             password_changed_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $2
+         RETURNING id, name, email, preferences, role, password_hash, password_change_required, 0::int AS oauth_accounts`,
+        [nextHash, user.id]
+      );
+      return mapUserRow(result.rows[0]);
     },
     async submitMarketplaceApp(_parent: any, args: { id: string; name: string; description?: string; url: string; icon?: string; version?: string; permissions?: string[]; reactVersion?: string; author: string; authorUrl?: string }, context: any) {
       await checkPermission(context, "app", "install");

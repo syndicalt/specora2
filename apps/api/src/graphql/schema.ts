@@ -75,6 +75,9 @@ const typeDefs = `
     email: String!
     preferences: JSON
     role: String!
+    authMethod: String!
+    canChangePassword: Boolean!
+    passwordChangeRequired: Boolean!
   }
 
   type MarketplaceApp {
@@ -294,6 +297,7 @@ const typeDefs = `
     deleteDiscoverySource(id: ID!): Boolean!
     updatePreferences(preferences: JSON!): User!
     updateProfile(name: String!): User!
+    changePassword(currentPassword: String!, newPassword: String!): User!
     submitMarketplaceApp(id: ID!, name: String!, description: String, url: String!, icon: String, version: String, permissions: [String!], reactVersion: String, author: String!, authorUrl: String): MarketplaceApp!
     approveMarketplaceApp(id: ID!): MarketplaceApp!
     rejectMarketplaceApp(id: ID!): MarketplaceApp!

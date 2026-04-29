@@ -212,6 +212,7 @@ interface ManagedUser extends RbacUser {
   ownedRecords: number;
   status: string;
   authMethod: string;
+  passwordChangeRequired?: boolean;
 }
 
 interface ManagedUserDetail {
@@ -2319,7 +2320,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                 <FieldInput label="Name" value={userDraft.name} onChange={(value) => setUserDraft((current) => ({ ...current, name: value }))} placeholder="Avery Admin" autoComplete="off" />
                 <FieldInput label="Email" value={userDraft.email} onChange={(value) => setUserDraft((current) => ({ ...current, email: value }))} placeholder="avery@example.com" type="email" autoComplete="off" />
                 <FieldSelect label="Role" value={userDraft.role} onChange={(value) => setUserDraft((current) => ({ ...current, role: value }))} options={(allRoles.length ? allRoles : ["operator"]).map((role) => ({ value: role, label: role }))} />
-                <FieldInput label="Temporary password" value={userDraft.password} onChange={(value) => setUserDraft((current) => ({ ...current, password: value }))} type="password" autoComplete="new-password" help="Use at least 8 characters. The user can rotate it after first login." />
+                <FieldInput label="Temporary password" value={userDraft.password} onChange={(value) => setUserDraft((current) => ({ ...current, password: value }))} type="password" autoComplete="new-password" help="Use at least 8 characters. The user must change it on first login." />
               </div>
               <button type="submit" disabled={saving} className="mt-4 flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
                 <UserPlus className="h-4 w-4" />
@@ -2337,7 +2338,10 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                       <div className="text-lg font-semibold text-gray-100">{selectedManagedUser.name}</div>
                       <div className="text-sm text-gray-500">{selectedManagedUser.email}</div>
                     </div>
-                    <span className="rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-200">{selectedManagedUser.authMethod}</span>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <span className="rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-200">{selectedManagedUser.authMethod}</span>
+                      {selectedManagedUser.passwordChangeRequired && <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-200">password change required</span>}
+                    </div>
                   </div>
                   <div className="grid gap-3">
                     <FieldInput label="Display name" value={userEditDraft.name} onChange={(value) => setUserEditDraft((current) => ({ ...current, name: value }))} />

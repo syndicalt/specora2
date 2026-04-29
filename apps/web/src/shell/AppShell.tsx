@@ -1,13 +1,13 @@
 "use client";
 
-import { useReducer, useEffect, useState, useRef } from "react";
+import { useReducer, useEffect, useState, useRef, type FormEvent } from "react";
 import { ShellContext, shellReducer, initialShellState, type ShellAction } from "./AppContext";
 import { CanvasLayer, WindowLayer } from "./AppContainers";
 import { AppDock } from "./AppDock";
 import { AppLauncher } from "./AppLauncher";
 import { syncServerRegistry } from "@/sdk";
 import type { RegistryEntry, AppMessage } from "@/sdk/types";
-import { X } from "lucide-react";
+import { Eye, EyeOff, Lock, Save, X } from "lucide-react";
 import { ChatPanel } from "@/components/ChatPanel";
 import { graphqlClient } from "@/lib/api";
 import { useEventStream } from "@/hooks/useEventStream";
@@ -27,11 +27,19 @@ function createMessageBus() {
   };
 }
 
-const ME_QUERY = `query { me { id name email preferences } }`;
+const ME_QUERY = `query { me { id name email preferences canChangePassword passwordChangeRequired } }`;
 
 const UPDATE_PREFS_MUTATION = `
   mutation UpdatePreferences($preferences: JSON!) {
     updatePreferences(preferences: $preferences) { id preferences }
+  }
+`;
+
+const CHANGE_PASSWORD_MUTATION = `
+  mutation ChangePassword($currentPassword: String!, $newPassword: String!) {
+    changePassword(currentPassword: $currentPassword, newPassword: $newPassword) {
+      id name email preferences canChangePassword passwordChangeRequired
+    }
   }
 `;
 
@@ -62,6 +70,118 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
       .then(resolve, reject)
       .finally(() => window.clearTimeout(timer));
   });
+}
+
+function ForcedPasswordField({
+  label,
+  value,
+  onChange,
+  autoComplete,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  autoComplete: string;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <label className="block">
+      <span className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</span>
+      <div className="relative mt-1">
+        <input
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          type={visible ? "text" : "password"}
+          autoComplete={autoComplete}
+          className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 pr-10 text-sm text-gray-100 outline-none transition-colors focus:border-cyan-400"
+        />
+        <button
+          type="button"
+          onClick={() => setVisible((current) => !current)}
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 transition-colors hover:bg-gray-800 hover:text-gray-200"
+          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
+        >
+          {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+    </label>
+  );
+}
+
+function PasswordChangeGate({
+  canChangePassword,
+  onComplete,
+}: {
+  canChangePassword: boolean;
+  onComplete: () => void;
+}) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!canChangePassword || saving) return;
+    if (newPassword.length < 8) {
+      setError("New password must be at least 8 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError("New password confirmation does not match.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await graphqlClient.request(CHANGE_PASSWORD_MUTATION, { currentPassword, newPassword });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      onComplete();
+    } catch (err: any) {
+      setError(err?.message || "Password could not be changed.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-gray-950/90 px-4 backdrop-blur-sm">
+      <form onSubmit={submit} className="w-full max-w-md rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cyan-400/30 bg-cyan-500/10 text-cyan-200">
+            <Lock className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-gray-100">Change Password</h2>
+            <p className="mt-1 text-sm leading-6 text-gray-500">Your temporary password must be changed before using Specora.</p>
+          </div>
+        </div>
+        {canChangePassword ? (
+          <div className="mt-5 space-y-3">
+            {error && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div>}
+            <ForcedPasswordField label="Current password" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
+            <ForcedPasswordField label="New password" value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
+            <ForcedPasswordField label="Confirm new password" value={confirmPassword} onChange={setConfirmPassword} autoComplete="new-password" />
+            <button
+              type="submit"
+              disabled={saving || !currentPassword || !newPassword || !confirmPassword}
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-500 px-4 py-2.5 text-sm font-semibold text-gray-950 transition-colors hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Save className="h-4 w-4" />
+              {saving ? "Changing..." : "Change password"}
+            </button>
+          </div>
+        ) : (
+          <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-amber-100">
+            This account is managed by an identity provider. Contact an administrator to clear the password change requirement.
+          </div>
+        )}
+      </form>
+    </div>
+  );
 }
 
 function useShellHistory(
@@ -134,6 +254,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
   const [bootstrapPhase, setBootstrapPhase] = useState("Starting platform");
   const [bootstrapTimedOut, setBootstrapTimedOut] = useState(false);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const [passwordGate, setPasswordGate] = useState({ required: false, canChange: false });
   const messageBus = useRef(createMessageBus()).current;
   const userIdRef = useRef<string | null>(null);
   const initialOpenDone = useRef(false);
@@ -174,6 +295,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
         const user = data?.me;
         if (user) {
           userIdRef.current = user.id;
+          setPasswordGate({ required: Boolean(user.passwordChangeRequired), canChange: Boolean(user.canChangePassword) });
           applyTheme(user.preferences?.theme);
           const dockOrder = user.preferences?.dock?.order;
           if (Array.isArray(dockOrder)) {
@@ -183,6 +305,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
             dispatch({ type: "SET_DOCK_ORDER", order: ["service-map"] });
           }
         } else {
+          setPasswordGate({ required: false, canChange: false });
           applyTheme(null);
           dispatch({ type: "SET_DOCK_ORDER", order: ["service-map"] });
         }
@@ -192,6 +315,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
         console.error("[AppShell] user preferences failed:", err);
         if (!mounted) return;
         applyTheme(null);
+        setPasswordGate({ required: false, canChange: false });
         dispatch({ type: "SET_DOCK_ORDER", order: ["service-map"] });
         hasLoadedPrefs.current = true;
         setReady(true);
@@ -411,6 +535,12 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
 
         {/* Bottom dock */}
         <AppDock registry={registry} />
+        {passwordGate.required && (
+          <PasswordChangeGate
+            canChangePassword={passwordGate.canChange}
+            onComplete={() => setPasswordGate({ required: false, canChange: true })}
+          />
+        )}
       </div>
     </ShellContext.Provider>
   );
