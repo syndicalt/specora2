@@ -65,14 +65,13 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - **Discovery RC push** — Rollback records/UI, saved mapping profiles, richer AI mapping rationale, Admin-managed credential references with encrypted managed secrets, edge/collector source registration, source binding, runtime config publishing, evidence upload ingestion, run datasets, and improved edge profiling previews.
 - **Operability and scale hardening** — API worker health checks, queue posture, Discovery job health, restore rehearsal command, stable dev launcher, identity provider readiness validation, Redis event/cache support, audit head anchoring, OIDC RS256/JWKS validation, and SAML XML signature validation.
 - **Real-time events** — WebSocket pub/sub for platform events with short-lived ticket auth, Redis cross-instance fanout, REST polling fallback, and authenticated SSE fallback for environments where WebSocket upgrades are unavailable.
-- **Demo documentation** — Canonical user/admin guides, application screenshots, reusable Playwright screenshot capture, and Railway release checklist automation.
+- **Demo documentation** — Canonical user/admin guides, application screenshots, reusable Playwright screenshot capture, public demo smoke coverage, and Railway release checklist automation.
 - **UAT fixes** — App state preservation, chat investigation continuity, CMDB Explorer attribute projection, baseline app access rules for Arc and Customer Portal, and executable access-matrix validation for app/chat tool visibility.
 
 ## Next Up
 
 ### Release Candidate Readiness
 
-- **Demo path validation** — Run a full demo pass against `https://specora-dev.specora.org`: login, app launcher, CMDB Explorer, Service Map, Tables, Discovery, Admin, Customer Portal, Arc, chat, and settings.
 - **Documentation review** — Human-pass the canonical docs for product language, screenshot accuracy, admin guidance, and deployment caveats.
 
 ### Product Polish

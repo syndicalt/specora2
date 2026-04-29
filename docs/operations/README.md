@@ -109,6 +109,14 @@ Before demo or production validation:
 - Confirm global chat can respond.
 - Confirm discovery jobs and edge enrollment routes are reachable if demonstrating discovery.
 
+For browser-level public demo validation, run:
+
+```bash
+E2E_USER_PASSWORD='<admin password>' pnpm demo:public
+```
+
+By default this targets `https://specora-dev.specora.org` and `https://gateway-dev.specora.org` with `admin@specora.org`. Override `E2E_BASE_URL`, `E2E_API_URL`, or `E2E_USER_EMAIL` when validating another environment.
+
 ## Railway Release Checklist
 
 Use the checked-in Railway checklist after each deployment to validate the public web/API boundary and the demo-ready app registry.
