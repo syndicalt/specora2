@@ -425,6 +425,168 @@ describe("appTools", () => {
     expect(await transition({ preventionId: "p1", status: "monitoring" }, { pg })).toMatchObject({ status: "monitoring" });
   });
 
+  it("incident tools create, list, load details, and map CI context", async () => {
+    await register();
+    const create = tool("incident-manager_create_incident");
+    const list = tool("incident-manager_list_incidents");
+    const details = tool("incident-manager_get_incident_details");
+
+    const close = vi.fn();
+    const run = vi.fn()
+      .mockResolvedValueOnce({
+        records: [{
+          get: (key: string) => ({
+            id: "ci-1",
+            name: "Payments API",
+            class: "ApplicationService",
+            environment: "Production",
+            health: 0.82,
+            relCount: { toNumber: () => 3 },
+          } as any)[key],
+        }],
+      })
+      .mockResolvedValueOnce({
+        records: [{
+          get: (key: string) => ({
+            sourceId: "ci-1",
+            targetId: "ci-2",
+            type: "DEPENDS_ON",
+          } as any)[key],
+        }],
+      });
+    const neo4j = { session: () => ({ run, close }) };
+    const pg = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("INSERT INTO incidents")) {
+          return { rows: [{ id: "inc-1", title: "API down", severity: "high", source: "alert", ci_id: "ci-1" }] };
+        }
+        if (sql.includes("FROM incidents i") && sql.includes("WHERE 1=1")) {
+          return {
+            rows: [{
+              id: "inc-1",
+              title: "API down",
+              requester_id: "u1",
+              requester_name: "Ada",
+              requester_email: "ada@example.com",
+              owner_id: "u2",
+              owner_name: "Lin",
+              owner_email: "lin@example.com",
+            }],
+          };
+        }
+        if (sql.includes("FROM incidents i") && sql.includes("WHERE i.id = $1")) {
+          return {
+            rows: [{
+              id: "inc-1",
+              title: "API down",
+              severity: "high",
+              requester_id: "u1",
+              requester_name: "Ada",
+              requester_email: "ada@example.com",
+            }],
+          };
+        }
+        if (sql.includes("FROM incident_cis")) return { rows: [{ ci_id: "ci-1", role: "primary", distance: 0 }] };
+        if (sql.includes("FROM incident_events")) return { rows: [{ id: "evt-1", type: "created" }] };
+        if (sql.includes("FROM incident_actions")) return { rows: [{ id: "act-1", name: "Restart" }] };
+        if (sql.includes("FROM incident_roles")) return { rows: [{ user_id: "u2", role: "commander", name: "Lin" }] };
+        if (sql.includes("FROM incident_postmortems")) return { rows: [] };
+        if (sql.includes("FROM change_requests")) return { rows: [{ id: "rfc-1", title: "Deploy" }] };
+        return { rows: [] };
+      }),
+    };
+
+    const created = await create({
+      title: "API down",
+      severity: "high",
+      source: "alert",
+      externalRef: "alert-1",
+      ciId: "ci-1",
+      affectedCiIds: ["ci-1", "ci-2"],
+      autoRemediationAllowed: true,
+      _userId: "u1",
+    }, { pg });
+    expect(created).toMatchObject({ id: "inc-1", severity: "high" });
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO incident_cis"), ["inc-1", "ci-2", "affected"]);
+
+    const listed = await list({ status: "new", severity: "high", ciId: "ci-1", limit: 300 }, { pg });
+    expect(listed[0]).toMatchObject({ requester: { id: "u1", name: "Ada", email: "ada@example.com" } });
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("i.severity = $2"), ["new", "high", "ci-1", 200]);
+
+    await expect(details({ incidentId: "missing" }, { pg: { query: vi.fn(async () => ({ rows: [] })) } })).resolves.toEqual({ error: "Incident not found" });
+    const loaded = await details({ incidentId: "inc-1" }, { pg, neo4j });
+    expect(loaded).toMatchObject({
+      id: "inc-1",
+      affectedCis: [{ ci_id: "ci-1", name: "Payments API", class: "ApplicationService" }],
+      ciHealth: { "ci-1": { overall: 0.82, relationshipCount: 3 } },
+      edges: [{ sourceId: "ci-1", targetId: "ci-2", type: "DEPENDS_ON" }],
+    });
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("incident AI workflow tools triage, recommend, approve, execute, transition, and draft follow-ups", async () => {
+    await register();
+    const { executeTool } = await import("@specora/sdk");
+    const triage = tool("incident-manager_triage_incident");
+    const recommend = tool("incident-manager_recommend_remediation");
+    const approve = tool("incident-manager_approve_action");
+    const execute = tool("incident-manager_execute_remediation");
+    const transition = tool("incident-manager_transition_incident");
+    const event = tool("incident-manager_record_incident_event");
+    const stakeholder = tool("incident-manager_draft_stakeholder_update");
+    const postmortem = tool("incident-manager_generate_postmortem");
+
+    vi.mocked(executeTool).mockResolvedValue({
+      id: "inc-1",
+      title: "Payments outage",
+      severity: "critical",
+      status: "major",
+      service: "Payments",
+      ci_id: "ci-1",
+      auto_remediation_allowed: false,
+      affectedCis: [{ id: "ci-1" }],
+      ciHealth: { "ci-1": { overall: 0.5, relationshipCount: 0 } },
+      relatedChanges: [{ id: "rfc-1", status: "implemented" }],
+      ai_summary: "Error rate elevated.",
+      ai_next_action: "Inspect deploy.",
+    });
+    const pg = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("INSERT INTO incident_actions")) {
+          return { rows: [{ id: `act-${Math.random()}`, incident_id: "inc-1", name: "Review change" }] };
+        }
+        if (sql.includes("SELECT * FROM incident_actions")) {
+          return { rows: [{ id: "act-1", incident_id: "inc-1", name: "Restart", kind: "restart", requires_approval: true, status: "approved" }] };
+        }
+        if (sql.includes("UPDATE incident_actions SET status = 'approved'")) {
+          return { rows: [{ id: "act-1", incident_id: "inc-1", name: "Restart", status: "approved" }] };
+        }
+        if (sql.includes("UPDATE incident_actions SET status = 'executed'")) {
+          return { rows: [{ id: "act-1", incident_id: "inc-1", status: "executed", result: "Recovered" }] };
+        }
+        if (sql.includes("UPDATE incidents SET status = $1::text")) {
+          return { rows: [{ id: "inc-1", status: "resolved" }] };
+        }
+        if (sql.includes("INSERT INTO incident_events")) return { rows: [{ id: "evt-1", incident_id: "inc-1" }] };
+        if (sql.includes("INSERT INTO incident_postmortems")) return { rows: [{ id: "pm-1", incident_id: "inc-1" }] };
+        return { rows: [] };
+      }),
+    };
+
+    expect(await triage({ incidentId: "inc-1", confidence: 0.7 }, { pg })).toMatchObject({
+      decision: "request-approval",
+      unhealthyCount: 1,
+      relatedChangeCount: 1,
+    });
+    expect(await recommend({ incidentId: "inc-1" }, { pg })).toMatchObject({ incidentId: "inc-1", actions: expect.any(Array) });
+    expect(await approve({ actionId: "act-1", _userId: "u1" }, { pg })).toMatchObject({ status: "approved" });
+    expect(await execute({ actionId: "act-1", result: "Recovered", _userId: "u1" }, { pg })).toMatchObject({ status: "executed" });
+    expect(await transition({ incidentId: "inc-1", status: "resolved", note: "Fixed", _userId: "u1" }, { pg })).toMatchObject({ status: "resolved" });
+    expect(await event({ incidentId: "inc-1", message: "Customer update sent" }, { pg })).toMatchObject({ id: "evt-1" });
+    expect(await stakeholder({ incidentId: "inc-1" }, { pg })).toMatchObject({ audience: "executive-and-customer" });
+    expect(await postmortem({ incidentId: "inc-1", _userId: "u1" }, { pg })).toMatchObject({ id: "pm-1" });
+  });
+
   it("asset tools create assets, record scans, ingest contracts, and list exceptions", async () => {
     await register();
     const create = tool("asset-command_create_asset");
