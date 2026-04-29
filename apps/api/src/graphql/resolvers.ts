@@ -20,7 +20,11 @@ function boundedHopCount(value: number | undefined, fallback: number) {
 
 function parseNode(node: any) {
   const attrs = typeof node.attributes === "string" ? JSON.parse(node.attributes) : (node.attributes || {});
-  return { ...node, attributes: attrs };
+  const reserved = new Set(["id", "name", "class", "environment", "attributes", "dataQualityScore", "lastDiscoveredAt"]);
+  const projectedAttrs = Object.fromEntries(
+    Object.entries(node).filter(([key, value]) => !reserved.has(key) && value !== undefined && value !== null)
+  );
+  return { ...node, attributes: { ...attrs, ...projectedAttrs } };
 }
 
 function isNeo4jPropertyValue(value: unknown): boolean {

@@ -372,8 +372,8 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
     }
   }, [classFilter, envFilter, offset, search, shell]);
 
-  const fetchDetail = useCallback(async (id: string) => {
-    if (lastDetailKeyRef.current === id) return;
+  const fetchDetail = useCallback(async (id: string, options?: { force?: boolean }) => {
+    if (!options?.force && lastDetailKeyRef.current === id) return;
     lastDetailKeyRef.current = id;
     setDetailLoading(true);
     try {
@@ -714,7 +714,7 @@ export default function CMDBExplorerApp({ shell }: { shell: ShellAPI }) {
                     <button onClick={() => openInTables(selectedCi)} className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300 hover:border-indigo-500/50 hover:text-white">
                       Edit in Tables <ArrowRight className="h-4 w-4" />
                     </button>
-                    <button onClick={() => fetchDetail(selectedCi.id)} className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300 hover:border-indigo-500/50 hover:text-white">
+                    <button onClick={() => fetchDetail(selectedCi.id, { force: true })} className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300 hover:border-indigo-500/50 hover:text-white">
                       Refresh context <RefreshCw className="h-4 w-4" />
                     </button>
                   </div>
