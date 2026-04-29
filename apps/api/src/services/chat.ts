@@ -333,7 +333,7 @@ function isPromissoryToolText(text: string): boolean {
   if (!text) return false;
   const lower = text.toLowerCase();
   return (
-    /\b(i('|’)ll|i will|let me|i need to|i can)\b/.test(lower) &&
+    /\b(i('|’)ll|i will|let me|i need to|i still need to|i can)\b/.test(lower) &&
     /\b(search|find|locate|look up|retrieve|gather|fetch|inspect|analyze|check)\b/.test(lower) &&
     /\b(ci|configuration item|record|details|risk|relationship|relationships|dependencies|health|impact|service map)\b/.test(lower)
   );
@@ -345,6 +345,73 @@ function shouldForceFinalFromPromissory(messages: any[], text: string): boolean 
 
 const PROMISSORY_FINAL_INSTRUCTION =
   "You already have the available platform tool results in this conversation. Do not promise to fetch, check, retrieve, or analyze more data. Provide the final answer now using the gathered CI details, service map, health, risk, relationship, and context data that is present. If a field is missing, call that out as a limitation and still summarize recommended next actions.";
+
+function deterministicToolSummary(messages: any[]): string | null {
+  const toolNames = toolNameByCallId(messages);
+  let latestSearch: any[] | null = null;
+  let latestDetails: any | null = null;
+  let latestMap: any | null = null;
+
+  for (const message of messages) {
+    if (message?.role !== "tool") continue;
+    const toolName = typeof message.tool_call_id === "string" ? toolNames.get(message.tool_call_id) : undefined;
+    const result = parseJsonContent(message.content);
+    if (!result) continue;
+    if ((toolName === "search_cis" || Array.isArray(result)) && Array.isArray(result)) {
+      latestSearch = result;
+    } else if ((toolName === "get_ci_details" || Array.isArray(result.relationships)) && typeof result.id === "string") {
+      latestDetails = result;
+    } else if ((toolName === "get_service_map" || Array.isArray(result.nodes)) && typeof result.rootId === "string") {
+      latestMap = result;
+    }
+  }
+
+  const lines: string[] = [];
+  if (latestDetails) {
+    lines.push(`I found ${latestDetails.name || latestDetails.id}${latestDetails.class ? ` (${latestDetails.class})` : ""}${latestDetails.environment ? ` in ${latestDetails.environment}` : ""}.`);
+    const relationships = Array.isArray(latestDetails.relationships) ? latestDetails.relationships : [];
+    if (relationships.length) {
+      lines.push(`It has ${relationships.length} direct relationship${relationships.length === 1 ? "" : "s"}:`);
+      for (const rel of relationships.slice(0, 6)) {
+        const target = rel.target || {};
+        lines.push(`- ${rel.type || "RELATED_TO"} ${target.name || target.id || "unknown target"}${target.class ? ` (${target.class})` : ""}`);
+      }
+    } else {
+      lines.push("No direct relationships were returned for this CI.");
+    }
+    lines.push(`[[action|open-ci-details|id=${latestDetails.id}|View CI Details]]`);
+  } else if (latestMap) {
+    const nodes = Array.isArray(latestMap.nodes) ? latestMap.nodes : [];
+    const edges = Array.isArray(latestMap.edges) ? latestMap.edges : [];
+    const root = nodes.find((node: any) => node.id === latestMap.rootId);
+    lines.push(`I found the service map for ${root?.name || latestMap.rootId}.`);
+    lines.push(`The map includes ${nodes.length} node${nodes.length === 1 ? "" : "s"} and ${edges.length} relationship${edges.length === 1 ? "" : "s"}.`);
+    if (edges.length) {
+      lines.push("Top relationships:");
+      for (const edge of edges.slice(0, 6)) {
+        const source = nodes.find((node: any) => node.id === edge.sourceId);
+        const target = nodes.find((node: any) => node.id === edge.targetId);
+        lines.push(`- ${source?.name || edge.sourceId} ${edge.type || "RELATED_TO"} ${target?.name || edge.targetId}`);
+      }
+    }
+    lines.push(`[[action|open-service-map|rootId=${latestMap.rootId}|Open Service Map]]`);
+  } else if (latestSearch) {
+    lines.push(`I found ${latestSearch.length} matching CI${latestSearch.length === 1 ? "" : "s"}.`);
+    for (const item of latestSearch.slice(0, 6)) {
+      lines.push(`- ${item.name || item.id}${item.class ? ` (${item.class})` : ""}${item.environment ? ` · ${item.environment}` : ""}`);
+    }
+    const first = latestSearch.find((item) => typeof item?.id === "string");
+    if (first) lines.push(`[[action|open-ci-details|id=${first.id}|View CI Details]]`);
+  }
+
+  return lines.length ? lines.join("\n") : null;
+}
+
+function finalContentOrDeterministic(messages: any[], candidate: string): string {
+  const content = sanitizeAssistantContent(candidate || "");
+  if (content && !isPromissoryToolText(content)) return content;
+  return deterministicToolSummary(messages) || content;
+}
 
 function parsePromissorySearchToolCall(
   messages: any[],
@@ -943,7 +1010,7 @@ export async function chat(
             false,
             user
           );
-          const finalContent = sanitizeAssistantContent(finalCompletion.choices[0].message.content || "");
+          const finalContent = finalContentOrDeterministic(currentMessages, finalCompletion.choices[0].message.content || "");
           return {
             content: finalContent || message.content || "I'm not sure how to respond to that. Could you rephrase or provide more detail?",
             toolCalls: allCallMetas.length > 0 ? allCallMetas : undefined,
@@ -1013,7 +1080,7 @@ export async function chat(
     { role: "user", content: "Please provide a final answer based on the tool results above." },
   ];
   const finalCompletion = await callLlm(finalMessages, fastify, usedProvara, openai, provara, trace, MAX_TOOL_ROUNDS, false, user);
-  let finalContent = sanitizeAssistantContent(finalCompletion.choices[0].message.content || "");
+  let finalContent = finalContentOrDeterministic(currentMessages, finalCompletion.choices[0].message.content || "");
 
   // Auto-append action directives if the model fetched data but forgot to offer the visual
   if (lastServiceMapRootId && !finalContent.includes("[[action|open-service-map")) {
@@ -1404,7 +1471,7 @@ export async function chatStream(
           ];
           const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, round, false, user);
           return {
-            content: sanitizeAssistantContent(finalContent || "") || content || "I'm not sure how to respond to that. Could you rephrase or provide more detail?",
+            content: finalContentOrDeterministic(currentMessages, finalContent || "") || content || "I'm not sure how to respond to that. Could you rephrase or provide more detail?",
             toolCalls: allCallMetas.length > 0 ? allCallMetas : undefined,
           };
         }
@@ -1495,7 +1562,7 @@ export async function chatStream(
     { role: "user", content: "Please provide a final answer based on the tool results above." },
   ];
   const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, MAX_TOOL_ROUNDS, false, user);
-  let sanitizedFinal = sanitizeAssistantContent(finalContent || "");
+  let sanitizedFinal = finalContentOrDeterministic(currentMessages, finalContent || "");
 
   // Auto-append action directives if the model fetched data but forgot to offer the visual
   if (lastServiceMapRootId && !sanitizedFinal.includes("[[action|open-service-map")) {

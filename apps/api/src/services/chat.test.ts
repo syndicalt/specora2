@@ -240,6 +240,44 @@ describe("chat", () => {
     expect(result.content).toBe("CI details");
   });
 
+  it("finalizes from tool results when the model keeps promising more investigation", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-1",
+              function: { name: "get_ci_details", arguments: JSON.stringify({ id: "ci-1" }) },
+            }],
+          },
+        }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "I will now gather more details about its risk and relationships." } }],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "I still need to check its dependencies before answering." } }],
+      });
+
+    const fastify = mockFastify([
+      [{ get: (k: string) => k === "n" ? { properties: { id: "ci-1", name: "web-01", class: "Server", environment: "Production" } } : undefined }],
+      [{ get: (k: string) => {
+        if (k === "r") return { type: "DEPENDS_ON", start: "ci-1", end: "db-1" };
+        if (k === "target") return { properties: { id: "db-1", name: "postgres", class: "Database" } };
+        return undefined;
+      } }],
+    ]);
+
+    const result = await chat([{ role: "user", content: "Investigate web-01" }], fastify);
+
+    expect(result.content).toContain("web-01");
+    expect(result.content).toContain("DEPENDS_ON postgres");
+    expect(result.content).toContain("[[action|open-ci-details|id=ci-1|View CI Details]]");
+    expect(result.content.toLowerCase()).not.toContain("i will");
+    expect(result.content.toLowerCase()).not.toContain("need to check");
+  });
+
   it("executes get_ci_details tool with incoming relationship", async () => {
     mockCreate
       .mockResolvedValueOnce({
