@@ -724,6 +724,8 @@ describe("chatStream", () => {
     const result = await chatStream([{ role: "user", content: "How many?" }], fastify, (ev) => events.push(ev));
     expect(result.content).toBe("You have 5 CIs");
     expect(result.toolCalls).toHaveLength(1);
+    expect(mockCreate).toHaveBeenNthCalledWith(1, expect.objectContaining({ tool_choice: "required" }));
+    expect(mockCreate).toHaveBeenNthCalledWith(2, expect.objectContaining({ tool_choice: "auto" }));
     expect(events.some((e) => e.type === "tool_call")).toBe(true);
     expect(events.some((e) => e.type === "tool_result")).toBe(true);
   });
