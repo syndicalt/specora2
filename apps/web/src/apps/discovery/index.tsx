@@ -226,7 +226,7 @@ type DiscoveryFlowNodeData = {
 
 type StagedDiscoveryJob = {
   job: DiscoveryJob;
-  records: Array<{ id: string; row_number: number; target_class: string; name: string; environment?: string; status: string; errors?: string[]; warnings?: string[]; committed_ci_id?: string }>;
+  records: Array<{ id: string; row_number: number; action?: string; target_class: string; ci_id?: string | null; name: string; environment?: string; attributes?: Record<string, unknown>; match_keys?: string[]; status: string; errors?: string[]; warnings?: string[]; committed_ci_id?: string }>;
   relationships: Array<{ id: string; row_number: number; rel_type: string; from_class: string; to_class: string; target_hint?: string; status: string; message?: string }>;
 };
 
@@ -476,12 +476,50 @@ function previewRecordDecision(record: PipelinePreview["records"][number]): stri
   return `${record.action} ${record.targetClass} using ${record.matchKeys.join(", ") || "configured keys"}.`;
 }
 
+function keyValueForRecord(key: string, record: { name?: string; environment?: string; attributes?: Record<string, unknown> }) {
+  if (key === "name") return record.name || "";
+  if (key === "environment") return record.environment || "";
+  const value = record.attributes?.[key];
+  return Array.isArray(value) ? value.join(", ") : String(value ?? "");
+}
+
+function previewReconciliationTrace(record: PipelinePreview["records"][number]) {
+  const keyChecks = record.matchKeys.map((key) => ({ key, value: keyValueForRecord(key, record), present: Boolean(String(keyValueForRecord(key, record)).trim()) }));
+  const missingKeys = keyChecks.filter((item) => !item.present).map((item) => item.key);
+  const reason = record.errors.length
+    ? `Blocked because ${record.errors[0].toLowerCase()}.`
+    : missingKeys.length
+      ? `Needs review because ${missingKeys.join(", ")} ${missingKeys.length === 1 ? "is" : "are"} empty.`
+      : record.action === "update"
+        ? "Existing CI matched all configured reconciliation keys."
+        : "No existing CI matched all configured reconciliation keys.";
+  return { reason, keyChecks };
+}
+
 function stagedRecordDecision(record: StagedDiscoveryJob["records"][number]): string {
   if (record.status === "committed") return `Committed to ${record.committed_ci_id || "the CMDB"}.`;
   if (record.status === "blocked") return `Blocked until ${(record.errors?.[0] || record.warnings?.[0] || "the listed issue").toLowerCase()}.`;
   if (record.status === "approved") return "Approved for commit.";
   if (record.status === "skipped") return "Skipped by a discovery admin.";
+  if (record.action === "update") return "Staged to update an existing CI.";
+  if (record.action === "create") return "Staged to create a new CI.";
   return "Staged for review before CMDB commit.";
+}
+
+function stagedReconciliationTrace(record: StagedDiscoveryJob["records"][number]) {
+  const matchKeys = record.match_keys || [];
+  const keyChecks = matchKeys.map((key) => ({ key, value: keyValueForRecord(key, record), present: Boolean(String(keyValueForRecord(key, record)).trim()) }));
+  const missingKeys = keyChecks.filter((item) => !item.present).map((item) => item.key);
+  const reason = record.status === "blocked"
+    ? `Blocked because ${(record.errors?.[0] || record.warnings?.[0] || "a reconciliation issue").toLowerCase()}.`
+    : missingKeys.length
+      ? `Needs review because ${missingKeys.join(", ")} ${missingKeys.length === 1 ? "is" : "are"} empty.`
+      : record.action === "update"
+        ? "Existing CI matched all configured reconciliation keys."
+        : record.action === "create"
+          ? "No existing CI matched all configured reconciliation keys."
+          : "Reconciliation is based on the configured key values below.";
+  return { reason, keyChecks };
 }
 
 function relationshipStatusLabel(status?: PipelinePreview["relationships"][number]["status"] | string): string {
@@ -2107,24 +2145,38 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                   </div>
                 </div>
                 <div className="mt-4 max-h-72 space-y-2 overflow-auto">
-                  {staged.records.slice(0, 20).map((record) => (
-                    <div key={record.id} className="rounded-md border border-cyan-500/20 bg-gray-950/80 p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="truncate text-sm text-gray-100">{record.target_class}: {record.name}</span>
-                        <span className={`rounded px-2 py-0.5 text-xs ${record.status === "blocked" ? "bg-rose-500/15 text-rose-300" : record.status === "committed" ? "bg-emerald-500/15 text-emerald-300" : "bg-cyan-500/15 text-cyan-200"}`}>{record.status}</span>
+                  {staged.records.slice(0, 20).map((record) => {
+                    const trace = stagedReconciliationTrace(record);
+                    return (
+                      <div key={record.id} className="rounded-md border border-cyan-500/20 bg-gray-950/80 p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate text-sm text-gray-100">{record.target_class}: {record.name}</span>
+                          <span className={`rounded px-2 py-0.5 text-xs ${record.status === "blocked" ? "bg-rose-500/15 text-rose-300" : record.status === "committed" ? "bg-emerald-500/15 text-emerald-300" : "bg-cyan-500/15 text-cyan-200"}`}>{record.status}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-gray-500">row {record.row_number}{record.environment ? ` · ${record.environment}` : ""}{record.ci_id ? ` · ${record.ci_id}` : ""}{record.committed_ci_id ? ` · ${record.committed_ci_id}` : ""}</div>
+                        <div className="mt-1 text-xs text-gray-400">{stagedRecordDecision(record)}</div>
+                        <div className="mt-2 rounded border border-gray-800 bg-gray-900/80 p-2">
+                          <div className="text-xs font-medium text-cyan-100">Reconciliation</div>
+                          <div className="mt-1 text-xs text-gray-400">{trace.reason}</div>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {trace.keyChecks.length ? trace.keyChecks.map((item) => (
+                              <span key={item.key} className={`rounded px-2 py-1 text-[11px] ${item.present ? "bg-emerald-500/10 text-emerald-200" : "bg-amber-500/10 text-amber-200"}`}>
+                                {item.key}: {item.present ? item.value : "empty"}
+                              </span>
+                            )) : <span className="rounded bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">No reconciliation keys</span>}
+                          </div>
+                        </div>
+                        {[...(record.errors || []), ...(record.warnings || [])].map((issue) => (
+                          <div key={issue} className="mt-1 text-xs text-amber-200">{issue}</div>
+                        ))}
+                        {["staged", "approved"].includes(record.status) && (
+                          <button onClick={() => skipStagedRecord(staged.job.id, record.id)} className="mt-2 rounded border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:bg-gray-900">
+                            Skip
+                          </button>
+                        )}
                       </div>
-                      <div className="mt-1 text-xs text-gray-500">row {record.row_number}{record.environment ? ` · ${record.environment}` : ""}{record.committed_ci_id ? ` · ${record.committed_ci_id}` : ""}</div>
-                      <div className="mt-1 text-xs text-gray-400">{stagedRecordDecision(record)}</div>
-                      {[...(record.errors || []), ...(record.warnings || [])].map((issue) => (
-                        <div key={issue} className="mt-1 text-xs text-amber-200">{issue}</div>
-                      ))}
-                      {["staged", "approved"].includes(record.status) && (
-                        <button onClick={() => skipStagedRecord(staged.job.id, record.id)} className="mt-2 rounded border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:bg-gray-900">
-                          Skip
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                   {staged.relationships.slice(0, 12).map((relationship) => (
                     <div key={relationship.id} className={`rounded-md border p-3 ${relationship.status === "blocked" ? "border-amber-500/30 bg-amber-500/10" : "border-emerald-500/20 bg-emerald-500/10"}`}>
                       <div className="flex items-center justify-between gap-3">
@@ -2598,17 +2650,31 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                       <PreviewMetric label="Issues" value={preview.summary.errors + preview.summary.warnings} />
                     </div>
                     <div className="mt-3 max-h-64 space-y-2 overflow-auto">
-                      {preview.records.slice(0, 8).map((record) => (
-                        <div key={`${record.row}-${record.targetClass}-${record.name}`} className="rounded-md bg-gray-950 p-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="truncate text-sm text-gray-200">{record.targetClass}: {record.name}</span>
-                            <span className={`shrink-0 rounded px-2 py-0.5 text-xs ${record.errors.length ? "bg-rose-500/10 text-rose-300" : "bg-emerald-500/10 text-emerald-300"}`}>{record.action}</span>
+                      {preview.records.slice(0, 8).map((record) => {
+                        const trace = previewReconciliationTrace(record);
+                        return (
+                          <div key={`${record.row}-${record.targetClass}-${record.name}`} className="rounded-md bg-gray-950 p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate text-sm text-gray-200">{record.targetClass}: {record.name}</span>
+                              <span className={`shrink-0 rounded px-2 py-0.5 text-xs ${record.errors.length ? "bg-rose-500/10 text-rose-300" : "bg-emerald-500/10 text-emerald-300"}`}>{record.action}</span>
+                            </div>
+                            <div className="mt-1 text-xs text-gray-500">row {record.row} · keys {record.matchKeys.join(", ") || "none"}</div>
+                            <div className="mt-1 text-xs text-gray-400">{previewRecordDecision(record)}</div>
+                            <div className="mt-2 rounded border border-gray-800 bg-gray-900/80 p-2">
+                              <div className="text-xs font-medium text-cyan-100">Reconciliation</div>
+                              <div className="mt-1 text-xs text-gray-400">{trace.reason}</div>
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {trace.keyChecks.length ? trace.keyChecks.map((item) => (
+                                  <span key={item.key} className={`rounded px-2 py-1 text-[11px] ${item.present ? "bg-emerald-500/10 text-emerald-200" : "bg-amber-500/10 text-amber-200"}`}>
+                                    {item.key}: {item.present ? item.value : "empty"}
+                                  </span>
+                                )) : <span className="rounded bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">No reconciliation keys</span>}
+                              </div>
+                            </div>
+                            {[...record.errors, ...record.warnings].map((issue) => <div key={issue} className="mt-1 text-xs text-amber-200">{issue}</div>)}
                           </div>
-                          <div className="mt-1 text-xs text-gray-500">row {record.row} · keys {record.matchKeys.join(", ")}</div>
-                          <div className="mt-1 text-xs text-gray-400">{previewRecordDecision(record)}</div>
-                          {[...record.errors, ...record.warnings].map((issue) => <div key={issue} className="mt-1 text-xs text-amber-200">{issue}</div>)}
-                        </div>
-                      ))}
+                        );
+                      })}
                       {preview.relationships.slice(0, 8).map((relationship, index) => (
                         <div key={`${relationship.row}-${relationship.type}-${relationship.targetHint}-${index}`} className={`rounded-md border p-2 ${relationshipStatusClass(relationship.status)}`}>
                           <div className="flex items-center justify-between gap-2">

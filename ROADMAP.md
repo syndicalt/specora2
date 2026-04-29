@@ -70,6 +70,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - **Platform hardening coverage pass** — Added regression coverage for streaming chat finalization, inherited group grants in Admin RBAC app explanations, AppLauncher role filtering/search/open behavior, and widened web coverage reporting to include tested shell surfaces.
 - **Discovery lifecycle polish** — Added collector job/evidence lifecycle summaries, explicit pinned dataset freshness, staged-run discard cleanup, and reconciliation/relationship decision explanations in Discovery review surfaces.
 - **Discovery mapping quality hardening** — Normalized edge entity aliases, improved flattened host IP selection, preserved typed host evidence for software/services/interfaces/ports, and covered those cases with transform regression tests.
+- **Discovery reconciliation transparency** — Added per-record reconciliation traces with configured keys, actual key values, create/update/block reasoning, and CI identifiers in preview and staged review.
 
 ## Next Up
 
@@ -83,7 +84,7 @@ No open product-polish blockers are tracked here. Continue capturing UAT feedbac
 
 ### Discovery And Edge
 
-- **CMDB reconciliation transparency** — Show why a discovery record updates an existing CI, creates a new CI, or blocks on a missing reconciliation key.
+No open Discovery/Edge roadmap items are tracked here. Continue capturing UAT feedback from real edge runs and pipeline authoring.
 
 ### Platform Hardening
 
