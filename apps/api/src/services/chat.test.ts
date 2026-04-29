@@ -921,4 +921,108 @@ describe("chatStream", () => {
     expect(JSON.parse(result.toolCalls?.[1].call.function.arguments)).toEqual({ id: "ci-1" });
     expect(events.some((event) => event.type === "tool_call" && event.name === "get_ci_details")).toBe(true);
   });
+
+  it("repairs promissory service-map text after CI details into a service map tool call", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: 'I will search for the CI named "nb-lenovo" to locate it.',
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: "I will now retrieve detailed information about its risk and relationships.",
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: "I will fetch the service map to analyze dependencies and impact.",
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "nb-lenovo has no downstream dependencies and two upstream relationships." } }] };
+        },
+      });
+
+    const ciRecord = {
+      get: (key: string) => ["n", "root"].includes(key)
+        ? { properties: { id: "ci-1", name: "nb-lenovo", class: "Computer", environment: "Production" } }
+        : undefined,
+    };
+    const fastify = mockFastify([[ciRecord], [ciRecord], [], [ciRecord], []]);
+
+    const events: any[] = [];
+    const result = await chatStream([{ role: "user", content: "nb-lenovo" }], fastify, (ev) => events.push(ev));
+
+    expect(result.toolCalls?.map((item) => item.call.function.name)).toEqual(["search_cis", "get_ci_details", "get_service_map"]);
+    expect(JSON.parse(result.toolCalls?.[2].call.function.arguments)).toEqual({ rootId: "ci-1" });
+    expect(result.content).toContain("nb-lenovo has no downstream dependencies and two upstream relationships.");
+    expect(events.some((event) => event.type === "tool_call" && event.name === "get_service_map")).toBe(true);
+  });
+
+  it("forces a final answer when a resolved CI prompt only promises more analysis", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: 'I need to check the current health status and dependencies of "nb-lenovo" to determine top risks.',
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "Top risks: no downstream dependencies were found; verify missing health telemetry before taking action." } }] };
+        },
+      });
+
+    const priorToolCall = {
+      id: "call-map-1",
+      type: "function",
+      function: { name: "get_service_map", arguments: JSON.stringify({ rootId: "ci-1" }) },
+    };
+    const messages = [
+      { role: "user" as const, content: "nb-lenovo" },
+      { role: "assistant" as const, content: "", tool_calls: [priorToolCall] },
+      {
+        role: "tool" as const,
+        tool_call_id: "call-map-1",
+        content: JSON.stringify({
+          rootId: "ci-1",
+          nodes: [{ id: "ci-1", name: "nb-lenovo", class: "Computer" }],
+          edges: [],
+        }),
+      },
+      { role: "user" as const, content: "Summarize the top risks and recommended next actions from this answer." },
+    ];
+
+    const events: any[] = [];
+    const result = await chatStream(messages, mockFastify(), (ev) => events.push(ev));
+
+    expect(result.content).toBe("Top risks: no downstream dependencies were found; verify missing health telemetry before taking action.");
+    expect(result.toolCalls).toBeUndefined();
+    expect(events.some((event) => event.type === "tool_call")).toBe(false);
+  });
 });

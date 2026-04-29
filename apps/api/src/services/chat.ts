@@ -285,6 +285,14 @@ function latestResolvedCi(messages: any[], preferredName?: string): { id: string
     if (message?.role !== "tool" || typeof message.tool_call_id !== "string") continue;
     const toolName = toolNames.get(message.tool_call_id);
     const result = parseJsonContent(message.content);
+    if (typeof result?.id === "string" && Array.isArray(result.relationships)) {
+      latest = { id: result.id, source: "get_ci_details" };
+      continue;
+    }
+    if (typeof result?.rootId === "string" && Array.isArray(result.nodes)) {
+      latest = { id: result.rootId, source: "get_service_map" };
+      continue;
+    }
     if (toolName === "search_cis" && Array.isArray(result)) {
       const exact = normalizedPreferred
         ? result.find((item) => typeof item?.id === "string" && typeof item?.name === "string" && item.name.toLowerCase() === normalizedPreferred)
@@ -303,24 +311,34 @@ function latestResolvedCi(messages: any[], preferredName?: string): { id: string
   return latest;
 }
 
+function isPromissoryToolText(text: string): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return (
+    /\b(i('|’)ll|i will|let me|i need to|i can)\b/.test(lower) &&
+    /\b(search|find|locate|look up|retrieve|gather|fetch|inspect|analyze|check)\b/.test(lower) &&
+    /\b(ci|configuration item|record|details|risk|relationship|relationships|dependencies|health|impact|service map)\b/.test(lower)
+  );
+}
+
+function shouldForceFinalFromPromissory(messages: any[], text: string): boolean {
+  return isPromissoryToolText(text) && !!latestResolvedCi(messages, latestUserContent(messages));
+}
+
+const PROMISSORY_FINAL_INSTRUCTION =
+  "You already have the available platform tool results in this conversation. Do not promise to fetch, check, retrieve, or analyze more data. Provide the final answer now using the gathered CI details, service map, health, risk, relationship, and context data that is present. If a field is missing, call that out as a limitation and still summarize recommended next actions.";
+
 function parsePromissorySearchToolCall(
   messages: any[],
   text: string
 ): { id: string; type: "function"; function: { name: string; arguments: string } }[] | undefined {
-  if (!text) return undefined;
+  if (!isPromissoryToolText(text)) return undefined;
   const lower = text.toLowerCase();
-  const promisesSearch =
-    /\b(i('|’)ll|i will|let me)\b/.test(lower) &&
-    /\b(search|find|locate|look up|retrieve|gather)\b/.test(lower) &&
-    /\b(ci|configuration item|record|details|dependencies|impact)\b/.test(lower);
-  if (!promisesSearch) return undefined;
 
   const userText = latestUserContent(messages);
-  if (!userText || userText.length > 120 || /[?]/.test(userText)) return undefined;
-  if (!/[a-z0-9]/i.test(userText)) return undefined;
-
   const resolvedCi = latestResolvedCi(messages, userText);
   const wantsDetails = /\b(detail|details|risk|relationship|relationships|dependenc|health|recommended|next step|impact)\b/.test(lower);
+  const wantsServiceMap = /\b(service map|dependenc|dependency|impact|upstream|downstream|path|graph)\b/.test(lower);
   if (resolvedCi?.source === "search_cis" && wantsDetails) {
     return [{
       id: `repair-${Date.now()}-0`,
@@ -328,6 +346,21 @@ function parsePromissorySearchToolCall(
       function: { name: "get_ci_details", arguments: JSON.stringify({ id: resolvedCi.id }) },
     }];
   }
+  if (resolvedCi?.source === "get_ci_details" && wantsServiceMap) {
+    return [{
+      id: `repair-${Date.now()}-0`,
+      type: "function",
+      function: { name: "get_service_map", arguments: JSON.stringify({ rootId: resolvedCi.id }) },
+    }];
+  }
+
+  // Once a CI is resolved, do not reinterpret follow-up summary requests as a
+  // fresh search query. Let the model answer from context or the max-round
+  // finalizer produce a response from the gathered tool results.
+  if (resolvedCi) return undefined;
+
+  if (!userText || userText.length > 120 || /[?]/.test(userText)) return undefined;
+  if (!/[a-z0-9]/i.test(userText)) return undefined;
 
   return [{
     id: `repair-${Date.now()}-0`,
@@ -857,6 +890,28 @@ export async function chat(
       }
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
+        if (shouldForceFinalFromPromissory(currentMessages, message.content || "")) {
+          const finalCompletion = await callLlm(
+            [
+              ...currentMessages,
+              { role: "assistant", content: message.content || "" },
+              { role: "user", content: PROMISSORY_FINAL_INSTRUCTION },
+            ],
+            fastify,
+            usedProvara,
+            openai,
+            provara,
+            trace,
+            round,
+            false,
+            user
+          );
+          const finalContent = sanitizeAssistantContent(finalCompletion.choices[0].message.content || "");
+          return {
+            content: finalContent || message.content || "I'm not sure how to respond to that. Could you rephrase or provide more detail?",
+            toolCalls: allCallMetas.length > 0 ? allCallMetas : undefined,
+          };
+        }
         return {
           content: message.content || "I'm not sure how to respond to that. Could you rephrase or provide more detail?",
           toolCalls: allCallMetas.length > 0 ? allCallMetas : undefined,
@@ -1304,6 +1359,18 @@ export async function chatStream(
       }
 
       if (!toolCalls || toolCalls.length === 0) {
+        if (shouldForceFinalFromPromissory(currentMessages, content || "")) {
+          const finalMessages = [
+            ...currentMessages,
+            { role: "assistant", content: content || "" },
+            { role: "user", content: PROMISSORY_FINAL_INSTRUCTION },
+          ];
+          const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, round, false, user);
+          return {
+            content: sanitizeAssistantContent(finalContent || "") || content || "I'm not sure how to respond to that. Could you rephrase or provide more detail?",
+            toolCalls: allCallMetas.length > 0 ? allCallMetas : undefined,
+          };
+        }
         return { content: content || "I'm not sure how to respond to that. Could you rephrase or provide more detail?", toolCalls: allCallMetas.length > 0 ? allCallMetas : undefined };
       }
     }
