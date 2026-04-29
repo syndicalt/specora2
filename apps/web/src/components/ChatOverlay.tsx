@@ -49,6 +49,14 @@ type WorkStep = {
   status: "active" | "completed" | "error";
 };
 
+type PendingApproval = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  risk: "high";
+  reason: string;
+};
+
 function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -134,6 +142,58 @@ function WorkingTrace({ steps }: { steps: WorkStep[] }) {
   );
 }
 
+function ApprovalCard({
+  approval,
+  onApprove,
+  onCancel,
+}: {
+  approval: PendingApproval;
+  onApprove: (approval: PendingApproval) => void;
+  onCancel: (id: string) => void;
+}) {
+  const visibleArgs = Object.entries(approval.arguments)
+    .filter(([key]) => !key.startsWith("_"))
+    .slice(0, 4);
+  return (
+    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-amber-300">Approval Required</div>
+          <div className="mt-1 font-medium text-amber-50">{toolLabel(approval.name)}</div>
+        </div>
+        <span className="rounded-full bg-amber-400/15 px-2 py-1 text-[11px] font-semibold uppercase text-amber-200">{approval.risk} risk</span>
+      </div>
+      <p className="text-xs leading-5 text-amber-100/80">{approval.reason}</p>
+      {visibleArgs.length > 0 && (
+        <div className="mt-2 rounded-xl border border-amber-400/20 bg-gray-950/50 p-2">
+          {visibleArgs.map(([key, value]) => (
+            <div key={key} className="flex gap-2 text-xs">
+              <span className="w-24 shrink-0 text-amber-300/70">{key}</span>
+              <span className="min-w-0 truncate text-amber-50/90">{typeof value === "string" ? value : JSON.stringify(value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => onCancel(approval.id)}
+          className="rounded-lg border border-amber-400/20 px-3 py-1.5 text-xs text-amber-100/80 transition-colors hover:bg-amber-400/10"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => onApprove(approval)}
+          className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-medium text-gray-950 transition-colors hover:bg-amber-200"
+        >
+          Approve
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function parseSseChunk(chunk: string) {
   const data = chunk
     .split("\n")
@@ -169,7 +229,8 @@ export function ChatOverlay() {
   const [forceDatePicker, setForceDatePicker] = useState(false);
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [workSteps, setWorkSteps] = useState<WorkStep[]>([]);
-  const doSendRef = useRef<(text: string) => Promise<void>>(async () => {});
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
+  const doSendRef = useRef<(text: string, options?: { approvedToolNames?: string[] }) => Promise<void>>(async () => {});
   const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
   const chips = contextChips(uiContext, activeApp);
   const followUps = followUpPrompts(uiContext, activeApp);
@@ -390,7 +451,16 @@ export function ChatOverlay() {
     if (lastUser) void doSend(lastUser.text);
   }
 
-  const doSend = useCallback(async (text: string) => {
+  function approveAction(approval: PendingApproval) {
+    setPendingApprovals((items) => items.filter((item) => item.id !== approval.id));
+    void doSend(`Approved action: ${approval.name}`, { approvedToolNames: [approval.name] });
+  }
+
+  function cancelAction(id: string) {
+    setPendingApprovals((items) => items.filter((item) => item.id !== id));
+  }
+
+  const doSend = useCallback(async (text: string, options: { approvedToolNames?: string[] } = {}) => {
     const userMsg = text.trim();
     if (!userMsg || loading) return;
 
@@ -432,6 +502,7 @@ export function ChatOverlay() {
           messages: apiMessages,
           sessionId: sessionId || undefined,
           uiContext: uiContextString,
+          approvedToolNames: options.approvedToolNames || [],
         }),
         signal: controller.signal,
       });
@@ -474,6 +545,16 @@ export function ChatOverlay() {
           } else if (event.type === "tool_result") {
             const id = `tool:${event.name}`;
             setWorkSteps((steps) => updateWorkStep(steps, { id, label: `Ran ${toolLabel(event.name)}`, status: "completed" }));
+          } else if (event.type === "approval_required") {
+            const approval: PendingApproval = {
+              id: `${event.name}:${Date.now()}`,
+              name: event.name,
+              arguments: event.arguments || {},
+              risk: event.risk || "high",
+              reason: event.reason || "This action can mutate platform data.",
+            };
+            setPendingApprovals((items) => [...items, approval]);
+            setWorkSteps((steps) => updateWorkStep(steps, { id: `tool:${event.name}`, label: `Waiting for approval: ${toolLabel(event.name)}`, status: "error" }));
           } else if (event.type === "done") {
             const text = sanitizeXml(event.content || streamedText);
             const { actions } = parseActions(text);
@@ -851,6 +932,18 @@ export function ChatOverlay() {
                 </button>
               ))}
             </div>
+          </div>
+        )}
+        {pendingApprovals.length > 0 && (
+          <div className="space-y-3">
+            {pendingApprovals.map((approval) => (
+              <ApprovalCard
+                key={approval.id}
+                approval={approval}
+                onApprove={approveAction}
+                onCancel={cancelAction}
+              />
+            ))}
           </div>
         )}
         {/* Capability accordion — shown when conversation is fresh */}

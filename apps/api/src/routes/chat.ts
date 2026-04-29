@@ -187,6 +187,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[];
       sessionId?: string;
       uiContext?: string;
+      approvedToolNames?: string[];
     };
 
     if (!body.messages || !Array.isArray(body.messages)) {
@@ -311,6 +312,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[];
       sessionId?: string;
       uiContext?: string;
+      approvedToolNames?: string[];
     };
 
     if (!body.messages || !Array.isArray(body.messages)) {
@@ -401,7 +403,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         }
       };
 
-      const result = await chatStream(history, fastify, writeEvent, trace, body.uiContext, user);
+      const result = await chatStream(history, fastify, writeEvent, trace, body.uiContext, user, body.approvedToolNames || []);
       chatStreamCompleted = true;
 
       // Save assistant message
