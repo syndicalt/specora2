@@ -809,4 +809,71 @@ describe("chatStream", () => {
     expect(result.content).toBe("check: 5 CIs");
     expect(events.filter((e) => e.type === "token").map((e) => e.content)).toEqual(["Let me ", "check: 5 CIs"]);
   });
+
+  it("continues streaming loop when model emits CMDB search action text", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: 'I will search for that CI. [[action|open-cmdb-explorer|query=nb-lenovo|Open Search in CMDB Explorer]]',
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "I found nb-lenovo and can inspect its impact." } }] };
+        },
+      });
+
+    const fastify = mockFastify([[
+      { get: () => ({ properties: { id: "ci-1", name: "nb-lenovo", class: "Computer", environment: "Production" } }) },
+    ]]);
+
+    const events: any[] = [];
+    const result = await chatStream([{ role: "user", content: "nb-lenovo" }], fastify, (ev) => events.push(ev));
+
+    expect(result.content).toBe("I found nb-lenovo and can inspect its impact.");
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls?.[0].call.function.name).toBe("search_cis");
+    expect(JSON.parse(result.toolCalls?.[0].call.function.arguments)).toEqual({ query: "nb-lenovo" });
+    expect(events.some((event) => event.type === "tool_call" && event.name === "search_cis")).toBe(true);
+    expect(events.some((event) => event.type === "tool_result" && event.name === "search_cis")).toBe(true);
+  });
+
+  it("repairs promissory streaming search text into a CMDB search tool call", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: 'I will search for the CI named "nb-lenovo" to locate its details and dependencies.',
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "nb-lenovo is a Computer with one dependency." } }] };
+        },
+      });
+
+    const fastify = mockFastify([[
+      { get: () => ({ properties: { id: "ci-1", name: "nb-lenovo", class: "Computer", environment: "Production" } }) },
+    ]]);
+
+    const events: any[] = [];
+    const result = await chatStream([{ role: "user", content: "nb-lenovo" }], fastify, (ev) => events.push(ev));
+
+    expect(result.content).toBe("nb-lenovo is a Computer with one dependency.");
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls?.[0].call.function.name).toBe("search_cis");
+    expect(JSON.parse(result.toolCalls?.[0].call.function.arguments)).toEqual({ query: "nb-lenovo" });
+    expect(events.some((event) => event.type === "tool_call" && event.name === "search_cis")).toBe(true);
+  });
 });
