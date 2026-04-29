@@ -27,7 +27,8 @@ specora2/
 │   ├── protobuf/   # Protobuf definitions and generated gRPC stubs
 │   ├── tsconfig/   # Shared TypeScript configs
 │   └── eslint-config/
-├── docs/           # Focused technical notes
+├── docs/           # Canonical user and administrator guides
+├── docs-archive/   # Archived engineering, architecture, and research notes
 ├── AGENTS.md       # Primary coding-agent context
 └── ROADMAP.md      # Released work, next work, and known debt
 ```
@@ -144,14 +145,14 @@ Do not commit `.env` files.
 - [AGENTS.md](AGENTS.md) is the compact source of truth for coding agents.
 - [ROADMAP.md](ROADMAP.md) tracks released capability, near-term work, technical debt, and decisions.
 - [CHANGELOG.md](CHANGELOG.md) records release-level changes.
-- [docs/README.md](docs/README.md) is the documentation index.
-- [docs/platform-architecture-and-theory.md](docs/platform-architecture-and-theory.md) explains platform architecture and the theories behind major choices.
-- [docs/csdmv5-compliance.md](docs/csdmv5-compliance.md) documents CSDMv5 alignment, implemented subset, and roadmap gaps.
-- [docs/application-catalog.md](docs/application-catalog.md) catalogs the native applications and integration standards.
-- [docs/platform-marking-sheet.md](docs/platform-marking-sheet.md) provides the platform and per-application marking sheet.
-- [docs/database-performance-audit.md](docs/database-performance-audit.md) records database index coverage and enterprise storage guidance.
-- [docs/llm-routing.md](docs/llm-routing.md) explains current chat model routing and tool-call behavior.
-- [docs/seeding-e2e-and-coverage.md](docs/seeding-e2e-and-coverage.md) documents seed layers, current coverage, E2E direction, and testing lessons learned.
+- [docs/README.md](docs/README.md) is the canonical user and administrator documentation index.
+- [docs/getting-started.md](docs/getting-started.md) covers first sign-in, demo flow, and initial tasks.
+- [docs/workspace.md](docs/workspace.md) explains dock, launcher, windows, app switching, shortcuts, and profile settings.
+- [docs/ai-chat.md](docs/ai-chat.md) explains global chat, screen context, tool links, and safe use.
+- [docs/apps/README.md](docs/apps/README.md) catalogs every built-in application.
+- [docs/admin/README.md](docs/admin/README.md) covers administration surfaces.
+- [docs/operations/README.md](docs/operations/README.md) covers deployment, migrations, backup, restore, and LLM routing.
+- [docs-archive/README.md](docs-archive/README.md) indexes archived architecture, product, and engineering notes retained for maintainers.
 - [CLAUDE.md](CLAUDE.md), [CURSOR.md](CURSOR.md), [README-KARPATHY.md](README-KARPATHY.md), [README.zh.md](README.zh.md), [EXAMPLES.md](EXAMPLES.md), and [skills/karpathy-guidelines/SKILL.md](skills/karpathy-guidelines/SKILL.md) are imported coding-agent behavior guidelines, not Specora product architecture.
 
 ## User Experience Notes

@@ -80,5 +80,7 @@ Known dev-server caveat: if the web dev server crashes under `turbo run dev`, st
 - `AGENTS.md` — This file; compact implementation context for agents.
 - `ROADMAP.md` — Released work, next work, technical debt, and decisions.
 - `CHANGELOG.md` — Release-level change history.
-- `docs/llm-routing.md` — Current LLM routing, Provara behavior, and OpenAI fallback.
+- `docs/README.md` — Canonical user and administrator documentation index.
+- `docs-archive/llm-routing.md` — Current LLM routing, Provara behavior, and OpenAI fallback.
+- `docs-archive/` — Archived engineering, architecture, operations, and research notes.
 - `CLAUDE.md`, `CURSOR.md`, `README-KARPATHY.md`, `README.zh.md`, `EXAMPLES.md`, `skills/karpathy-guidelines/SKILL.md` — Imported coding-agent behavior guidance, not product architecture.

@@ -68,7 +68,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 
 ## Technical Debt
 
-Detailed debt planning lives in [`docs/technical-debt-roadmap.md`](docs/technical-debt-roadmap.md).
+Detailed debt planning lives in [`docs-archive/technical-debt-roadmap.md`](docs-archive/technical-debt-roadmap.md).
 
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
 - **API coverage to 80%** — Current API coverage is materially below 80 on statements/branches/lines; focus Admin, GraphQL, Tables, Auth, Discovery, Chat, and app-tool services.
