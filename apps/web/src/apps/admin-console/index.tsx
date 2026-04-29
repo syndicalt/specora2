@@ -36,13 +36,13 @@ import {
 } from "lucide-react";
 import ChangeStateMachinePanel from "@/apps/change-manager/StateMachinePanel";
 import { PackageProvisioningPanel } from "./PackageProvisioningPanel";
+import { SystemPropertiesPanel } from "./SystemPropertiesPanel";
 import {
   FieldInput,
   FieldSelect,
   MiniMetric,
   NumberSequenceRow,
   ReadOnlyField,
-  SystemPropertyRow,
   type NumberSequence,
   type SystemProperty,
 } from "./components";
@@ -3254,46 +3254,17 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
 
     if (activeTab === "system-properties") {
       return (
-        <div className="space-y-6">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <h2 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
-              <Plus className="w-4 h-4" /> Add System Property
-            </h2>
-            <form onSubmit={addSystemProperty} className="flex items-end gap-3">
-              <div className="flex-1">
-                <label className="block text-xs text-gray-500 mb-1">Key</label>
-                <input type="text" value={newPropKey} onChange={(e) => setNewPropKey(e.target.value)} placeholder="e.g. max_upload_size"
-                  className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
-              </div>
-              <div className="flex-1">
-                <label className="block text-xs text-gray-500 mb-1">Value</label>
-                <input type="text" value={newPropValue} onChange={(e) => setNewPropValue(e.target.value)} placeholder="e.g. 10485760"
-                  className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
-              </div>
-              <button type="submit" disabled={saving || !newPropKey || !newPropValue}
-                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Add
-              </button>
-            </form>
-          </div>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-gray-500 border-b border-gray-800">
-                  <th className="px-4 py-2 font-medium">Key</th>
-                  <th className="px-4 py-2 font-medium">Value</th>
-                  <th className="px-4 py-2 font-medium">Updated</th>
-                  <th className="px-4 py-2 font-medium w-16"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {systemProps.map((prop) => (
-                  <SystemPropertyRow key={prop.key} prop={prop} onUpdate={updateSystemProperty} onDelete={deleteSystemProperty} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <SystemPropertiesPanel
+          newPropKey={newPropKey}
+          setNewPropKey={setNewPropKey}
+          newPropValue={newPropValue}
+          setNewPropValue={setNewPropValue}
+          saving={saving}
+          systemProps={systemProps}
+          onAdd={addSystemProperty}
+          onUpdate={updateSystemProperty}
+          onDelete={deleteSystemProperty}
+        />
       );
     }
 
