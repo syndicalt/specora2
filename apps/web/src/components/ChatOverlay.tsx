@@ -6,7 +6,7 @@ import { getApiBase } from "@/lib/runtimeApi";
 import { useShell } from "@/shell/AppContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, Calendar, ChevronDown, ChevronRight, Clock, Compass, Plus, Send, Sparkles, Square, Trash2, X } from "lucide-react";
+import { Bot, Calendar, Check, ChevronDown, ChevronRight, Clipboard, Clock, Compass, Plus, RotateCcw, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 
 const API_URL = getApiBase();
 
@@ -81,6 +81,22 @@ function contextChips(uiContext: Record<string, any>, activeApp: string): Contex
   if (uiContext.selectedRootCI) chips.push({ key: "selectedRootCI", label: uiContext.selectedRootCI, detail: "Service root" });
   if (uiContext.focusedCI) chips.push({ key: "focusedCI", label: uiContext.focusedCI, detail: "Focused CI" });
   return chips.filter((chip, index, list) => list.findIndex((item) => item.key === chip.key && item.label === chip.label) === index);
+}
+
+function followUpPrompts(uiContext: Record<string, any>, activeApp: string) {
+  const prompts = [
+    { label: "Summarize risks", prompt: "Summarize the top risks and recommended next actions from this answer." },
+    { label: "Create an action plan", prompt: "Turn this into a concise action plan with owners, checks, and rollback considerations." },
+  ];
+  if (uiContext.selectedCI || uiContext.focusedCI || uiContext.selectedRootCI) {
+    prompts.unshift(
+      { label: "Show relationships", prompt: "Show the important upstream and downstream relationships for the current CI context." },
+      { label: "Explain health", prompt: "Explain the health and data quality signals for the current CI context." }
+    );
+  }
+  if (activeApp.includes("service-map")) prompts.unshift({ label: "Impact path", prompt: "Identify the most important impact paths in this service map context." });
+  if (activeApp.includes("tables")) prompts.unshift({ label: "Check data quality", prompt: "Review this table context for data quality gaps and recommended cleanup steps." });
+  return prompts.slice(0, 4);
 }
 
 function sanitizeXml(text: string): string {
@@ -163,9 +179,11 @@ export function ChatOverlay() {
   const shell = useShell();
   const [uiContext, setUiContext] = useState<Record<string, any>>({});
   const [forceDatePicker, setForceDatePicker] = useState(false);
+  const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const doSendRef = useRef<(text: string) => Promise<void>>(async () => {});
   const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
   const chips = contextChips(uiContext, activeApp);
+  const followUps = followUpPrompts(uiContext, activeApp);
 
   // Auto-focus input on mount (panel opened) and when session changes
   useEffect(() => {
@@ -356,6 +374,21 @@ export function ChatOverlay() {
     abortRef.current?.abort();
     abortRef.current = null;
     setLoading(false);
+  }
+
+  async function copyMessage(text: string, index: number) {
+    try {
+      await navigator.clipboard.writeText(sanitizeXml(parseActions(text).cleanText || text));
+      setCopiedMessageIndex(index);
+      window.setTimeout(() => setCopiedMessageIndex((current) => current === index ? null : current), 1400);
+    } catch {
+      shell.dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "Unable to copy response", type: "error" } });
+    }
+  }
+
+  function retryLastUserMessage() {
+    const lastUser = [...messages].reverse().find((message) => message.role === "user");
+    if (lastUser) void doSend(lastUser.text);
   }
 
   const doSend = useCallback(async (text: string) => {
@@ -550,6 +583,7 @@ export function ChatOverlay() {
   const currentTitle = sessions.find((s) => s.id === sessionId)?.title || "New Chat";
 
   const showDatePicker = !loading && forceDatePicker;
+  const hasUserMessages = messages.some((message) => message.role === "user");
 
   return (
     <div className="flex flex-col h-full w-full bg-gray-950">
@@ -686,11 +720,47 @@ export function ChatOverlay() {
                 {showPickerForThisMsg && (
                   <DatePickerWidget onSubmit={(val) => doSend(val)} />
                 )}
+                {cleanText && (
+                  <div className="flex flex-wrap items-center gap-1.5 pl-1">
+                    <button
+                      type="button"
+                      onClick={() => copyMessage(cleanText, i)}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-gray-500 transition-colors hover:bg-gray-900 hover:text-gray-200"
+                    >
+                      {copiedMessageIndex === i ? <Check className="h-3 w-3 text-emerald-300" /> : <Clipboard className="h-3 w-3" />}
+                      {copiedMessageIndex === i ? "Copied" : "Copy"}
+                    </button>
+                    {isLatestAssistant && hasUserMessages && !loading && (
+                      <button
+                        type="button"
+                        onClick={retryLastUserMessage}
+                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-gray-500 transition-colors hover:bg-gray-900 hover:text-gray-200"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
+                {isLatestAssistant && hasUserMessages && !loading && followUps.length > 0 && (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {followUps.map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={() => doSend(item.prompt)}
+                        className="rounded-full border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-cyan-500/40 hover:text-cyan-100"
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
-        {!loading && messages.filter((m) => m.role === "user").length === 0 && (
+        {!loading && !hasUserMessages && (
           <div className="rounded-2xl border border-gray-800 bg-gray-900/70 p-3 shadow-sm">
             <div className="mb-3 flex items-center gap-2 text-sm font-medium text-gray-200">
               <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-200">
@@ -714,7 +784,7 @@ export function ChatOverlay() {
           </div>
         )}
         {/* Capability accordion — shown when conversation is fresh */}
-        {!loading && messages.filter((m) => m.role === "user").length === 0 && capabilityGroups.length > 0 && (
+        {!loading && !hasUserMessages && capabilityGroups.length > 0 && (
           <div className="mt-2 space-y-1">
             <p className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">What you can do</p>
             {capabilityGroups.map((group) => {
