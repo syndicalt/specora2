@@ -71,6 +71,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - **Discovery lifecycle polish** — Added collector job/evidence lifecycle summaries, explicit pinned dataset freshness, staged-run discard cleanup, and reconciliation/relationship decision explanations in Discovery review surfaces.
 - **Discovery mapping quality hardening** — Normalized edge entity aliases, improved flattened host IP selection, preserved typed host evidence for software/services/interfaces/ports, and covered those cases with transform regression tests.
 - **Discovery reconciliation transparency** — Added per-record reconciliation traces with configured keys, actual key values, create/update/block reasoning, and CI identifiers in preview and staged review.
+- **Password policy maturity** — Added admin-configurable local-password requirements, shared API enforcement for registration/admin creation/password change, and live requirement checks in Settings, first-login rotation, and Admin user creation.
 
 ## Next Up
 
@@ -90,7 +91,6 @@ No open Discovery/Edge roadmap items are tracked here. Continue capturing UAT fe
 
 - **API coverage to 80%** — Current full-suite baseline: 75.90% statements, 59.80% branches, 86.58% functions, 80.08% lines. Next targets: GraphQL resolvers, Tables, Chat edge cases, and low-coverage app-tool service branches.
 - **Web coverage expansion** — Current full-suite baseline with lib plus AppLauncher shell coverage: 92.2% statements, 84.78% branches, 95.34% functions, 99.17% lines. Continue widening include scope to AppDock, Settings, ChatPanel, Service Map edit flows, and CI Class Manager as tests land.
-- **Password policy maturity** — Add admin-configurable local-password integrity requirements, including length, symbol, and number rules, plus live typeahead validation while changing or resetting passwords.
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
 - **Enterprise identity maturity** — Add IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.
