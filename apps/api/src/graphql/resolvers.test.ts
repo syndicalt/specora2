@@ -1148,6 +1148,7 @@ describe("Mutation.changePassword", () => {
   it("changes a local password and clears first-login rotation", async () => {
     const oldHash = await bcrypt.hash("secret123", 4);
     const pg = mockPgSequence([
+      { rows: [] },
       { rows: [{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice", email: "alice@specora.dev", preferences: {}, role: "admin", password_hash: oldHash, password_change_required: true, oauth_accounts: 0 }] },
       { rows: [{ id: "550e8400-e29b-41d4-a716-446655440001", name: "Alice", email: "alice@specora.dev", preferences: {}, role: "admin", password_hash: "new-hash", password_change_required: false, oauth_accounts: 0 }] },
     ]);
@@ -1170,7 +1171,7 @@ describe("Mutation.changePassword", () => {
     const oldHash = await bcrypt.hash("secret123", 4);
     await expect(
       resolvers.Mutation.changePassword(null, { currentPassword: "secret123", newPassword: "short" }, mockContextWithPg(mockNeo4jSession(), mockPg()))
-    ).rejects.toThrow("New password must be between 8 and 128 characters");
+    ).rejects.toThrow("Use at least 8 characters.");
     await expect(
       resolvers.Mutation.changePassword(null, { currentPassword: "secret123", newPassword: "secret123" }, mockContextWithPg(mockNeo4jSession(), mockPg()))
     ).rejects.toThrow("New password must be different");

@@ -9,6 +9,7 @@ import {
   UpdateRelationshipInputSchema,
 } from "@specora/core";
 import { hasPermission } from "../services/rbac";
+import { getPasswordPolicy, passwordPolicyMessage, validatePasswordAgainstPolicy } from "../services/passwordPolicy";
 import { assertRelationshipType, mapRelationshipType, relationshipPattern, RELATIONSHIP_TYPE_PATTERN } from "./relationshipTypes";
 
 function boundedHopCount(value: number | undefined, fallback: number) {
@@ -554,6 +555,9 @@ LIMIT 50`;
         );
       }
       return result.rows[0] ? mapUserRow(result.rows[0]) : null;
+    },
+    async passwordPolicy(_parent: any, _args: any, context: any) {
+      return getPasswordPolicy(context.pg);
     },
     async marketplaceApps(_parent: any, args: { status?: string }, context: any) {
       const status = args.status || "approved";
@@ -1247,8 +1251,10 @@ LIMIT 50`;
       }
       const currentPassword = String(args.currentPassword || "");
       const newPassword = String(args.newPassword || "");
-      if (newPassword.length < 8 || newPassword.length > 128) {
-        throw new GraphQLError("New password must be between 8 and 128 characters", { extensions: { code: "BAD_USER_INPUT" } });
+      const policy = await getPasswordPolicy(context.pg);
+      const policyCheck = validatePasswordAgainstPolicy(newPassword, policy);
+      if (!policyCheck.valid) {
+        throw new GraphQLError(policyCheck.failures[0] || passwordPolicyMessage(policy), { extensions: { code: "BAD_USER_INPUT", failures: policyCheck.failures } });
       }
       if (newPassword === currentPassword) {
         throw new GraphQLError("New password must be different from the current password", { extensions: { code: "BAD_USER_INPUT" } });

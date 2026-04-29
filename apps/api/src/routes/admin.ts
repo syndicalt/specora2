@@ -16,6 +16,7 @@ import {
   testCredentialReference,
 } from "../services/credentials";
 import { buildEdgeRuntimeConfig, edgeJobPublicKeyBase64 } from "../services/edgeRuntimeConfig";
+import { getPasswordPolicy, passwordPolicyMessage, validatePasswordAgainstPolicy } from "../services/passwordPolicy";
 
 const API_PUBLIC_URL = process.env.API_PUBLIC_URL || (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/graphql").replace("/graphql", "");
 
@@ -1778,8 +1779,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
       const email = body.email?.trim().toLowerCase();
       const name = body.name?.trim();
       const role = body.role?.trim() || "operator";
-      if (!email || !name || !body.password || body.password.length < 8) {
-        return reply.status(400).send({ error: "email, name, and an 8+ character password are required" });
+      if (!email || !name || !body.password) {
+        return reply.status(400).send({ error: "email, name, and password are required" });
+      }
+      const policy = await getPasswordPolicy(fastify.pg);
+      const policyCheck = validatePasswordAgainstPolicy(body.password, policy);
+      if (!policyCheck.valid) {
+        return reply.status(400).send({ error: policyCheck.failures[0] || passwordPolicyMessage(policy), failures: policyCheck.failures });
       }
       const id = randomUUID();
       const passwordHash = await bcrypt.hash(body.password, 10);

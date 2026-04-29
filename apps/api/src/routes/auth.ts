@@ -7,6 +7,7 @@ import { SignedXml } from "xml-crypto";
 import { issueAuthTokens, listUserSessions, revokeRefreshToken, revokeUserSession, rotateRefreshToken } from "../services/authSessions";
 import { recordAuditEvent } from "../services/auditLog";
 import { clearPermissionCache } from "../services/rbac";
+import { getPasswordPolicy, passwordPolicyMessage, validatePasswordAgainstPolicy } from "../services/passwordPolicy";
 
 type OAuthProfile = {
   id: string;
@@ -696,6 +697,11 @@ export async function authRoutes(fastify: FastifyInstance) {
     const body = request.body as { email?: string; password?: string; name?: string };
     if (!body.email || !body.password || !body.name) {
       return reply.status(400).send({ error: "email, password, and name required" });
+    }
+    const policy = await getPasswordPolicy(fastify.pg);
+    const policyCheck = validatePasswordAgainstPolicy(body.password, policy);
+    if (!policyCheck.valid) {
+      return reply.status(400).send({ error: policyCheck.failures[0] || passwordPolicyMessage(policy), failures: policyCheck.failures });
     }
 
     const existing = await fastify.pg.query("SELECT id FROM users WHERE lower(email) = lower($1)", [body.email]);

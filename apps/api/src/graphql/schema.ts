@@ -80,6 +80,15 @@ const typeDefs = `
     passwordChangeRequired: Boolean!
   }
 
+  type PasswordPolicy {
+    minLength: Int!
+    maxLength: Int!
+    requireNumber: Boolean!
+    requireSymbol: Boolean!
+    requireUppercase: Boolean!
+    requireLowercase: Boolean!
+  }
+
   type MarketplaceApp {
     id: ID!
     name: String!
@@ -272,6 +281,7 @@ const typeDefs = `
     discoveryJobs: [DiscoveryJob!]!
     discoveryJob(id: ID!): DiscoveryJob
     me: User
+    passwordPolicy: PasswordPolicy!
     marketplaceApps(status: String): [MarketplaceApp!]!
     marketplaceApp(id: ID!): MarketplaceApp
     savedViews: [SavedView!]!
