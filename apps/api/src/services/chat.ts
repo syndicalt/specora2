@@ -222,9 +222,58 @@ function parseActionToolCalls(text: string): { id: string; type: "function"; fun
       if (id) {
         toolCalls.push({ id: `act-${Date.now()}-${toolCalls.length}`, type: "function", function: { name: "get_ci_details", arguments: JSON.stringify({ id }) } });
       }
+    } else if (actionType === "open-cmdb-explorer") {
+      const id = params.get("id") || params.get("focusCiId");
+      if (id) {
+        toolCalls.push({ id: `act-${Date.now()}-${toolCalls.length}`, type: "function", function: { name: "get_ci_details", arguments: JSON.stringify({ id }) } });
+        continue;
+      }
+      const args: any = {};
+      if (params.get("query")) args.query = params.get("query");
+      if (params.get("name")) args.name = params.get("name");
+      if (params.get("class")) args.class = params.get("class");
+      if (params.get("environment")) args.environment = params.get("environment");
+      // Queue-only Explorer actions are navigation, not data retrieval. Search/filter
+      // Explorer actions are data intent and must continue through the tool loop.
+      if (Object.keys(args).length > 0) {
+        toolCalls.push({ id: `act-${Date.now()}-${toolCalls.length}`, type: "function", function: { name: "search_cis", arguments: JSON.stringify(args) } });
+      }
     }
   }
   return toolCalls.length > 0 ? toolCalls : undefined;
+}
+
+function latestUserContent(messages: any[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user" && typeof message.content === "string") {
+      return message.content.trim();
+    }
+  }
+  return "";
+}
+
+function parsePromissorySearchToolCall(
+  messages: any[],
+  text: string
+): { id: string; type: "function"; function: { name: string; arguments: string } }[] | undefined {
+  if (!text) return undefined;
+  const lower = text.toLowerCase();
+  const promisesSearch =
+    /\b(i('|’)ll|i will|let me)\b/.test(lower) &&
+    /\b(search|find|locate|look up|retrieve|gather)\b/.test(lower) &&
+    /\b(ci|configuration item|record|details|dependencies|impact)\b/.test(lower);
+  if (!promisesSearch) return undefined;
+
+  const userText = latestUserContent(messages);
+  if (!userText || userText.length > 120 || /[?]/.test(userText)) return undefined;
+  if (!/[a-z0-9]/i.test(userText)) return undefined;
+
+  return [{
+    id: `repair-${Date.now()}-0`,
+    type: "function",
+    function: { name: "search_cis", arguments: JSON.stringify({ query: userText }) },
+  }];
 }
 
 const CORE_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
@@ -709,6 +758,12 @@ export async function chat(
           if (actionToolCalls) {
             fastify.log.warn({ round, tools: actionToolCalls.map((t) => t.function.name) }, "Detected action-directive tool calls in model text — using fallback parser");
             message.tool_calls = actionToolCalls;
+          } else {
+            const promissoryToolCalls = parsePromissorySearchToolCall(currentMessages, rawContent);
+            if (promissoryToolCalls) {
+              fastify.log.warn({ round, tools: promissoryToolCalls.map((t) => t.function.name) }, "Detected promissory search text — repairing into tool call");
+              message.tool_calls = promissoryToolCalls;
+            }
           }
         }
       }
@@ -731,6 +786,11 @@ export async function chat(
           const retryAction = parseActionToolCalls(retryRaw);
           if (retryAction && (!message.tool_calls || message.tool_calls.length === 0)) {
             message.tool_calls = retryAction;
+          } else {
+            const retryPromissory = parsePromissorySearchToolCall(currentMessages, retryRaw);
+            if (retryPromissory && (!message.tool_calls || message.tool_calls.length === 0)) {
+              message.tool_calls = retryPromissory;
+            }
           }
         }
         message.content = sanitizeAssistantContent(retryRaw);
@@ -1144,6 +1204,12 @@ export async function chatStream(
           if (actionToolCalls) {
             fastify.log.warn({ round, tools: actionToolCalls.map((t: any) => t.function.name) }, "Detected action-directive tool calls in stream text — using fallback parser");
             toolCalls = actionToolCalls;
+          } else {
+            const promissoryToolCalls = parsePromissorySearchToolCall(currentMessages, rawContent);
+            if (promissoryToolCalls) {
+              fastify.log.warn({ round, tools: promissoryToolCalls.map((t: any) => t.function.name) }, "Detected promissory search text in stream — repairing into tool call");
+              toolCalls = promissoryToolCalls;
+            }
           }
         }
       }
@@ -1170,7 +1236,8 @@ export async function chatStream(
           if (retryAction && (!retry.toolCalls || retry.toolCalls.length === 0)) {
             toolCalls = retryAction;
           } else {
-            toolCalls = retry.toolCalls;
+            const retryPromissory = parsePromissorySearchToolCall(currentMessages, retryRaw);
+            toolCalls = retryPromissory && (!retry.toolCalls || retry.toolCalls.length === 0) ? retryPromissory : retry.toolCalls;
           }
         }
         content = sanitizeAssistantContent(retryRaw);
