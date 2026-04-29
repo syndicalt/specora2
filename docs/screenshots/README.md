@@ -15,6 +15,7 @@ Screenshots make the guides useful for admins, operators, and evaluators. Keep i
 
 ### Workspace
 
+- `login-page.png`
 - `workspace-overview.png`
 - `workspace-navigation.png`
 - `workspace-launcher.png`
