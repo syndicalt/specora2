@@ -88,7 +88,7 @@ No open Discovery/Edge roadmap items are tracked here. Continue capturing UAT fe
 
 ### Platform Hardening
 
-- **API coverage to 80%** — Current full-suite baseline: 70.94% statements, 54.84% branches, 82.08% functions, 74.83% lines. Next targets: GraphQL resolvers, Admin routes, app-tool services, Discovery execution, and Chat edge cases.
+- **API coverage to 80%** — Current full-suite baseline: 75.90% statements, 59.80% branches, 86.58% functions, 80.08% lines. Next targets: GraphQL resolvers, Tables, Chat edge cases, and low-coverage app-tool service branches.
 - **Web coverage expansion** — Current full-suite baseline with lib plus AppLauncher shell coverage: 92.2% statements, 84.78% branches, 95.34% functions, 99.17% lines. Continue widening include scope to AppDock, Settings, ChatPanel, Service Map edit flows, and CI Class Manager as tests land.
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
@@ -100,7 +100,7 @@ No open Discovery/Edge roadmap items are tracked here. Continue capturing UAT fe
 Detailed debt planning lives in [`docs-archive/technical-debt-roadmap.md`](docs-archive/technical-debt-roadmap.md).
 
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
-- **API coverage to 80%** — Current API coverage is 70.94% statements and 74.83% lines; focus GraphQL resolvers, Admin routes, app-tool services, Discovery execution, Tables, Auth, and Chat edge cases.
+- **API coverage to 80%** — Current API coverage is 75.90% statements and 80.08% lines; continue improving GraphQL resolvers, Tables, Auth, Chat edge cases, and low-coverage app-tool service branches.
 - **Web coverage scope expansion** — Current web coverage includes `src/lib/**/*.ts`, `src/shell/AppAccess.ts`, and `src/shell/AppLauncher.tsx`; continue expanding only as shell/components/app TSX tests are added.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
 - **Web dev stability** — `pnpm dev:stable` remains the supported workaround for local Turbo/Next instability; periodically retest and remove when stable.
