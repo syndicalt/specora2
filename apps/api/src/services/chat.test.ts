@@ -876,4 +876,49 @@ describe("chatStream", () => {
     expect(JSON.parse(result.toolCalls?.[0].call.function.arguments)).toEqual({ query: "nb-lenovo" });
     expect(events.some((event) => event.type === "tool_call" && event.name === "search_cis")).toBe(true);
   });
+
+  it("repairs promissory detail text after search into a CI details tool call", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: 'I will search for the CI named "nb-lenovo" to locate it.',
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: {
+                content: "I will now retrieve detailed information about its risk, dependencies, and relationships.",
+              },
+            }],
+          };
+        },
+      })
+      .mockResolvedValueOnce({
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: "nb-lenovo details are now available." } }] };
+        },
+      });
+
+    const fastify = mockFastify([
+      [{ get: () => ({ properties: { id: "ci-1", name: "nb-lenovo", class: "Computer", environment: "Production" } }) }],
+      [{ get: () => ({ properties: { id: "ci-1", name: "nb-lenovo", class: "Computer", environment: "Production" } }) }],
+      [],
+    ]);
+
+    const events: any[] = [];
+    const result = await chatStream([{ role: "user", content: "nb-lenovo" }], fastify, (ev) => events.push(ev));
+
+    expect(result.content).toBe("nb-lenovo details are now available.");
+    expect(result.toolCalls?.map((item) => item.call.function.name)).toEqual(["search_cis", "get_ci_details"]);
+    expect(JSON.parse(result.toolCalls?.[1].call.function.arguments)).toEqual({ id: "ci-1" });
+    expect(events.some((event) => event.type === "tool_call" && event.name === "get_ci_details")).toBe(true);
+  });
 });
