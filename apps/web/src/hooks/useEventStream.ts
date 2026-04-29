@@ -6,6 +6,7 @@ import { getApiBase } from "@/lib/runtimeApi";
 
 const API_URL = getApiBase();
 const WS_URL = API_URL.replace(/^http/, "ws") + "/api/events/live";
+const SSE_URL = API_URL + "/api/events/stream";
 
 export type EventHandler = (payload: Record<string, unknown>) => void;
 
@@ -16,6 +17,7 @@ interface EventStream {
 
 export function useEventStream(): EventStream {
   const wsRef = useRef<WebSocket | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
   const handlersRef = useRef<Map<string, Set<EventHandler>>>(new Map());
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -24,6 +26,92 @@ export function useEventStream(): EventStream {
   const lastPollTimeRef = useRef<string>(new Date(0).toISOString());
   const mountedRef = useRef(true);
 
+  const dispatchEvent = useCallback((type: string, payload: Record<string, unknown>) => {
+    const handlers = handlersRef.current.get(type);
+    if (handlers) {
+      handlers.forEach((h) => {
+        try { h(payload); } catch (e) { console.error("Event handler failed:", e); }
+      });
+    }
+  }, []);
+
+  const eventTypes = useCallback(() => Array.from(handlersRef.current.keys()), []);
+
+  const requestTicket = useCallback(async () => {
+    const res = await authFetch(`${API_URL}/api/ws-ticket`, { method: "POST" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data.ticket === "string" ? data.ticket : null;
+  }, []);
+
+  const startPolling = useCallback(() => {
+    if (pollIntervalRef.current) return;
+    const poll = async () => {
+      try {
+        const res = await authFetch(`${API_URL}/api/events?since=${encodeURIComponent(lastPollTimeRef.current)}`);
+        if (!res.ok) return;
+        const events = await res.json();
+        if (Array.isArray(events)) {
+          for (const ev of events) {
+            dispatchEvent(ev.type, ev.payload);
+            if (ev.created_at > lastPollTimeRef.current) {
+              lastPollTimeRef.current = ev.created_at;
+            }
+          }
+        }
+      } catch {
+        // silent
+      }
+    };
+    poll(); // immediate first poll
+    pollIntervalRef.current = setInterval(poll, 10000);
+  }, [dispatchEvent]);
+
+  const startSse = useCallback(async () => {
+    if (eventSourceRef.current || !mountedRef.current) return;
+    const ticket = await requestTicket().catch(() => null);
+    if (!ticket) {
+      startPolling();
+      return;
+    }
+    const types = eventTypes();
+    const params = new URLSearchParams({ ticket });
+    if (types.length > 0) params.set("types", types.join(","));
+
+    try {
+      const source = new EventSource(`${SSE_URL}?${params.toString()}`);
+      eventSourceRef.current = source;
+
+      source.onopen = () => {
+        if (!mountedRef.current) return;
+        connectedRef.current = true;
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+      };
+
+      source.onmessage = (event) => {
+        if (!mountedRef.current) return;
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type && msg.payload) dispatchEvent(msg.type, msg.payload);
+        } catch {
+          // ignore malformed messages
+        }
+      };
+
+      source.onerror = () => {
+        connectedRef.current = false;
+        source.close();
+        if (eventSourceRef.current === source) eventSourceRef.current = null;
+        startPolling();
+      };
+    } catch {
+      startPolling();
+    }
+  }, [dispatchEvent, eventTypes, requestTicket, startPolling]);
+
   const connect = useCallback(async () => {
     if (!mountedRef.current) return;
     const token = getToken();
@@ -31,15 +119,9 @@ export function useEventStream(): EventStream {
 
     let ticket: string | null = null;
     try {
-      const res = await authFetch(`${API_URL}/api/ws-ticket`, {
-        method: "POST",
-      });
-      if (res.ok) {
-        const data = await res.json();
-        ticket = data.ticket;
-      }
+      ticket = await requestTicket();
     } catch {
-      // ticket exchange failed, fall back to polling
+      // ticket exchange failed, fall back to polling.
       startPolling();
       return;
     }
@@ -57,7 +139,7 @@ export function useEventStream(): EventStream {
         reconnectAttemptsRef.current = 0;
         connectedRef.current = true;
         // Subscribe to all types apps have registered
-        const types = Array.from(handlersRef.current.keys());
+        const types = eventTypes();
         if (types.length > 0) {
           ws.send(JSON.stringify({ action: "subscribe", types }));
         }
@@ -73,12 +155,7 @@ export function useEventStream(): EventStream {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type && msg.payload) {
-            const handlers = handlersRef.current.get(msg.type);
-            if (handlers) {
-              handlers.forEach((h) => {
-                try { h(msg.payload); } catch (e) { console.error("Event handler failed:", e); }
-              });
-            }
+            dispatchEvent(msg.type, msg.payload);
           }
         } catch {
           // ignore malformed messages
@@ -97,8 +174,8 @@ export function useEventStream(): EventStream {
           reconnectAttemptsRef.current++;
           reconnectTimerRef.current = setTimeout(connect, delay);
         } else {
-          // Fall back to REST polling
-          startPolling();
+          // Fall back to SSE, then REST polling if streaming is unavailable.
+          startSse();
         }
       };
 
@@ -112,38 +189,10 @@ export function useEventStream(): EventStream {
         reconnectAttemptsRef.current++;
         reconnectTimerRef.current = setTimeout(connect, delay);
       } else {
-        startPolling();
+        startSse();
       }
     }
-  }, []);
-
-  const startPolling = useCallback(() => {
-    if (pollIntervalRef.current) return;
-    const poll = async () => {
-      try {
-        const res = await authFetch(`${API_URL}/api/events?since=${encodeURIComponent(lastPollTimeRef.current)}`);
-        if (!res.ok) return;
-        const events = await res.json();
-        if (Array.isArray(events)) {
-          for (const ev of events) {
-            const handlers = handlersRef.current.get(ev.type);
-            if (handlers) {
-              handlers.forEach((h) => {
-                try { h(ev.payload); } catch (e) { console.error("Event handler failed:", e); }
-              });
-            }
-            if (ev.created_at > lastPollTimeRef.current) {
-              lastPollTimeRef.current = ev.created_at;
-            }
-          }
-        }
-      } catch {
-        // silent
-      }
-    };
-    poll(); // immediate first poll
-    pollIntervalRef.current = setInterval(poll, 10000);
-  }, []);
+  }, [dispatchEvent, eventTypes, requestTicket, startSse]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -152,6 +201,10 @@ export function useEventStream(): EventStream {
       mountedRef.current = false;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -169,6 +222,11 @@ export function useEventStream(): EventStream {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ action: "subscribe", types: [type] }));
     }
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+      startSse();
+    }
 
     return () => {
       handlersRef.current.get(type)?.delete(handler);
@@ -177,9 +235,14 @@ export function useEventStream(): EventStream {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ action: "unsubscribe", types: [type] }));
         }
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+          eventSourceRef.current = null;
+          startSse();
+        }
       }
     };
-  }, []);
+  }, [startSse]);
 
   return {
     subscribe,

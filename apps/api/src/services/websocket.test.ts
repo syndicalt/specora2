@@ -83,6 +83,43 @@ describe("websocket service", () => {
     expect(getConnectionCount()).toBe(0);
   });
 
+  it("streams subscribed events over SSE", async () => {
+    const { websocketRoutes } = await import("./websocket");
+    const app = (await import("fastify")).default();
+    app.decorate("jwt", { verify: vi.fn(() => ({ id: "u1", type: "ws-ticket" })) });
+    await app.register((await import("@fastify/websocket")).default);
+    await app.register(websocketRoutes);
+
+    await app.listen({ port: 0 });
+    const port = (app.server.address() as any).port;
+    const controller = new AbortController();
+    const response = await fetch(`http://localhost:${port}/api/events/stream?ticket=tok&types=test.event`, {
+      signal: controller.signal,
+    });
+    expect(response.status).toBe(200);
+    expect(getConnectionCount()).toBe(1);
+
+    broadcast("other.event", { ignored: true });
+    broadcast("test.event", { msg: "hello" });
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    const deadline = Date.now() + 1000;
+    while (!received.includes("\"test.event\"") && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += decoder.decode(value);
+    }
+
+    controller.abort();
+    expect(received).toContain("\"type\":\"test.event\"");
+    expect(received).toContain("\"msg\":\"hello\"");
+    expect(received).not.toContain("\"other.event\"");
+
+    await app.close();
+  });
+
   it("closeAllConnections clears all clients", async () => {
     const { websocketRoutes } = await import("./websocket");
     const app = (await import("fastify")).default();

@@ -8,7 +8,13 @@ interface ClientConnection {
   lastPong: number;
 }
 
+interface SseConnection {
+  send: (message: string) => void;
+  subscriptions: Set<string>;
+}
+
 const connections = new Set<ClientConnection>();
+const sseConnections = new Set<SseConnection>();
 
 function safeStringify(obj: unknown): string {
   const seen = new WeakSet();
@@ -23,13 +29,23 @@ function safeStringify(obj: unknown): string {
 
 /** Broadcast an event to all WebSocket clients subscribed to its type */
 export function broadcast(type: string, payload: Record<string, unknown>) {
-  const message = safeStringify({ type, payload, timestamp: new Date().toISOString() });
+  const event = { type, payload, timestamp: new Date().toISOString() };
+  const message = safeStringify(event);
   for (const client of connections) {
     if (client.subscriptions.has(type) || client.subscriptions.has("*")) {
       try {
         client.socket.send(message);
       } catch {
         connections.delete(client);
+      }
+    }
+  }
+  for (const client of sseConnections) {
+    if (client.subscriptions.has(type) || client.subscriptions.has("*")) {
+      try {
+        client.send(`data: ${message}\n\n`);
+      } catch {
+        sseConnections.delete(client);
       }
     }
   }
@@ -45,14 +61,74 @@ export function closeAllConnections() {
     }
   }
   connections.clear();
+  sseConnections.clear();
 }
 
 /** Get current connection count for health/monitoring */
 export function getConnectionCount(): number {
-  return connections.size;
+  return connections.size + sseConnections.size;
 }
 
 export async function websocketRoutes(fastify: FastifyInstance) {
+  function verifyTicket(ticket?: string | null) {
+    if (!ticket) throw new Error("Missing ticket");
+    const decoded = fastify.jwt.verify(ticket) as { id: string; type?: string };
+    if (decoded.type !== "ws-ticket") throw new Error("Invalid ticket type");
+    return decoded.id;
+  }
+
+  fastify.get("/api/events/stream", async (request: any, reply: any) => {
+    const { ticket, types } = request.query as { ticket?: string; types?: string };
+    let userId: string;
+    try {
+      userId = verifyTicket(ticket);
+    } catch (err: any) {
+      fastify.log.warn({ err: err.message }, "SSE auth failed");
+      return reply.status(401).send({ error: "Invalid ticket" });
+    }
+
+    const subscriptions = new Set(
+      String(types || "*")
+        .split(",")
+        .map((type) => type.trim())
+        .filter(Boolean)
+    );
+    if (!subscriptions.size) subscriptions.add("*");
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    reply.raw.write(`data: ${safeStringify({ type: "connected", payload: { transport: "sse" }, timestamp: new Date().toISOString() })}\n\n`);
+
+    const client: SseConnection = {
+      subscriptions,
+      send: (message: string) => reply.raw.write(message),
+    };
+    sseConnections.add(client);
+    fastify.log.info({ userId, connections: sseConnections.size }, "SSE event client connected");
+
+    const keepAlive = setInterval(() => {
+      try {
+        reply.raw.write(": keep-alive\n\n");
+      } catch {
+        clearInterval(keepAlive);
+        sseConnections.delete(client);
+      }
+    }, 25000);
+
+    request.raw.on("close", () => {
+      clearInterval(keepAlive);
+      sseConnections.delete(client);
+      fastify.log.info({ userId, connections: sseConnections.size }, "SSE event client disconnected");
+    });
+
+    return;
+  });
+
   (fastify as any).get("/api/events/live", { websocket: true }, (socket: WebSocket, req: any) => {
     // Auth via short-lived ticket exchanged over HTTP POST /api/ws-ticket.
     // Parse from raw URL because @fastify/websocket may not populate req.query.
@@ -64,10 +140,7 @@ export async function websocketRoutes(fastify: FastifyInstance) {
 
     let userId: string | null = null;
     try {
-      if (!ticket) throw new Error("Missing ticket");
-      const decoded = fastify.jwt.verify(ticket) as { id: string; type?: string };
-      if (decoded.type !== "ws-ticket") throw new Error("Invalid ticket type");
-      userId = decoded.id;
+      userId = verifyTicket(ticket);
     } catch (err: any) {
       fastify.log.warn({ err: err.message }, "WebSocket auth failed");
       socket.close(1008, "Invalid ticket");
