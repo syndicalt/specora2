@@ -1,6 +1,6 @@
 # Technical Debt Roadmap
 
-Last reviewed: 2026-04-28.
+Last reviewed: 2026-04-29.
 
 This roadmap tracks engineering debt that materially affects product reliability, delivery speed, and UAT quality. It is intentionally separate from feature roadmap work.
 
@@ -24,6 +24,8 @@ The web number is intentionally called out as configured scope because current V
 - Shared the reference typeahead component between Tables and Service Mapping, then added direct component behavior tests.
 - Added authenticated SSE fallback for platform event streaming when WebSocket upgrades are unavailable.
 - Added a reusable Playwright documentation screenshot capture script.
+- Extracted shell app access filtering into a tested helper and fixed no-role authenticated access.
+- Restricted Specora Arc to app-management administrators and made Customer Portal part of the authenticated baseline.
 
 ## P0 — Structural Risk Reduction
 

@@ -59,12 +59,45 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - Risk score history.
 - Frontend impact-analysis UI for change requests.
 
+## Recently Completed
+
+- **Reporting API depth** — CAB evidence datasets and brief coverage metrics, knowledge feedback/gap datasets, knowledge trust/reuse metrics, operational readiness scoring, and CMDB data-quality readiness checks.
+- **Discovery RC push** — Rollback records/UI, saved mapping profiles, richer AI mapping rationale, Admin-managed credential references with encrypted managed secrets, edge/collector source registration, source binding, runtime config publishing, evidence upload ingestion, run datasets, and improved edge profiling previews.
+- **Operability and scale hardening** — API worker health checks, queue posture, Discovery job health, restore rehearsal command, stable dev launcher, identity provider readiness validation, Redis event/cache support, audit head anchoring, OIDC RS256/JWKS validation, and SAML XML signature validation.
+- **Real-time events** — WebSocket pub/sub for platform events with short-lived ticket auth, Redis cross-instance fanout, REST polling fallback, and authenticated SSE fallback for environments where WebSocket upgrades are unavailable.
+- **Demo documentation** — Canonical user/admin guides, application screenshots, and reusable Playwright screenshot capture.
+- **UAT fixes** — App state preservation, chat investigation continuity, CMDB Explorer attribute projection, and baseline app access rules for Arc and Customer Portal.
+
 ## Next Up
 
-- **Reporting API depth** — Completed: CAB evidence datasets and brief coverage metrics, knowledge feedback/gap datasets, knowledge trust/reuse metrics, operational readiness scoring, and CMDB data-quality readiness checks.
-- **Discovery RC push** — Completed: rollback records/UI, saved mapping profiles, richer AI mapping rationale, Admin-managed credential references with encrypted managed secrets, and edge/collector source registration with source binding.
-- **Operability and scale hardening** — Sprint 1 completed: API worker health checks with gRPC reachability, queue posture, stale/dead-letter counts, and Discovery job health. Sprint 2 completed: local restore rehearsal command with temporary PostgreSQL restore, migration status, Neo4j counts, upload checks, and JSON artifacts. Sprint 3 completed: stable direct API/web dev launcher for the Turbo/Next instability path. Sprint 4 completed: active SAML/OIDC provider readiness validation in Admin identity management. Sprint 5 completed: Redis service wired into local Compose for event propagation and shared permission cache. Sprint 6 completed: audit head anchoring records with provider/external reference payloads. Sprint 7 completed: OIDC RS256/JWKS signature validation plus issuer/audience/time-bound validation. Sprint 8 completed: SAML XML signature validation bound to signed assertion references with duplicate-ID wrapping protection.
-- **Real-time events** — Completed: WebSocket pub/sub for platform events with short-lived ticket auth, Redis cross-instance fanout, REST polling fallback, and authenticated SSE fallback for environments where WebSocket upgrades are unavailable.
+### Release Candidate Readiness
+
+- **Demo path validation** — Run a full demo pass against `https://specora-dev.specora.org`: login, app launcher, CMDB Explorer, Service Map, Tables, Discovery, Admin, Customer Portal, Arc, chat, and settings.
+- **Access matrix validation** — Verify expected apps and API permissions for no-role authenticated users, viewer, operator, admin, and security_admin.
+- **Railway release checklist** — Confirm build, migrations, seeded demo data, admin login, health/readiness endpoints, app registry, and screenshot docs after deploy.
+- **Documentation review** — Human-pass the canonical docs for product language, screenshot accuracy, admin guidance, and deployment caveats.
+
+### Product Polish
+
+- **User management and RBAC clarity** — Make role and permission outcomes easier to explain from the Admin Console, including “why this user can access this app.”
+- **Customer Portal baseline** — Treat Customer Portal as the authenticated self-service home for basic users; tighten empty states, request status, and support handoff flows.
+- **Specora Arc governance** — Keep Arc restricted to admin/security_admin, clarify optional package lifecycle, and distinguish platform-bundled apps from installable packages.
+- **Chat reliability** — Continue reducing tool-call halts and loops; prefer explicit tool result cards and deterministic follow-up prompts over vague “I will fetch” responses.
+
+### Discovery And Edge
+
+- **Edge run lifecycle** — Make collector job queueing, run selection, evidence freshness, and staging cleanup explicit in the Admin/Discovery surfaces.
+- **Discovery mapping quality** — Improve entity-aware sample selection, typed observations, hardware/software/interface normalization, and class-router editability.
+- **CMDB reconciliation transparency** — Show why a discovery record updates an existing CI, creates a new CI, or blocks on a missing reconciliation key.
+
+### Platform Hardening
+
+- **API coverage to 80%** — Focus Admin, GraphQL, Tables, Auth, Discovery, Chat, and app-tool services.
+- **Web coverage expansion** — Add shell/component/app tests beyond `src/lib/**/*.ts`, starting with AppLauncher, AppDock, Settings, ChatPanel, Service Map edit flows, and CI Class Manager.
+- **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
+- **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
+- **Enterprise identity maturity** — Add IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.
+- **Audit anchoring maturity** — Connect audit chain heads to external immutable stores for high-compliance deployments.
 
 ## Technical Debt
 
