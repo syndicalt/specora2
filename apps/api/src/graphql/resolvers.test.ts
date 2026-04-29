@@ -578,6 +578,243 @@ describe("Relationship type registry resolvers", () => {
   });
 });
 
+describe("CI class registry mutations", () => {
+  it("creates CI classes with display fields and attributes transactionally", async () => {
+    const { pg, client } = mockPgConnectSequence([
+      { rows: [] },
+      { rows: [{ id: "parent-1" }] },
+      { rows: [{
+        id: "class-1",
+        name: "NetworkAppliance",
+        display_name: "Network Appliance",
+        description: "Managed network device",
+        parent_class: "ConfigurationItem",
+        icon: "Router",
+        color: "#38bdf8",
+        display_field: "hostname",
+        secondary_display_fields: ["ipAddress", "serialNumber"],
+        is_system: false,
+        created_by_app_id: "admin-console",
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      }] },
+    ]);
+    const emit = vi.fn();
+
+    const result = await resolvers.Mutation.createCIClass(null, {
+      input: {
+        name: "NetworkAppliance",
+        displayName: "Network Appliance",
+        description: "Managed network device",
+        parentClass: "ConfigurationItem",
+        icon: "Router",
+        color: "#38bdf8",
+        displayField: "hostname",
+        secondaryDisplayFields: ["ipAddress", "serialNumber"],
+        attributes: [
+          { name: "hostname", displayName: "Hostname", attrType: "string", isMandatory: true, isKeyAttribute: true, sortOrder: 1 },
+          { name: "ipAddress", displayName: "IP Address", attrType: "string", sortOrder: 2 },
+        ],
+      },
+    }, { ...mockContext(mockNeo4jSession(), {}, pg), appId: "admin-console", emit });
+
+    expect(result).toMatchObject({
+      id: "class-1",
+      name: "NetworkAppliance",
+      displayField: "hostname",
+      secondaryDisplayFields: ["ipAddress", "serialNumber"],
+      createdByAppId: "admin-console",
+    });
+    expect(client.query).toHaveBeenCalledWith("COMMIT");
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO ci_class_attributes"), expect.arrayContaining(["class-1", "hostname", "Hostname"]));
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO ci_class_attributes"), expect.arrayContaining(["class-1", "ipAddress", "IP Address"]));
+    expect(emit).toHaveBeenCalledWith("ci_class.created", { className: "NetworkAppliance", createdByAppId: "admin-console" });
+  });
+
+  it("rolls back class creation for invalid names, duplicate classes, missing parents, and duplicate attributes", async () => {
+    await expect(
+      resolvers.Mutation.createCIClass(null, { input: { name: "bad name", displayName: "Bad" } }, mockContext(mockNeo4jSession()))
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+
+    const duplicate = mockPgConnectSequence([{ rows: [{ id: "class-1" }] }]);
+    await expect(
+      resolvers.Mutation.createCIClass(null, { input: { name: "Server", displayName: "Server" } }, mockContext(mockNeo4jSession(), {}, duplicate.pg))
+    ).rejects.toThrow("already exists");
+    expect(duplicate.client.query).toHaveBeenCalledWith("ROLLBACK");
+
+    const missingParent = mockPgConnectSequence([{ rows: [] }, { rows: [] }]);
+    await expect(
+      resolvers.Mutation.createCIClass(null, { input: { name: "ChildClass", displayName: "Child", parentClass: "Missing" } }, mockContext(mockNeo4jSession(), {}, missingParent.pg))
+    ).rejects.toThrow("Parent class 'Missing' not found");
+    expect(missingParent.client.query).toHaveBeenCalledWith("ROLLBACK");
+
+    const duplicateAttrs = mockPgConnectSequence([
+      { rows: [] },
+      { rows: [{
+        id: "class-1",
+        name: "RouterClass",
+        display_name: "Router Class",
+        parent_class: null,
+        display_field: "name",
+        secondary_display_fields: [],
+        is_system: false,
+        created_by_app_id: null,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      }] },
+    ]);
+    await expect(
+      resolvers.Mutation.createCIClass(null, {
+        input: {
+          name: "RouterClass",
+          displayName: "Router Class",
+          attributes: [
+            { name: "hostname", displayName: "Hostname", attrType: "string" },
+            { name: "hostname", displayName: "Hostname duplicate", attrType: "string" },
+          ],
+        },
+      }, mockContext(mockNeo4jSession(), {}, duplicateAttrs.pg))
+    ).rejects.toThrow("Duplicate attribute name: hostname");
+    expect(duplicateAttrs.client.query).toHaveBeenCalledWith("ROLLBACK");
+  });
+
+  it("updates CI classes while protecting system names and inheritance", async () => {
+    const systemUpdate = mockPgConnectSequence([
+      { rows: [{ id: "class-1", name: "Computer", parent_class: "ConfigurationItem", is_system: true }] },
+    ]);
+
+    await expect(
+      resolvers.Mutation.updateCIClass(null, {
+        id: "class-1",
+        input: { name: "Laptop", displayName: "Laptop", parentClass: "ConfigurationItem" },
+      }, mockContext(mockNeo4jSession(), {}, systemUpdate.pg))
+    ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+    expect(systemUpdate.client.query).toHaveBeenCalledWith("ROLLBACK");
+
+    const update = mockPgConnectSequence([
+      { rows: [{ id: "class-2", name: "RouterClass", parent_class: null, is_system: false }] },
+      { rows: [] },
+      { rows: [{ id: "parent-1" }] },
+      { rows: [{
+        id: "class-2",
+        name: "NetworkDevice",
+        display_name: "Network Device",
+        description: "Updated",
+        parent_class: "ConfigurationItem",
+        icon: "Router",
+        color: "#22d3ee",
+        display_field: "hostname",
+        secondary_display_fields: ["ipAddress"],
+        is_system: false,
+        created_by_app_id: null,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-02",
+      }] },
+    ]);
+    const emit = vi.fn();
+    const result = await resolvers.Mutation.updateCIClass(null, {
+      id: "class-2",
+      input: {
+        name: "NetworkDevice",
+        displayName: "Network Device",
+        description: "Updated",
+        parentClass: "ConfigurationItem",
+        icon: "Router",
+        color: "#22d3ee",
+        displayField: "hostname",
+        secondaryDisplayFields: ["ipAddress"],
+        attributes: [{ name: "hostname", displayName: "Hostname", attrType: "string" }],
+      },
+    }, { ...mockContext(mockNeo4jSession(), {}, update.pg), emit });
+
+    expect(result).toMatchObject({ name: "NetworkDevice", displayField: "hostname", secondaryDisplayFields: ["ipAddress"] });
+    expect(update.client.query).toHaveBeenCalledWith("DELETE FROM ci_class_attributes WHERE class_id = $1", ["class-2"]);
+    expect(update.client.query).toHaveBeenCalledWith("COMMIT");
+    expect(emit).toHaveBeenCalledWith("ci_class.updated", { className: "NetworkDevice", createdByAppId: null });
+  });
+
+  it("deletes unused non-system CI classes and blocks unsafe deletes", async () => {
+    const missing = mockPgConnectSequence([{ rows: [] }]);
+    await expect(
+      resolvers.Mutation.deleteCIClass(null, { id: "missing" }, mockContext(mockNeo4jSession(), {}, missing.pg))
+    ).rejects.toMatchObject({ extensions: { code: "NOT_FOUND" } });
+
+    const system = mockPgConnectSequence([{ rows: [{ id: "class-1", name: "Computer", is_system: true }] }]);
+    await expect(
+      resolvers.Mutation.deleteCIClass(null, { id: "class-1" }, mockContext(mockNeo4jSession(), {}, system.pg))
+    ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+
+    const usedSession = mockNeo4jSession([{ get: () => ({ toNumber: () => 3 }) }]);
+    const used = mockPgConnectSequence([{ rows: [{ id: "class-2", name: "CustomApp", is_system: false }] }]);
+    await expect(
+      resolvers.Mutation.deleteCIClass(null, { id: "class-2" }, mockContext(usedSession, {}, used.pg))
+    ).rejects.toThrow("3 CIs exist");
+    expect(usedSession.close).toHaveBeenCalled();
+
+    const deleteSession = mockNeo4jSession([{ get: () => ({ toNumber: () => 0 }) }]);
+    const deletable = mockPgConnectSequence([{ rows: [{ id: "class-3", name: "TemporaryClass", is_system: false, created_by_app_id: "admin-console" }] }]);
+    const emit = vi.fn();
+    await expect(
+      resolvers.Mutation.deleteCIClass(null, { id: "class-3" }, { ...mockContext(deleteSession, {}, deletable.pg), emit })
+    ).resolves.toBe(true);
+    expect(deletable.client.query).toHaveBeenCalledWith("DELETE FROM ci_classes WHERE id = $1", ["class-3"]);
+    expect(deletable.client.query).toHaveBeenCalledWith("COMMIT");
+    expect(emit).toHaveBeenCalledWith("ci_class.deleted", { className: "TemporaryClass", createdByAppId: "admin-console" });
+  });
+});
+
+describe("CI environment choice resolvers", () => {
+  it("maps and filters environment choices", async () => {
+    const pg = mockPgSequence([{ rows: [{
+      id: "env-1",
+      code: "prod",
+      name: "Production",
+      active: true,
+      sort_order: 10,
+      is_production_like: true,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }] }]);
+
+    const result = await resolvers.Query.ciEnvironmentChoices(null, { activeOnly: false }, mockContext(mockNeo4jSession(), {}, pg));
+
+    expect(result).toEqual([expect.objectContaining({ code: "prod", name: "Production", sortOrder: 10, isProductionLike: true })]);
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("FROM ci_environment_choices ORDER BY"));
+  });
+
+  it("upserts sanitized environment choices and rejects invalid input", async () => {
+    const pg = mockPgSequence([{ rows: [{
+      id: "env-1",
+      code: "uat-env",
+      name: "UAT Env",
+      active: true,
+      sort_order: 20,
+      is_production_like: false,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+    }] }]);
+
+    const result = await resolvers.Mutation.upsertCIEnvironmentChoice(null, {
+      input: { code: " UAT Env! ", name: "UAT Env", active: true, sortOrder: 20 },
+    }, mockContext(mockNeo4jSession(), {}, pg));
+
+    expect(result).toMatchObject({ code: "uat-env", name: "UAT Env" });
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO ci_environment_choices"), ["uat-env", "UAT Env", true, 20, false]);
+    await expect(
+      resolvers.Mutation.upsertCIEnvironmentChoice(null, { input: { code: "!!!", name: "" } }, mockContext(mockNeo4jSession(), {}, mockPg()))
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+  });
+
+  it("deletes environment choices by id", async () => {
+    await expect(
+      resolvers.Mutation.deleteCIEnvironmentChoice(null, { id: "env-1" }, mockContext(mockNeo4jSession(), {}, mockPg([{ id: "env-1" }])))
+    ).resolves.toBe(true);
+    await expect(
+      resolvers.Mutation.deleteCIEnvironmentChoice(null, { id: "missing" }, mockContext(mockNeo4jSession(), {}, mockPg([])))
+    ).resolves.toBe(false);
+  });
+});
+
 describe("Mutation.ingestCMDB", () => {
   it("queues ingestion via gRPC and returns jobId", async () => {
     const worker = {
@@ -612,6 +849,28 @@ function mockPgSequence(results: any[]) {
       const result = results[idx++] ?? { rows: [] };
       return Promise.resolve(result);
     }),
+  };
+}
+
+function mockPgConnectSequence(results: any[]) {
+  let idx = 0;
+  const client = {
+    query: vi.fn().mockImplementation((sql: string) => {
+      const command = sql.trim().split(/\s+/)[0]?.toUpperCase();
+      if (["BEGIN", "COMMIT", "ROLLBACK", "DELETE"].includes(command)) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      const result = results[idx++] ?? { rows: [], rowCount: 0 };
+      return Promise.resolve(result);
+    }),
+    release: vi.fn(),
+  };
+  return {
+    client,
+    pg: {
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      connect: vi.fn().mockResolvedValue(client),
+    },
   };
 }
 
