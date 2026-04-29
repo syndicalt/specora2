@@ -120,6 +120,8 @@ type DiscoveryDataset = {
   status: string;
   observedStartAt?: string | null;
   observedEndAt?: string | null;
+  documentIds?: string[];
+  runIds?: string[];
   entityCounts: Record<string, number>;
   profiles: EdgeObservationProfile[];
   createdAt?: string;
@@ -387,6 +389,100 @@ function discoveryJobTimestamp(job: DiscoveryJob): number {
 function formatDiscoveryJobDate(job: DiscoveryJob): string {
   const timestamp = discoveryJobTimestamp(job);
   return timestamp ? new Date(timestamp).toLocaleString() : "No timestamp";
+}
+
+function safeObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function numberFrom(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function discoveryJobPreview(job: DiscoveryJob) {
+  const stats = safeObject(job.stats);
+  const preview = safeObject(stats.preview);
+  return {
+    pipelineName: typeof stats.pipelineName === "string" ? stats.pipelineName : "",
+    pipelineVersion: numberFrom(stats.pipelineVersion),
+    rows: numberFrom(preview.rows),
+    stagedRecords: numberFrom(preview.stagedRecords),
+    relationships: numberFrom(preview.relationshipCandidates),
+    errors: numberFrom(preview.errors),
+    warnings: numberFrom(preview.warnings),
+  };
+}
+
+function formatDateTime(value?: string | null): string {
+  if (!value) return "unknown";
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : "unknown";
+}
+
+function freshnessLabel(value?: string | null): string {
+  if (!value) return "unknown freshness";
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "unknown freshness";
+  const diffMs = Math.max(0, Date.now() - timestamp);
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m old`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h old`;
+  return `${Math.floor(hours / 24)}d old`;
+}
+
+function entityCountsLabel(counts: Record<string, number>): string {
+  const entries = Object.entries(counts || {});
+  return entries.length ? entries.map(([key, value]) => `${key}:${value}`).join(" ") : "no entities";
+}
+
+function datasetWindowLabel(dataset: DiscoveryDataset): string {
+  const start = formatDateTime(dataset.observedStartAt);
+  const end = formatDateTime(dataset.observedEndAt);
+  return start === end ? end : `${start} to ${end}`;
+}
+
+function previewRecordDecision(record: PipelinePreview["records"][number]): string {
+  if (record.errors.length) return `Blocked until ${record.errors[0].toLowerCase()}`;
+  if (record.action === "update") return `Updates an existing ${record.targetClass} matched by ${record.matchKeys.join(", ") || "reconciliation rules"}.`;
+  if (record.action === "create") return `Creates a new ${record.targetClass}; no existing CI matched ${record.matchKeys.join(", ") || "the current keys"}.`;
+  if (record.action === "review") return `Needs review before ${record.targetClass} can be committed.`;
+  return `${record.action} ${record.targetClass} using ${record.matchKeys.join(", ") || "configured keys"}.`;
+}
+
+function stagedRecordDecision(record: StagedDiscoveryJob["records"][number]): string {
+  if (record.status === "committed") return `Committed to ${record.committed_ci_id || "the CMDB"}.`;
+  if (record.status === "blocked") return `Blocked until ${(record.errors?.[0] || record.warnings?.[0] || "the listed issue").toLowerCase()}.`;
+  if (record.status === "approved") return "Approved for commit.";
+  if (record.status === "skipped") return "Skipped by a discovery admin.";
+  return "Staged for review before CMDB commit.";
+}
+
+function relationshipStatusLabel(status?: PipelinePreview["relationships"][number]["status"] | string): string {
+  switch (status) {
+    case "ready":
+      return "ready";
+    case "will_create_target":
+      return "creates target";
+    case "missing_target":
+      return "missing target";
+    default:
+      return "unchecked";
+  }
+}
+
+function relationshipStatusClass(status?: PipelinePreview["relationships"][number]["status"] | string): string {
+  switch (status) {
+    case "ready":
+      return "border-emerald-500/25 bg-emerald-500/10 text-emerald-200";
+    case "will_create_target":
+      return "border-cyan-500/25 bg-cyan-500/10 text-cyan-200";
+    case "missing_target":
+      return "border-amber-500/30 bg-amber-500/10 text-amber-100";
+    default:
+      return "border-gray-800 bg-gray-950 text-gray-300";
+  }
 }
 
 const NODE_CATALOG: Array<{
@@ -1832,17 +1928,36 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       ) : view === "runs" ? (
         <main className="grid flex-1 grid-cols-1 gap-4 overflow-auto p-5 pb-24 lg:grid-cols-[1fr_360px]">
           <section className="space-y-3">
-            {orderedJobs.length ? orderedJobs.map((job) => (
-              <div key={job.id} className="flex items-center gap-4 rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
-                {statusIcon(job.status)}
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium">{job.status} <span className="text-gray-500">#{job.id.slice(0, 8)}</span></div>
-                  <div className="truncate text-xs text-gray-500">{discoveryJobSource(job)}</div>
+            {orderedJobs.length ? orderedJobs.map((job) => {
+              const jobPreview = discoveryJobPreview(job);
+              return (
+                <div key={job.id} className="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
+                  <div className="flex items-start gap-4">
+                    {statusIcon(job.status)}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium">{job.status} <span className="text-gray-500">#{job.id.slice(0, 8)}</span></div>
+                      <div className="truncate text-xs text-gray-500">{discoveryJobSource(job)}</div>
+                      {jobPreview.pipelineName && (
+                        <div className="mt-1 truncate text-xs text-cyan-100/70">
+                          {jobPreview.pipelineName}{jobPreview.pipelineVersion ? ` · v${jobPreview.pipelineVersion}` : ""}
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-right text-xs text-gray-500">{formatDiscoveryJobDate(job)}</div>
+                    <button onClick={() => loadStagedJob(job.id)} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">Stage</button>
+                  </div>
+                  {(jobPreview.rows || jobPreview.stagedRecords || jobPreview.relationships || jobPreview.errors || jobPreview.warnings) ? (
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-400">
+                      <span className="rounded bg-gray-950 px-2 py-1">{jobPreview.rows} rows</span>
+                      <span className="rounded bg-gray-950 px-2 py-1">{jobPreview.stagedRecords} records</span>
+                      <span className="rounded bg-gray-950 px-2 py-1">{jobPreview.relationships} links</span>
+                      <span className={`rounded px-2 py-1 ${jobPreview.errors ? "bg-rose-500/15 text-rose-200" : "bg-gray-950"}`}>{jobPreview.errors} errors</span>
+                      <span className={`rounded px-2 py-1 ${jobPreview.warnings ? "bg-amber-500/15 text-amber-200" : "bg-gray-950"}`}>{jobPreview.warnings} warnings</span>
+                    </div>
+                  ) : null}
                 </div>
-                <div className="text-right text-xs text-gray-500">{formatDiscoveryJobDate(job)}</div>
-                <button onClick={() => loadStagedJob(job.id)} className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800">Stage</button>
-              </div>
-            )) : (
+              );
+            }) : (
               <div className="rounded-lg border border-dashed border-gray-800 p-8 text-center text-sm text-gray-500">No discovery runs yet.</div>
             )}
             {staged && (
@@ -1861,6 +1976,24 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                     </button>
                   </div>
                 </div>
+                <div className="mt-4 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                  <div className="rounded-md bg-gray-950/80 p-2">
+                    <div className="text-gray-500">Safe records</div>
+                    <div className="mt-1 text-lg font-semibold text-emerald-200">{staged.records.filter((record) => !["blocked", "skipped"].includes(record.status)).length}</div>
+                  </div>
+                  <div className="rounded-md bg-gray-950/80 p-2">
+                    <div className="text-gray-500">Blocked records</div>
+                    <div className="mt-1 text-lg font-semibold text-amber-200">{staged.records.filter((record) => record.status === "blocked").length}</div>
+                  </div>
+                  <div className="rounded-md bg-gray-950/80 p-2">
+                    <div className="text-gray-500">Safe links</div>
+                    <div className="mt-1 text-lg font-semibold text-emerald-200">{staged.relationships.filter((relationship) => relationship.status !== "blocked").length}</div>
+                  </div>
+                  <div className="rounded-md bg-gray-950/80 p-2">
+                    <div className="text-gray-500">Blocked links</div>
+                    <div className="mt-1 text-lg font-semibold text-amber-200">{staged.relationships.filter((relationship) => relationship.status === "blocked").length}</div>
+                  </div>
+                </div>
                 <div className="mt-4 max-h-72 space-y-2 overflow-auto">
                   {staged.records.slice(0, 20).map((record) => (
                     <div key={record.id} className="rounded-md border border-cyan-500/20 bg-gray-950/80 p-3">
@@ -1869,6 +2002,10 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                         <span className={`rounded px-2 py-0.5 text-xs ${record.status === "blocked" ? "bg-rose-500/15 text-rose-300" : record.status === "committed" ? "bg-emerald-500/15 text-emerald-300" : "bg-cyan-500/15 text-cyan-200"}`}>{record.status}</span>
                       </div>
                       <div className="mt-1 text-xs text-gray-500">row {record.row_number}{record.environment ? ` · ${record.environment}` : ""}{record.committed_ci_id ? ` · ${record.committed_ci_id}` : ""}</div>
+                      <div className="mt-1 text-xs text-gray-400">{stagedRecordDecision(record)}</div>
+                      {[...(record.errors || []), ...(record.warnings || [])].map((issue) => (
+                        <div key={issue} className="mt-1 text-xs text-amber-200">{issue}</div>
+                      ))}
                       {["staged", "approved"].includes(record.status) && (
                         <button onClick={() => skipStagedRecord(staged.job.id, record.id)} className="mt-2 rounded border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:bg-gray-900">
                           Skip
@@ -1876,14 +2013,14 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                       )}
                     </div>
                   ))}
-                  {staged.relationships.filter((relationship) => relationship.status === "blocked").slice(0, 8).map((relationship) => (
-                    <div key={relationship.id} className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                  {staged.relationships.slice(0, 12).map((relationship) => (
+                    <div key={relationship.id} className={`rounded-md border p-3 ${relationship.status === "blocked" ? "border-amber-500/30 bg-amber-500/10" : "border-emerald-500/20 bg-emerald-500/10"}`}>
                       <div className="flex items-center justify-between gap-3">
-                        <span className="truncate text-sm text-amber-100">{relationship.rel_type}: {relationship.target_hint || "missing target"}</span>
-                        <span className="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-200">blocked</span>
+                        <span className={`truncate text-sm ${relationship.status === "blocked" ? "text-amber-100" : "text-emerald-100"}`}>{relationship.rel_type}: {relationship.target_hint || "missing target"}</span>
+                        <span className={`rounded px-2 py-0.5 text-xs ${relationship.status === "blocked" ? "bg-amber-500/15 text-amber-200" : "bg-emerald-500/15 text-emerald-200"}`}>{relationship.status}</span>
                       </div>
-                      <div className="mt-1 text-xs text-amber-100/70">row {relationship.row_number} · {relationship.from_class} to {relationship.to_class}</div>
-                      {relationship.message && <div className="mt-1 text-xs text-amber-100/80">{relationship.message}</div>}
+                      <div className={`mt-1 text-xs ${relationship.status === "blocked" ? "text-amber-100/70" : "text-emerald-100/70"}`}>row {relationship.row_number} · {relationship.from_class} to {relationship.to_class}</div>
+                      {relationship.message && <div className={`mt-1 text-xs ${relationship.status === "blocked" ? "text-amber-100/80" : "text-emerald-100/80"}`}>{relationship.message}</div>}
                     </div>
                   ))}
                 </div>
@@ -2025,13 +2162,20 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                     <option value="">Latest observations</option>
                     {edgeDatasets.map((dataset) => (
                       <option key={dataset.id} value={dataset.id}>
-                        {new Date(dataset.createdAt || dataset.observedEndAt || Date.now()).toLocaleString()} · {Object.entries(dataset.entityCounts || {}).map(([key, value]) => `${key}:${value}`).join(" ")}
+                        {new Date(dataset.createdAt || dataset.observedEndAt || Date.now()).toLocaleString()} · {entityCountsLabel(dataset.entityCounts)}
                       </option>
                     ))}
                   </select>
                   {selectedDataset && (
+                    <div className="mt-2 space-y-1 text-xs text-gray-500">
+                      <div>Pinned dataset {selectedDataset.id.slice(0, 8)} · {selectedDataset.status} · {freshnessLabel(selectedDataset.observedEndAt)}</div>
+                      <div>Observed {datasetWindowLabel(selectedDataset)}</div>
+                      <div>{selectedDataset.documentIds?.length || 0} evidence docs · {selectedDataset.runIds?.length || 0} edge runs · {entityCountsLabel(selectedDataset.entityCounts)}</div>
+                    </div>
+                  )}
+                  {!selectedDataset && (
                     <div className="mt-2 text-xs text-gray-500">
-                      Pinned dataset {selectedDataset.id.slice(0, 8)} · {selectedDataset.status}
+                      Latest observations float with collector uploads. Snapshot a dataset to pin a repeatable test run.
                     </div>
                   )}
                 </div>
@@ -2349,19 +2493,20 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
                             <span className={`shrink-0 rounded px-2 py-0.5 text-xs ${record.errors.length ? "bg-rose-500/10 text-rose-300" : "bg-emerald-500/10 text-emerald-300"}`}>{record.action}</span>
                           </div>
                           <div className="mt-1 text-xs text-gray-500">row {record.row} · keys {record.matchKeys.join(", ")}</div>
+                          <div className="mt-1 text-xs text-gray-400">{previewRecordDecision(record)}</div>
                           {[...record.errors, ...record.warnings].map((issue) => <div key={issue} className="mt-1 text-xs text-amber-200">{issue}</div>)}
                         </div>
                       ))}
-                      {preview.relationships.filter((relationship) => relationship.status === "missing_target").slice(0, 6).map((relationship, index) => (
-                        <div key={`${relationship.row}-${relationship.type}-${relationship.targetHint}-${index}`} className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2">
+                      {preview.relationships.slice(0, 8).map((relationship, index) => (
+                        <div key={`${relationship.row}-${relationship.type}-${relationship.targetHint}-${index}`} className={`rounded-md border p-2 ${relationshipStatusClass(relationship.status)}`}>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="truncate text-sm text-amber-100">{relationship.type}: {relationship.targetHint || "missing target"}</span>
-                            <span className="shrink-0 rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-200">missing target</span>
+                            <span className="truncate text-sm">{relationship.type}: {relationship.targetHint || "missing target"}</span>
+                            <span className="shrink-0 rounded bg-gray-950/70 px-2 py-0.5 text-xs">{relationshipStatusLabel(relationship.status)}</span>
                           </div>
-                          <div className="mt-1 text-xs text-amber-100/70">
+                          <div className="mt-1 text-xs opacity-70">
                             row {relationship.row} · {relationship.fromClass} to {relationship.toClass}
                           </div>
-                          {relationship.message && <div className="mt-1 text-xs text-amber-100/80">{relationship.message}</div>}
+                          {relationship.message && <div className="mt-1 text-xs opacity-90">{relationship.message}</div>}
                         </div>
                       ))}
                     </div>
