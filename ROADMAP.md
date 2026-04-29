@@ -90,6 +90,7 @@ No open Discovery/Edge roadmap items are tracked here. Continue capturing UAT fe
 
 - **API coverage to 80%** — Current full-suite baseline: 75.90% statements, 59.80% branches, 86.58% functions, 80.08% lines. Next targets: GraphQL resolvers, Tables, Chat edge cases, and low-coverage app-tool service branches.
 - **Web coverage expansion** — Current full-suite baseline with lib plus AppLauncher shell coverage: 92.2% statements, 84.78% branches, 95.34% functions, 99.17% lines. Continue widening include scope to AppDock, Settings, ChatPanel, Service Map edit flows, and CI Class Manager as tests land.
+- **Password policy maturity** — Add admin-configurable local-password integrity requirements, including length, symbol, and number rules, plus live typeahead validation while changing or resetting passwords.
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
 - **Enterprise identity maturity** — Add IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.
