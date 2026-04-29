@@ -74,7 +74,6 @@ Detailed debt planning lives in [`docs-archive/technical-debt-roadmap.md`](docs-
 - **API coverage to 80%** — Current API coverage is materially below 80 on statements/branches/lines; focus Admin, GraphQL, Tables, Auth, Discovery, Chat, and app-tool services.
 - **Web coverage scope expansion** — Current web coverage is strong for `src/lib/**/*.ts`, but should expand into shell/components and critical app TSX surfaces.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
-- **Per-tab state isolation** — Move transient app context currently stored in `localStorage` to `sessionStorage` where it should not bleed across tabs.
 - **Web dev stability** — `pnpm dev:stable` remains the supported workaround for local Turbo/Next instability; periodically retest and remove when stable.
 - **Enterprise identity maturity** — Add IdP certificate rotation, metadata refresh automation, and advanced group-to-role mapping.
 - **Audit anchoring maturity** — Connect audit head anchoring to environment-specific immutable external stores for high-compliance deployments.

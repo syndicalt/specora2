@@ -22,6 +22,8 @@ The web number is intentionally called out as configured scope because current V
 - Extracted GraphQL relationship-type validation and mapping helpers from the monolithic resolver module.
 - Extracted Tables route definitions and static registrations from the Tables route handler.
 - Shared the reference typeahead component between Tables and Service Mapping, then added direct component behavior tests.
+- Added authenticated SSE fallback for platform event streaming when WebSocket upgrades are unavailable.
+- Added a reusable Playwright documentation screenshot capture script.
 
 ## P0 — Structural Risk Reduction
 
@@ -135,30 +137,6 @@ Acceptance criteria:
 - New route modules do not introduce new `any` request/response shapes.
 - Existing high-churn modules reduce unsafe casts as they are split.
 - CI class and table field metadata use shared types across API and web.
-
-## P1 — Browser State Isolation
-
-### Move transient tab state out of `localStorage`
-
-Problem: Some per-tab UI defaults are stored in shared browser storage, creating mild cross-tab context bleed.
-
-Candidates:
-
-- Service Map last root.
-- Window geometry.
-- Chat panel open/width.
-- CMDB Explorer recent IDs.
-
-Plan:
-
-1. Keep auth, theme, and dock order global.
-2. Move transient navigation/context state to `sessionStorage`.
-3. Use explicit server preferences only for state users intentionally want shared across tabs.
-
-Acceptance criteria:
-
-- Opening Specora in multiple tabs does not cross-pollinate current map root, transient launch context, or active workspace defaults.
-- Durable preferences remain shared.
 
 ## P1 — Planning Hygiene
 
