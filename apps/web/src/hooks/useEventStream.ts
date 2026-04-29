@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import { authFetch, getToken } from "@/lib/auth";
-import { getApiBase } from "@/lib/runtimeApi";
+import { authFetch, getToken } from "../lib/auth";
+import { getApiBase } from "../lib/runtimeApi";
 
 const API_URL = getApiBase();
 const WS_URL = API_URL.replace(/^http/, "ws") + "/api/events/live";
