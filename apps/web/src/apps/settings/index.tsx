@@ -4,8 +4,18 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, Eye, EyeOff, Lock, Palette, Save, Trash2, User } from "lucide-react";
 import type { ShellAPI } from "@/sdk/types";
 import { applyTheme, DEFAULT_THEME, isThemeId, THEME_OPTIONS, type ThemeId } from "@/lib/themes";
+import {
+  DEFAULT_PASSWORD_POLICY,
+  normalizePasswordPolicy,
+  passwordMeetsPolicy,
+  passwordPolicyRequirements,
+  type PasswordPolicy,
+} from "@/lib/passwordPolicy";
 
-const ME_QUERY = `query { me { id name email role preferences authMethod canChangePassword passwordChangeRequired } }`;
+const ME_QUERY = `query {
+  me { id name email role preferences authMethod canChangePassword passwordChangeRequired }
+  passwordPolicy { minLength maxLength requireNumber requireSymbol requireUppercase requireLowercase }
+}`;
 
 const UPDATE_PREFS_MUTATION = `
   mutation UpdatePreferences($preferences: JSON!) {
@@ -92,6 +102,7 @@ export default function SettingsApp({ shell }: { shell: ShellAPI }) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordPolicy, setPasswordPolicy] = useState<PasswordPolicy>(DEFAULT_PASSWORD_POLICY);
   const themeTouchedRef = useRef(false);
 
   useEffect(() => {
@@ -100,6 +111,7 @@ export default function SettingsApp({ shell }: { shell: ShellAPI }) {
       if (!mounted) return;
       const nextUser = data?.me || null;
       setUser(nextUser);
+      setPasswordPolicy(normalizePasswordPolicy(data?.passwordPolicy));
       setDisplayName(nextUser?.name || "");
       const profileTheme = nextUser?.preferences?.theme;
       if (!themeTouchedRef.current) {
@@ -161,8 +173,8 @@ export default function SettingsApp({ shell }: { shell: ShellAPI }) {
 
   async function changePassword() {
     if (!user?.canChangePassword || savingPassword) return;
-    if (newPassword.length < 8) {
-      shell.notify("New password must be at least 8 characters", "error");
+    if (!passwordMeetsPolicy(newPassword, passwordPolicy)) {
+      shell.notify("New password does not meet the password requirements", "error");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -194,6 +206,8 @@ export default function SettingsApp({ shell }: { shell: ShellAPI }) {
       window.location.reload();
     }
   };
+  const passwordRequirements = passwordPolicyRequirements(newPassword, passwordPolicy);
+  const passwordValid = passwordMeetsPolicy(newPassword, passwordPolicy);
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-gray-900 text-gray-100">
@@ -261,11 +275,21 @@ export default function SettingsApp({ shell }: { shell: ShellAPI }) {
                 )}
                 <PasswordField label="Current password" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
                 <PasswordField label="New password" value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
+                <div className="rounded-lg border border-gray-700/60 bg-gray-950/70 p-3">
+                  <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Password requirements</div>
+                  <div className="mt-2 grid gap-1.5 text-xs">
+                    {passwordRequirements.map((requirement) => (
+                      <div key={requirement.id} className={requirement.met ? "text-emerald-300" : "text-gray-500"}>
+                        {requirement.met ? "[x]" : "[ ]"} {requirement.label}
+                      </div>
+                    ))}
+                  </div>
+                </div>
                 <PasswordField label="Confirm new password" value={confirmPassword} onChange={setConfirmPassword} autoComplete="new-password" />
                 <button
                   type="button"
                   onClick={changePassword}
-                  disabled={savingPassword || !currentPassword || !newPassword || !confirmPassword}
+                  disabled={savingPassword || !currentPassword || !newPassword || !confirmPassword || !passwordValid}
                   className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-gray-950 transition-colors hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Save className="h-4 w-4" />

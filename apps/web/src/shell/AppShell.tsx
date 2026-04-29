@@ -13,6 +13,13 @@ import { graphqlClient } from "@/lib/api";
 import { useEventStream } from "@/hooks/useEventStream";
 import { BootstrapLoading } from "@/components/BootstrapLoading";
 import { applyTheme } from "@/lib/themes";
+import {
+  DEFAULT_PASSWORD_POLICY,
+  normalizePasswordPolicy,
+  passwordMeetsPolicy,
+  passwordPolicyRequirements,
+  type PasswordPolicy,
+} from "@/lib/passwordPolicy";
 
 function createMessageBus() {
   const handlers = new Set<(msg: AppMessage) => void>();
@@ -27,7 +34,10 @@ function createMessageBus() {
   };
 }
 
-const ME_QUERY = `query { me { id name email preferences canChangePassword passwordChangeRequired } }`;
+const ME_QUERY = `query {
+  me { id name email preferences canChangePassword passwordChangeRequired }
+  passwordPolicy { minLength maxLength requireNumber requireSymbol requireUppercase requireLowercase }
+}`;
 
 const UPDATE_PREFS_MUTATION = `
   mutation UpdatePreferences($preferences: JSON!) {
@@ -110,9 +120,11 @@ function ForcedPasswordField({
 
 function PasswordChangeGate({
   canChangePassword,
+  passwordPolicy,
   onComplete,
 }: {
   canChangePassword: boolean;
+  passwordPolicy: PasswordPolicy;
   onComplete: () => void;
 }) {
   const [currentPassword, setCurrentPassword] = useState("");
@@ -120,12 +132,14 @@ function PasswordChangeGate({
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const requirements = passwordPolicyRequirements(newPassword, passwordPolicy);
+  const passwordValid = passwordMeetsPolicy(newPassword, passwordPolicy);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!canChangePassword || saving) return;
-    if (newPassword.length < 8) {
-      setError("New password must be at least 8 characters.");
+    if (!passwordValid) {
+      setError("New password does not meet the password requirements.");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -164,10 +178,20 @@ function PasswordChangeGate({
             {error && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div>}
             <ForcedPasswordField label="Current password" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
             <ForcedPasswordField label="New password" value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
+            <div className="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
+              <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Password requirements</div>
+              <div className="mt-2 grid gap-1.5 text-xs">
+                {requirements.map((requirement) => (
+                  <div key={requirement.id} className={requirement.met ? "text-emerald-300" : "text-gray-500"}>
+                    {requirement.met ? "[x]" : "[ ]"} {requirement.label}
+                  </div>
+                ))}
+              </div>
+            </div>
             <ForcedPasswordField label="Confirm new password" value={confirmPassword} onChange={setConfirmPassword} autoComplete="new-password" />
             <button
               type="submit"
-              disabled={saving || !currentPassword || !newPassword || !confirmPassword}
+              disabled={saving || !currentPassword || !newPassword || !confirmPassword || !passwordValid}
               className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-500 px-4 py-2.5 text-sm font-semibold text-gray-950 transition-colors hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Save className="h-4 w-4" />
@@ -255,6 +279,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
   const [bootstrapTimedOut, setBootstrapTimedOut] = useState(false);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [passwordGate, setPasswordGate] = useState({ required: false, canChange: false });
+  const [passwordPolicy, setPasswordPolicy] = useState<PasswordPolicy>(DEFAULT_PASSWORD_POLICY);
   const messageBus = useRef(createMessageBus()).current;
   const userIdRef = useRef<string | null>(null);
   const initialOpenDone = useRef(false);
@@ -293,6 +318,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
         const data: any = await withTimeout(graphqlClient.request(ME_QUERY), 5000, "User preferences");
         if (!mounted) return;
         const user = data?.me;
+        setPasswordPolicy(normalizePasswordPolicy(data?.passwordPolicy));
         if (user) {
           userIdRef.current = user.id;
           setPasswordGate({ required: Boolean(user.passwordChangeRequired), canChange: Boolean(user.canChangePassword) });
@@ -538,6 +564,7 @@ export function AppShell({ initialAppId = "service-map" }: { initialAppId?: stri
         {passwordGate.required && (
           <PasswordChangeGate
             canChangePassword={passwordGate.canChange}
+            passwordPolicy={passwordPolicy}
             onComplete={() => setPasswordGate({ required: false, canChange: true })}
           />
         )}
