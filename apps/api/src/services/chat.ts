@@ -253,6 +253,56 @@ function latestUserContent(messages: any[]): string {
   return "";
 }
 
+function parseJsonContent(value: unknown): any {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function toolNameByCallId(messages: any[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const message of messages) {
+    const toolCalls = parseJsonContent(message?.tool_calls);
+    if (!Array.isArray(toolCalls)) continue;
+    for (const call of toolCalls) {
+      if (typeof call?.id === "string" && typeof call?.function?.name === "string") {
+        names.set(call.id, call.function.name);
+      }
+    }
+  }
+  return names;
+}
+
+function latestResolvedCi(messages: any[], preferredName?: string): { id: string; source: "search_cis" | "get_ci_details" | "get_service_map" } | null {
+  const toolNames = toolNameByCallId(messages);
+  const normalizedPreferred = preferredName?.trim().toLowerCase();
+  let latest: { id: string; source: "search_cis" | "get_ci_details" | "get_service_map" } | null = null;
+
+  for (const message of messages) {
+    if (message?.role !== "tool" || typeof message.tool_call_id !== "string") continue;
+    const toolName = toolNames.get(message.tool_call_id);
+    const result = parseJsonContent(message.content);
+    if (toolName === "search_cis" && Array.isArray(result)) {
+      const exact = normalizedPreferred
+        ? result.find((item) => typeof item?.id === "string" && typeof item?.name === "string" && item.name.toLowerCase() === normalizedPreferred)
+        : undefined;
+      const candidate = exact || (result.length === 1 ? result[0] : undefined);
+      if (typeof candidate?.id === "string") {
+        latest = { id: candidate.id, source: "search_cis" };
+      }
+    } else if (toolName === "get_ci_details" && typeof result?.id === "string") {
+      latest = { id: result.id, source: "get_ci_details" };
+    } else if (toolName === "get_service_map" && typeof result?.rootId === "string") {
+      latest = { id: result.rootId, source: "get_service_map" };
+    }
+  }
+
+  return latest;
+}
+
 function parsePromissorySearchToolCall(
   messages: any[],
   text: string
@@ -268,6 +318,16 @@ function parsePromissorySearchToolCall(
   const userText = latestUserContent(messages);
   if (!userText || userText.length > 120 || /[?]/.test(userText)) return undefined;
   if (!/[a-z0-9]/i.test(userText)) return undefined;
+
+  const resolvedCi = latestResolvedCi(messages, userText);
+  const wantsDetails = /\b(detail|details|risk|relationship|relationships|dependenc|health|recommended|next step|impact)\b/.test(lower);
+  if (resolvedCi?.source === "search_cis" && wantsDetails) {
+    return [{
+      id: `repair-${Date.now()}-0`,
+      type: "function",
+      function: { name: "get_ci_details", arguments: JSON.stringify({ id: resolvedCi.id }) },
+    }];
+  }
 
   return [{
     id: `repair-${Date.now()}-0`,
