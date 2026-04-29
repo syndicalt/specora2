@@ -5,6 +5,7 @@ import { ChevronRight, LogOut, Search, ShieldCheck, UserCog, UserPlus, Users } f
 import { FieldInput, FieldSelect, MiniMetric } from "./components";
 import { appPermissionToResourceAction, formatDateTime, riskClass } from "./helpers";
 import type { ManagedUser, ManagedUserDetail, RbacApp } from "./types";
+import { passwordMeetsPolicy, passwordPolicyRequirements, type PasswordPolicy } from "@/lib/passwordPolicy";
 
 type UserDraft = {
   email: string;
@@ -34,6 +35,7 @@ type UsersPanelProps = {
   setUserEditDraft: Dispatch<SetStateAction<UserEditDraft>>;
   allRoles: string[];
   rbacApps: RbacApp[];
+  passwordPolicy: PasswordPolicy;
   saving: boolean;
   onCreateUser: (event: FormEvent) => void;
   onUpdateUser: () => void;
@@ -57,6 +59,7 @@ export function UsersPanel({
   setUserEditDraft,
   allRoles,
   rbacApps,
+  passwordPolicy,
   saving,
   onCreateUser,
   onUpdateUser,
@@ -88,6 +91,8 @@ export function UsersPanel({
     return a.app.name.localeCompare(b.app.name, undefined, { sensitivity: "base" });
   }) : [];
   const selectedUserAllowedApps = selectedUserAppAccess.filter((entry) => entry.allowed).length;
+  const passwordRequirements = passwordPolicyRequirements(userDraft.password, passwordPolicy);
+  const passwordValid = passwordMeetsPolicy(userDraft.password, passwordPolicy);
 
   return (
     <div className="space-y-5">
@@ -167,9 +172,19 @@ export function UsersPanel({
             <FieldInput label="Name" value={userDraft.name} onChange={(value) => setUserDraft((current) => ({ ...current, name: value }))} placeholder="Avery Admin" autoComplete="off" />
             <FieldInput label="Email" value={userDraft.email} onChange={(value) => setUserDraft((current) => ({ ...current, email: value }))} placeholder="avery@example.com" type="email" autoComplete="off" />
             <FieldSelect label="Role" value={userDraft.role} onChange={(value) => setUserDraft((current) => ({ ...current, role: value }))} options={(allRoles.length ? allRoles : ["operator"]).map((role) => ({ value: role, label: role }))} />
-            <FieldInput label="Temporary password" value={userDraft.password} onChange={(value) => setUserDraft((current) => ({ ...current, password: value }))} type="password" autoComplete="new-password" help="Use at least 8 characters. The user must change it on first login." />
+            <FieldInput label="Temporary password" value={userDraft.password} onChange={(value) => setUserDraft((current) => ({ ...current, password: value }))} type="password" autoComplete="new-password" help="The user must change it on first login." />
           </div>
-          <button type="submit" disabled={saving} className="mt-4 flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+          <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950 p-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Temporary password requirements</div>
+            <div className="mt-2 grid gap-1.5 text-xs">
+              {passwordRequirements.map((requirement) => (
+                <div key={requirement.id} className={requirement.met ? "text-emerald-300" : "text-gray-500"}>
+                  {requirement.met ? "[x]" : "[ ]"} {requirement.label}
+                </div>
+              ))}
+            </div>
+          </div>
+          <button type="submit" disabled={saving || !passwordValid} className="mt-4 flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
             <UserPlus className="h-4 w-4" />
             Create user
           </button>

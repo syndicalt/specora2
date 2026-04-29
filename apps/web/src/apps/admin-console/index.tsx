@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { getToken } from "@/lib/auth";
 import { getApiBase } from "@/lib/runtimeApi";
+import { DEFAULT_PASSWORD_POLICY, normalizePasswordPolicy } from "@/lib/passwordPolicy";
 import {
   Activity,
   ClipboardCheck,
@@ -1000,6 +1001,29 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     }
   }
 
+  async function upsertSystemProperty(key: string, value: string) {
+    const existing = systemProps.some((prop) => prop.key === key);
+    if (existing) {
+      await updateSystemProperty(key, value);
+      return;
+    }
+    setSaving(true);
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/admin/system-properties`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
+        body: JSON.stringify({ key, value }),
+      });
+      if (!res.ok) throw new Error("Failed to save system property");
+      await fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function deleteSystemProperty(key: string) {
     if (!confirm(`Delete system property "${key}"?`)) return;
     setSaving(true);
@@ -1472,6 +1496,15 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     { label: "Credential refs", value: credentials.length, tone: "text-emerald-200", detail: `${credentials.filter((credential) => credential.status === "active").length} active` },
     { label: "Admin panels", value: panels.length + 5, tone: "text-amber-200", detail: "Core and app-owned" },
   ];
+  const passwordPolicy = useMemo(() => {
+    const raw = systemProps.find((prop) => prop.key === "security.password_policy")?.value;
+    if (!raw) return DEFAULT_PASSWORD_POLICY;
+    try {
+      return normalizePasswordPolicy(JSON.parse(raw));
+    } catch {
+      return DEFAULT_PASSWORD_POLICY;
+    }
+  }, [systemProps]);
 
   useEffect(() => {
     const tab = allTabs.find((candidate) => candidate.id === activeTab);
@@ -1568,6 +1601,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
           setUserEditDraft={setUserEditDraft}
           allRoles={allRoles}
           rbacApps={rbacApps}
+          passwordPolicy={passwordPolicy}
           saving={saving}
           onCreateUser={createManagedUser}
           onUpdateUser={updateManagedUser}
@@ -1735,6 +1769,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
           saving={saving}
           systemProps={systemProps}
           onAdd={addSystemProperty}
+          onUpsert={upsertSystemProperty}
           onUpdate={updateSystemProperty}
           onDelete={deleteSystemProperty}
         />
