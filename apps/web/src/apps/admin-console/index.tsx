@@ -85,6 +85,7 @@ import type {
   AdminScreenContextInput,
 } from "./types";
 import { ADMIN_API_URL, adminGraphql } from "./adminApi";
+import { loadAdminData } from "./adminData";
 
 
 
@@ -312,86 +313,42 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setLoading(true);
     setError(null);
     try {
-      const token = getToken();
-      const [permRes, propRes, panelRes, userRes, edgeEnrollmentRes, edgeCollectorRes, edgeRuntimeRes, sequenceRes, sequenceOptionsRes, credentialRes, identityRes, groupsRes, rbacOptionsRes, fieldRestrictionsRes, driftRes, auditRes, integrityRes, jobsRes, opsRes] = await Promise.all([
-        fetch(`${API_URL}/api/admin/permissions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/system-properties`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/panels`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/users`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/edge-enrollment/tokens`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/edge-enrollment/collectors`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/edge-enrollment/runtime-config`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/number-sequences`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/number-sequences/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/credentials`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/identity/sso-configs`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/identity/groups`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/rbac/options`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/rbac/field-restrictions`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/rbac/policy-drift`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/audit-log?limit=25`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/audit-log/integrity`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/apps/provisioning-jobs`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-        fetch(`${API_URL}/api/admin/operational-intelligence`, { headers: { Authorization: `Bearer ${token || ""}` } }),
-      ]);
+      const data = await loadAdminData();
 
-      if (!permRes.ok) throw new Error("Failed to fetch permissions");
-      if (!propRes.ok) throw new Error("Failed to fetch system properties");
-
-      const permData = await permRes.json();
-      const propData = await propRes.json();
-      const panelData = panelRes.ok ? await panelRes.json() : { panels: [] };
-      const userData = userRes.ok ? await userRes.json() : { users: [] };
-      const edgeEnrollmentData = edgeEnrollmentRes.ok ? await edgeEnrollmentRes.json() : { tokens: [] };
-      const edgeCollectorData = edgeCollectorRes.ok ? await edgeCollectorRes.json() : { collectors: [] };
-      const edgeRuntimeData = edgeRuntimeRes.ok ? await edgeRuntimeRes.json() : null;
-      const sequenceData = sequenceRes.ok ? await sequenceRes.json() : { sequences: [] };
-      const sequenceOptionsData = sequenceOptionsRes.ok ? await sequenceOptionsRes.json() : { options: [] };
-      const credentialData = credentialRes.ok ? await credentialRes.json() : { credentials: [] };
-      const identityData = identityRes.ok ? await identityRes.json() : { configs: [] };
-      const groupsData = groupsRes.ok ? await groupsRes.json() : { groups: [], memberships: [], permissions: [], cmdbGroupOptions: [] };
-      const rbacOptionsData = rbacOptionsRes.ok ? await rbacOptionsRes.json() : { users: [], targets: [] };
-      const fieldRestrictionsData = fieldRestrictionsRes.ok ? await fieldRestrictionsRes.json() : { tables: [] };
-      const driftData = driftRes.ok ? await driftRes.json() : null;
-      const auditData = auditRes.ok ? await auditRes.json() : { entries: [], total: 0 };
-      const integrityData = integrityRes.ok ? await integrityRes.json() : null;
-      const jobsData = jobsRes.ok ? await jobsRes.json() : { jobs: [] };
-      const opsData = opsRes.ok ? await opsRes.json() : null;
-
-      setPermissions(permData.permissions || []);
-      setSystemProps(propData.properties || []);
-      setPanels(panelData.panels || []);
-      setManagedUsers(userData.users || []);
-      setSelectedUserId((current) => current || userData.users?.[0]?.id || "");
-      setEdgeEnrollmentTokens(edgeEnrollmentData.tokens || []);
-      setEdgeCollectors(edgeCollectorData.collectors || []);
-      setEdgeRuntimeConfig(edgeRuntimeData);
-      setNumberSequences(sequenceData.sequences || []);
-      setNumberSequenceOptions(sequenceOptionsData.options || []);
-      setCredentials(credentialData.credentials || []);
-      setSsoConfigs(identityData.configs || []);
-      setIdentityGroups(groupsData.groups || []);
-      setIdentityGroupMemberships(groupsData.memberships || []);
-      setIdentityGroupPermissions(groupsData.permissions || []);
-      setCmdbGroupOptions(groupsData.cmdbGroupOptions || []);
-      setRbacUsers(rbacOptionsData.users || []);
-      setRbacGroups(rbacOptionsData.groups || []);
-      setRbacTargets(rbacOptionsData.targets || []);
-      setRbacApps(rbacOptionsData.apps || []);
-      setRbacTools(rbacOptionsData.tools || []);
-      setRbacTables(rbacOptionsData.tables || []);
-      setFieldRestrictionTables(fieldRestrictionsData.tables || []);
-      setFieldRestrictionTableId((current) => current || fieldRestrictionsData.tables?.[0]?.id || "");
-      setPolicyDrift(driftData);
-      setAuditEntries(auditData.entries || []);
-      setAuditTotal(auditData.total || 0);
-      setAuditIntegrity(integrityData);
-      setProvisioningJobs(jobsData.jobs || []);
-      setOperationalIntelligence(opsData);
+      setPermissions(data.permissions);
+      setSystemProps(data.systemProps);
+      setPanels(data.panels);
+      setManagedUsers(data.managedUsers);
+      setSelectedUserId((current) => current || data.managedUsers?.[0]?.id || "");
+      setEdgeEnrollmentTokens(data.edgeEnrollmentTokens);
+      setEdgeCollectors(data.edgeCollectors);
+      setEdgeRuntimeConfig(data.edgeRuntimeConfig);
+      setNumberSequences(data.numberSequences);
+      setNumberSequenceOptions(data.numberSequenceOptions);
+      setCredentials(data.credentials);
+      setSsoConfigs(data.ssoConfigs);
+      setIdentityGroups(data.identityGroups);
+      setIdentityGroupMemberships(data.identityGroupMemberships);
+      setIdentityGroupPermissions(data.identityGroupPermissions);
+      setCmdbGroupOptions(data.cmdbGroupOptions);
+      setRbacUsers(data.rbacUsers);
+      setRbacGroups(data.rbacGroups);
+      setRbacTargets(data.rbacTargets);
+      setRbacApps(data.rbacApps);
+      setRbacTools(data.rbacTools);
+      setRbacTables(data.rbacTables);
+      setFieldRestrictionTables(data.fieldRestrictionTables);
+      setFieldRestrictionTableId((current) => current || data.fieldRestrictionTables?.[0]?.id || "");
+      setPolicyDrift(data.policyDrift);
+      setAuditEntries(data.auditEntries);
+      setAuditTotal(data.auditTotal);
+      setAuditIntegrity(data.auditIntegrity);
+      setProvisioningJobs(data.provisioningJobs);
+      setOperationalIntelligence(data.operationalIntelligence);
       setAccessProbe((current) => {
         if (current.userId || current.role || current.target) return current;
-        const firstUser = rbacOptionsData.users?.[0];
-        const firstTarget = rbacOptionsData.targets?.[0];
+        const firstUser = data.rbacUsers?.[0];
+        const firstTarget = data.rbacTargets?.[0];
         return {
           userId: firstUser?.id || "",
           role: firstUser?.role || "",
@@ -400,8 +357,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       });
       setAppAccessProbe((current) => {
         if (current.userId || current.role || current.appId) return current;
-        const firstUser = rbacOptionsData.users?.[0];
-        const firstApp = rbacOptionsData.apps?.[0];
+        const firstUser = data.rbacUsers?.[0];
+        const firstApp = data.rbacApps?.[0];
         return {
           userId: firstUser?.id || "",
           role: firstUser?.role || "",
@@ -410,8 +367,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       });
       setToolAccessProbe((current) => {
         if (current.userId || current.role || current.tool) return current;
-        const firstUser = rbacOptionsData.users?.[0];
-        const firstTool = rbacOptionsData.tools?.[0];
+        const firstUser = data.rbacUsers?.[0];
+        const firstTool = data.rbacTools?.[0];
         return {
           userId: firstUser?.id || "",
           role: firstUser?.role || "",
@@ -420,8 +377,8 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
       });
       setTableAccessProbe((current) => {
         if (current.userId || current.role || current.tableId) return current;
-        const firstUser = rbacOptionsData.users?.[0];
-        const firstTable = rbacOptionsData.tables?.[0];
+        const firstUser = data.rbacUsers?.[0];
+        const firstTable = data.rbacTables?.[0];
         return {
           userId: firstUser?.id || "",
           role: firstUser?.role || "",
