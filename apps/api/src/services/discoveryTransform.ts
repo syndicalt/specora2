@@ -142,6 +142,7 @@ function bestTargetField(column: string): string {
   if (normalized === "board_vendor") return "manufacturer";
   if (normalized === "hardware_model") return "model";
   if (normalized === "board_model") return "model";
+  if (normalized === "ipaddresses" || normalized === "ip_addresses") return "ipAddresses";
   for (const [target, aliases] of Object.entries(CANDIDATE_FIELDS)) {
     if (aliases.some((alias) => normalized === alias || normalized.includes(alias))) return target;
   }
@@ -180,10 +181,17 @@ function enrichHostDeviceAttributes(row: Record<string, unknown>, attributes: Re
   attributes.model = attributes.model || firstValue(row, ["hardware_model", "model", "board_model"]);
   attributes.hardwareVersion = attributes.hardwareVersion || firstValue(row, ["hardware_version", "hardwareVersion", "board_version"]);
   if (row.ipAddress && !attributes.ipAddress) attributes.ipAddress = String(row.ipAddress);
+  if (attributes.ipAddresses && !Array.isArray(attributes.ipAddresses)) {
+    attributes.ipAddresses = String(attributes.ipAddresses).split(",").map((value) => value.trim()).filter(Boolean);
+  }
   if (row.ipAddresses && !attributes.ipAddresses) {
     attributes.ipAddresses = Array.isArray(row.ipAddresses)
       ? row.ipAddresses
       : String(row.ipAddresses).split(",").map((value) => value.trim()).filter(Boolean);
+  }
+  if (!attributes.ipAddress && Array.isArray(attributes.ipAddresses)) {
+    const preferred = preferredIp(attributes.ipAddresses.map((address) => ({ address })));
+    if (preferred) attributes.ipAddress = preferred;
   }
 }
 
@@ -403,6 +411,18 @@ function relatedRows(rows: Record<string, unknown>[], key: string) {
   });
 }
 
+const EDGE_ENTITY_ALIASES: Record<string, string[]> = {
+  host: ["host", "hosts", "system_info", "os_version"],
+  network_interface: ["network_interface", "network_interfaces", "interface", "interfaces"],
+  software_package: ["software_package", "software_packages", "package", "packages", "installed_software"],
+  service: ["service", "services", "system_service", "systemd_unit", "systemd_units"],
+  listening_port: ["listening_port", "listening_ports", "port", "ports"],
+};
+
+function entityRowsFor(entityRows: Map<string, Record<string, unknown>[]>, canonicalType: keyof typeof EDGE_ENTITY_ALIASES) {
+  return EDGE_ENTITY_ALIASES[canonicalType].flatMap((entityType) => entityRows.get(entityType) || []);
+}
+
 function preferredIp(rows: Record<string, unknown>[]) {
   const scored = rows
     .map((row) => {
@@ -414,6 +434,7 @@ function preferredIp(rows: Record<string, unknown>[]) {
       if (!address.toLowerCase().startsWith("fe80:")) score += 30;
       if (!/^(lo|docker|br-|veth|virbr)/.test(iface)) score += 50;
       if (/^(eth|en|wl|wlan)/.test(iface)) score += 25;
+      if (/^172\.(1[7-9]|2[0-1])\./.test(address) || address.startsWith("192.168.122.")) score -= 25;
       return { address, score };
     })
     .filter((item) => item.score >= 0)
@@ -429,9 +450,9 @@ function edgeEndpointSignals(hostRow: Record<string, unknown>, entityRows: Map<s
     hostRow.platform,
     hostRow.os,
     hostRow.version,
-    ...(relatedRows(entityRows.get("network_interface") || [], key).flatMap((row) => [row.interface, row.address])),
-    ...(relatedRows(entityRows.get("software_package") || [], key).map((row) => row.name)),
-    ...(relatedRows(entityRows.get("service") || [], key).map((row) => row.name)),
+    ...(relatedRows(entityRowsFor(entityRows, "network_interface"), key).flatMap((row) => [row.interface, row.address])),
+    ...(relatedRows(entityRowsFor(entityRows, "software_package"), key).map((row) => row.name)),
+    ...(relatedRows(entityRowsFor(entityRows, "service"), key).map((row) => row.name)),
   ].map((value) => String(value || "").toLowerCase()).join(" ");
   return /(^|\W)(wl|wlan|wifi|airport|pop!_os|pop_os|system76|desktop|laptop|workstation|endpoint)/.test(text);
 }
@@ -439,7 +460,7 @@ function edgeEndpointSignals(hostRow: Record<string, unknown>, entityRows: Map<s
 function sourceHasEndpointSignals(profile: SourceProfile) {
   const entityProfiles = profile.entityProfiles || [];
   const entityRows = new Map(entityProfiles.map((entity) => [entity.entityType, entity.sampleRows || []]));
-  const hostRows = entityRows.get("host")?.length ? entityRows.get("host") || [] : profile.sampleRows || [];
+  const hostRows = entityRowsFor(entityRows, "host").length ? entityRowsFor(entityRows, "host") : profile.sampleRows || [];
   return hostRows.some((row) => edgeEndpointSignals(row, entityRows));
 }
 
@@ -457,14 +478,16 @@ function readProfileValue(
 ) {
   if (!sourceField.includes(".")) return rowValue(hostRow, sourceField);
   const [entityType, field] = sourceField.split(".", 2);
-  const candidates = relatedRows(entityRows.get(entityType) || [], hostKey(hostRow));
+  const canonicalType = Object.entries(EDGE_ENTITY_ALIASES).find(([, aliases]) => aliases.includes(entityType))?.[0] as keyof typeof EDGE_ENTITY_ALIASES | undefined;
+  const sourceRows = canonicalType ? entityRowsFor(entityRows, canonicalType) : entityRows.get(entityType) || [];
+  const candidates = relatedRows(sourceRows, hostKey(hostRow));
   return candidates.map((row) => rowValue(row, field)).find((value) => value !== null && value !== undefined && String(value).trim() !== "");
 }
 
 function previewEdgePipeline(definition: PipelineDefinition, targetClasses: TargetClass[], existingCiIds: Set<string>, proposal: TransformProposal): PipelinePreview {
   const entityProfiles = definition.entityProfiles || proposal.sourceProfile.entityProfiles || [];
   const entityRows = new Map(entityProfiles.map((profile) => [profile.entityType, profile.sampleRows || []]));
-  const hostRows = entityRows.get("host")?.length ? entityRows.get("host") || [] : definition.sample?.rows || proposal.sourceProfile.sampleRows || [];
+  const hostRows = entityRowsFor(entityRows, "host").length ? entityRowsFor(entityRows, "host") : definition.sample?.rows || proposal.sourceProfile.sampleRows || [];
   const classMap = new Map(targetClasses.map((cls) => [cls.name, cls]));
   const records: PipelinePreview["records"] = [];
   const relationships: PipelinePreview["relationships"] = [];
@@ -478,10 +501,10 @@ function previewEdgePipeline(definition: PipelineDefinition, targetClasses: Targ
 
   hostRows.forEach((hostRow, rowIndex) => {
     const key = hostKey(hostRow) || `host-${rowIndex + 1}`;
-    const networkRows = relatedRows(entityRows.get("network_interface") || [], key);
-    const softwareRows = relatedRows(entityRows.get("software_package") || [], key);
-    const serviceRows = relatedRows(entityRows.get("service") || [], key);
-    const portRows = relatedRows(entityRows.get("listening_port") || [], key);
+    const networkRows = relatedRows(entityRowsFor(entityRows, "network_interface"), key);
+    const softwareRows = relatedRows(entityRowsFor(entityRows, "software_package"), key);
+    const serviceRows = relatedRows(entityRowsFor(entityRows, "service"), key);
+    const portRows = relatedRows(entityRowsFor(entityRows, "listening_port"), key);
 
     for (const targetClass of targetClassNames) {
       const mappings = proposal.fieldMappings.filter((mapping) => mapping.targetClass === targetClass);
@@ -748,11 +771,12 @@ export function buildDeterministicProposal(profile: SourceProfile, targetClasses
     const sourceField = columns.find((c) => normalize(c).includes("owner") || normalize(c).includes("group")) || "owner";
     relationshipRules.push({ fromClass: primaryClass, toClass: "Group", type: "OWNED_BY", sourceField, confidence: 0.62, rationale: "Owner or support-group field suggests an ownership relationship.", evidence: sampleEvidence(profile, sourceField) });
   }
-  const hasHostProfile = entityProfiles.some((entity) => entity.entityType === "host");
-  const networkProfile = entityProfiles.find((entity) => entity.entityType === "network_interface");
-  const softwareProfile = entityProfiles.find((entity) => entity.entityType === "software_package");
-  const serviceProfile = entityProfiles.find((entity) => entity.entityType === "service");
-  const portProfile = entityProfiles.find((entity) => entity.entityType === "listening_port");
+  const entityProfileFor = (canonicalType: keyof typeof EDGE_ENTITY_ALIASES) => entityProfiles.find((entity) => EDGE_ENTITY_ALIASES[canonicalType].includes(entity.entityType));
+  const hasHostProfile = !!entityProfileFor("host");
+  const networkProfile = entityProfileFor("network_interface");
+  const softwareProfile = entityProfileFor("software_package");
+  const serviceProfile = entityProfileFor("service");
+  const portProfile = entityProfileFor("listening_port");
   const hasNetworkAddresses = profile.entityType === "host" && !!networkProfile?.columns.some((column) => normalize(column) === "address");
   if (hasHostProfile && softwareProfile && classNames.includes("SoftwareInstallation")) {
     relationshipRules.push({

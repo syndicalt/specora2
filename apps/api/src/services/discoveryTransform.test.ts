@@ -106,7 +106,7 @@ describe("buildDeterministicProposal", () => {
       attributes: expect.objectContaining({
         ipAddress: "192.168.50.146",
         operatingSystem: "Pop!_OS",
-        ipAddresses: "fe80::389b:a0ff:fe54:42e2%veth550dc8f",
+        ipAddresses: ["fe80::389b:a0ff:fe54:42e2%veth550dc8f"],
       }),
     });
   });
@@ -300,6 +300,92 @@ describe("buildDeterministicProposal", () => {
         memoryGB: 31.1,
         operatingSystem: "Pop!_OS",
       }),
+    });
+  });
+
+  it("selects a preferred host IP from flattened edge address lists", () => {
+    const row = {
+      entity_type: "host",
+      natural_key: "nb-lenovo",
+      hostname: "nb-lenovo",
+      name: "Pop!_OS",
+      version: "24.04 LTS",
+      ipAddresses: "fe80::44e3:c3ff:fed0:5427%wlp0s20f3,172.17.0.1,10.74.214.87",
+    };
+    const proposal = buildDeterministicProposal(
+      { sourceName: "edge collector", entityType: "host", recordCount: 1, columns: Object.keys(row), sampleRows: [row] },
+      [{ name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] }, { name: "Server" }]
+    );
+
+    const preview = previewPipeline({ sample: { rows: [row] }, proposal }, [
+      { name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] },
+      { name: "Server" },
+    ]);
+
+    expect(preview.records[0]).toMatchObject({
+      targetClass: "Computer",
+      name: "nb-lenovo",
+      attributes: expect.objectContaining({
+        ipAddress: "10.74.214.87",
+        ipAddresses: ["fe80::44e3:c3ff:fed0:5427%wlp0s20f3", "172.17.0.1", "10.74.214.87"],
+      }),
+      errors: [],
+    });
+  });
+
+  it("normalizes aliased edge entity profiles into host enrichment", () => {
+    const entityProfiles = [
+      {
+        entityType: "hosts",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "hostname", "name", "version"],
+        sampleRows: [{ entity_type: "hosts", natural_key: "nb-lenovo", hostname: "nb-lenovo", name: "Pop!_OS", version: "24.04 LTS" }],
+      },
+      {
+        entityType: "interfaces",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "interface", "address"],
+        sampleRows: [{ entity_type: "interfaces", natural_key: "nb-lenovo:wlp0s20f3:10.74.214.87", interface: "wlp0s20f3", address: "10.74.214.87" }],
+      },
+      {
+        entityType: "packages",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "name", "version"],
+        sampleRows: [{ entity_type: "packages", natural_key: "nb-lenovo:docker:24.0", name: "docker", version: "24.0" }],
+      },
+      {
+        entityType: "services",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "id", "active_state", "sub_state", "unit_file_state"],
+        sampleRows: [{ entity_type: "services", natural_key: "nb-lenovo:docker.service", id: "docker.service", active_state: "active", sub_state: "running", unit_file_state: "enabled" }],
+      },
+      {
+        entityType: "listening_ports",
+        recordCount: 1,
+        columns: ["entity_type", "natural_key", "port", "protocol", "address", "pid"],
+        sampleRows: [{ entity_type: "listening_ports", natural_key: "nb-lenovo:tcp:2375", port: 2375, protocol: "tcp", address: "127.0.0.1", pid: 123 }],
+      },
+    ];
+    const proposal = buildDeterministicProposal(
+      { sourceName: "edge collector", entityType: "host", recordCount: 1, columns: entityProfiles[0].columns, sampleRows: entityProfiles[0].sampleRows, entityProfiles },
+      [{ name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] }, { name: "Server" }]
+    );
+
+    const preview = previewPipeline({ sample: { rows: entityProfiles[0].sampleRows }, entityProfiles, proposal }, [
+      { name: "Computer", attributes: [{ name: "ipAddress", isMandatory: true }] },
+      { name: "Server" },
+    ]);
+
+    expect(preview.records[0]).toMatchObject({
+      targetClass: "Computer",
+      name: "nb-lenovo",
+      attributes: expect.objectContaining({
+        ipAddress: "10.74.214.87",
+        installedSoftware: [expect.objectContaining({ name: "docker", version: "24.0" })],
+        services: [expect.objectContaining({ name: "docker.service", status: "active", state: "running" })],
+        listeningPorts: [expect.objectContaining({ port: 2375, protocol: "tcp" })],
+      }),
+      errors: [],
     });
   });
 
