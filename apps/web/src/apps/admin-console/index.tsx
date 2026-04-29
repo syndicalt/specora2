@@ -557,6 +557,27 @@ function decodePermissionValue(value: string) {
   return [resource || "", action || ""] as const;
 }
 
+function appPermissionToResourceAction(permission: string) {
+  const parts = permission.split(":");
+  if (parts.length === 3 && parts[0] === "itsm") {
+    const [, domain, action] = parts;
+    const resourceMap: Record<string, string> = {
+      change: "change-manager",
+      incident: "incident-manager",
+      knowledge: "knowledge-core",
+      prevention: "prevention-center",
+      asset: "asset-command",
+      discovery: "discovery",
+      health: "health-monitor",
+    };
+    return { resource: resourceMap[domain] || domain, action };
+  }
+  const [left, right] = parts;
+  if (!left || !right) return null;
+  if (["read", "write", "admin"].includes(left)) return { resource: right, action: left };
+  return { resource: left, action: right };
+}
+
 function riskClass(risk?: string) {
   if (risk === "critical") return "border-red-400/40 bg-red-500/10 text-red-200";
   if (risk === "high") return "border-orange-400/40 bg-orange-500/10 text-orange-200";
@@ -2200,6 +2221,26 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
         ...(detail?.directGrants || []),
         ...(detail?.inheritedGrants || []),
       ].sort((a, b) => `${a.resource}:${a.action}`.localeCompare(`${b.resource}:${b.action}`));
+      const effectiveGrantKeys = new Set(effectiveGrants.map((grant) => `${grant.resource}:${grant.action}`));
+      const selectedUserRole = selectedManagedUser?.role || "";
+      const selectedUserAppAccess = selectedManagedUser ? rbacApps.map((app) => {
+        const requirements = app.permissions.map((permission) => appPermissionToResourceAction(permission)).filter(Boolean) as Array<{ resource: string; action: string }>;
+        const missing = requirements.filter((requirement) => {
+          if (selectedUserRole === "security_admin") return false;
+          if (selectedUserRole === "admin" && requirement.resource !== "rbac") return false;
+          return !effectiveGrantKeys.has(`${requirement.resource}:${requirement.action}`);
+        });
+        return {
+          app,
+          requirements,
+          missing,
+          allowed: missing.length === 0,
+        };
+      }).sort((a, b) => {
+        if (a.allowed !== b.allowed) return a.allowed ? 1 : -1;
+        return a.app.name.localeCompare(b.app.name, undefined, { sensitivity: "base" });
+      }) : [];
+      const selectedUserAllowedApps = selectedUserAppAccess.filter((entry) => entry.allowed).length;
       return (
         <div className="space-y-5">
           <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
@@ -2320,6 +2361,51 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
                     {Object.entries(detail?.impact || {}).map(([key, value]) => (
                       <MiniMetric key={key} label={key.replace(/([A-Z])/g, " $1")} value={value} />
                     ))}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-gray-100">Application access</div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        {selectedUserAllowedApps} of {selectedUserAppAccess.length} registered apps available
+                      </div>
+                    </div>
+                    <ShieldCheck className="h-4 w-4 text-cyan-300" />
+                  </div>
+                  <div className="max-h-80 space-y-2 overflow-auto pr-1">
+                    {selectedUserAppAccess.map(({ app, requirements, missing, allowed }) => (
+                      <div key={app.id} className={`rounded-lg border px-3 py-2 ${allowed ? "border-emerald-500/20 bg-emerald-500/5" : "border-gray-800 bg-gray-950"}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-gray-100">{app.name}</div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              {requirements.length} requirement{requirements.length === 1 ? "" : "s"}
+                              {missing.length > 0 ? ` · missing ${missing.map((item) => `${item.resource}:${item.action}`).join(", ")}` : " · satisfied"}
+                            </div>
+                          </div>
+                          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${allowed ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border-red-400/30 bg-red-500/10 text-red-200"}`}>
+                            {allowed ? "allowed" : "blocked"}
+                          </span>
+                        </div>
+                        {!allowed && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveTab("rbac");
+                              setAppAccessProbe({ userId: selectedManagedUser.id, role: selectedManagedUser.role, appId: app.id });
+                              setOpenRbacUtilities((current) => ({ ...current, app: true }));
+                            }}
+                            className="mt-2 inline-flex items-center gap-2 rounded-md border border-cyan-500/30 px-2.5 py-1.5 text-xs text-cyan-200 hover:bg-cyan-500/10"
+                          >
+                            Explain in RBAC
+                            <ChevronRight className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    {!selectedUserAppAccess.length && <div className="text-sm text-gray-500">No registered apps were returned for this admin view.</div>}
                   </div>
                 </div>
               </div>
