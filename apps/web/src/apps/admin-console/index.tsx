@@ -86,6 +86,12 @@ import type {
 } from "./types";
 import { ADMIN_API_URL, adminGraphql } from "./adminApi";
 import { loadAdminData } from "./adminData";
+import {
+  createManagedUserRecord,
+  fetchManagedUserDetail,
+  revokeManagedUserSessionRecords,
+  updateManagedUserRecord,
+} from "./adminUsersApi";
 
 
 
@@ -397,10 +403,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
   async function fetchUserDetail(userId: string) {
     if (!userId) return;
     try {
-      const token = getToken();
-      const res = await fetch(`${API_URL}/api/admin/users/${userId}`, { headers: { Authorization: `Bearer ${token || ""}` } });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fetch user detail");
+      const data = await fetchManagedUserDetail(userId);
       setSelectedUserDetail(data);
       setUserEditDraft({ name: data.user?.name || "", role: data.user?.role || "" });
     } catch (err: any) {
@@ -413,14 +416,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setSaving(true);
     setError(null);
     try {
-      const token = getToken();
-      const res = await fetch(`${API_URL}/api/admin/users`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
-        body: JSON.stringify(userDraft),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to create user");
+      const data = await createManagedUserRecord(userDraft);
       setUserDraft({ email: "", name: "", role: "operator", password: "" });
       setSelectedUserId(data.user.id);
       await fetchData();
@@ -436,14 +432,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setSaving(true);
     setError(null);
     try {
-      const token = getToken();
-      const res = await fetch(`${API_URL}/api/admin/users/${selectedUserId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token || ""}` },
-        body: JSON.stringify(userEditDraft),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to update user");
+      await updateManagedUserRecord(selectedUserId, userEditDraft);
       await fetchData();
       await fetchUserDetail(selectedUserId);
     } catch (err: any) {
@@ -458,13 +447,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
     setSaving(true);
     setError(null);
     try {
-      const token = getToken();
-      const res = await fetch(`${API_URL}/api/admin/users/${selectedUserId}/revoke-sessions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token || ""}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to revoke sessions");
+      await revokeManagedUserSessionRecords(selectedUserId);
       await fetchData();
       await fetchUserDetail(selectedUserId);
     } catch (err: any) {
