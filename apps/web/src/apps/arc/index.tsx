@@ -58,7 +58,7 @@ export default function ArcApp() {
   const fetchUser = async () => {
     try {
       const data: any = await graphqlClient.request(ME_QUERY);
-      setIsAdmin(data?.me?.role === "admin");
+      setIsAdmin(data?.me?.role === "admin" || data?.me?.role === "security_admin");
     } catch { /* silent */ }
   };
 

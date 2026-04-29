@@ -6,7 +6,7 @@ import type { RegistryEntry } from "@/sdk/types";
 import { Search, X } from "lucide-react";
 import { APP_ICONS } from "@/lib/icons";
 import { getUserRole } from "@/lib/auth";
-import { filterRegistryByRole } from "./AppContainers";
+import { filterRegistryByRole } from "./AppAccess";
 
 export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
   const { state, dispatch } = useShell();

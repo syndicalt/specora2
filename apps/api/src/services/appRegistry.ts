@@ -56,7 +56,7 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
   },
   { id: "settings", name: "Settings", description: "Manage profile, theme, and platform preferences.", icon: "Settings", version: "1.0.0", permissions: ["read:profile", "write:profile"], defaultMode: "window", installKey: "builtin_settings", source: "built-in", publisher: "Specora", installedAt: 0 },
   { id: "discovery", name: "Discovery", description: "Upload and ingest infrastructure data into the graph.", icon: "Upload", version: "1.0.0", permissions: ["read:discovery", "write:discovery"], defaultMode: "canvas", installKey: "builtin_discovery", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "arc", name: "Specora Arc", description: "Discover and manage apps in the Specora ecosystem.", icon: "Compass", version: "1.0.0", permissions: ["read:profile"], defaultMode: "window", installKey: "builtin_arc", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "arc", name: "Specora Arc", description: "Discover and manage apps in the Specora ecosystem.", icon: "Compass", version: "1.0.0", permissions: ["app:install", "app:uninstall"], defaultMode: "window", installKey: "builtin_arc", source: "built-in", publisher: "Specora", installedAt: 0 },
   { id: "change-manager", name: "Change Manager", description: "Create and manage change requests with approval workflows.", icon: "GitPullRequest", version: "1.0.0", permissions: ["itsm:change:read", "itsm:change:write"], defaultMode: "canvas", installKey: "builtin_change-manager", source: "built-in", publisher: "Specora ITSM", installedAt: 0, adminPanels: [{ id: "change-manager-state-machine", name: "Change State Machine", icon: "GitBranch", permissions: ["system-properties:write"] }] },
   {
     id: "incident-manager",
@@ -266,6 +266,8 @@ export async function getAppCatalog(
 }
 
 async function canAccessApp(fastify: FastifyInstance, role: string | null, app: ServerAppRegistryEntry): Promise<boolean> {
+  if (app.id === "customer-portal") return true;
+  if (app.id === "arc") return role === "admin" || role === "security_admin";
   if (!role) return false;
   if (role === "admin" || role === "security_admin") return true;
   for (const permission of app.permissions) {

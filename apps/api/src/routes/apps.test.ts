@@ -2,11 +2,11 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { appsRoutes } from "./apps";
 
-function mockPg(role: string, permissions: Array<{ resource: string; action: string }> = []) {
+function mockPg(role: string | null, permissions: Array<{ resource: string; action: string }> = []) {
   return {
     query: vi.fn(async (sql: string, params?: any[]) => {
       if (sql.includes("SELECT role FROM users")) {
-        return { rows: [{ role }] };
+        return role ? { rows: [{ role }] } : { rows: [] };
       }
       if (sql.includes("FROM marketplace_apps")) {
         return {
@@ -71,6 +71,18 @@ describe("appsRoutes", () => {
     expect(ids).toContain("cmdb-explorer");
     expect(ids).toContain("external-app");
     expect(ids).not.toContain("ci-class-manager");
+  });
+
+  it("exposes Customer Portal but not Arc to authenticated users without a role", async () => {
+    const app = await buildApp(mockPg(null), { id: "u1" });
+
+    const res = await app.inject({ method: "GET", url: "/api/apps/registry" });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    const ids = body.apps.map((entry: any) => entry.id);
+    expect(ids).toContain("customer-portal");
+    expect(ids).not.toContain("arc");
   });
 
   it("returns all registered apps for admins", async () => {
