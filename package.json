@@ -18,6 +18,7 @@
     "validate:seed": "bash scripts/validate-seed.sh",
     "demo:ready": "bash scripts/demo-readiness.sh",
     "demo:public": "bash scripts/public-demo-smoke.sh",
+    "docs:check": "node scripts/validate-docs.mjs",
     "docs:screenshots": "node scripts/capture-docs-screenshots.mjs",
     "restore:rehearsal": "bash scripts/restore-rehearsal.sh",
     "release:check": "bash scripts/release-check.sh",

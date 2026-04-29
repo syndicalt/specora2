@@ -49,3 +49,13 @@ docs/screenshots/cmdb-explorer-ci-detail.png
 - Clearly distinguish production behavior from future roadmap.
 - Prefer screenshots of real app state over empty screens.
 - Avoid implementation details unless they affect user/admin decisions.
+
+## Release Review
+
+Before a demo tag or release candidate, run:
+
+```bash
+pnpm docs:check
+```
+
+This validates local Markdown links and confirms referenced screenshots exist. Use `pnpm docs:screenshots` to refresh the catalog from a demo-ready environment.

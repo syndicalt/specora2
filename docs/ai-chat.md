@@ -51,6 +51,8 @@ If chat cannot fetch more data, it should summarize from the available context a
 
 Chat is useful for investigation, summarization, and navigation. Do not treat generated text as final approval for production-impacting work. Validate high-risk changes in the appropriate application and approval workflow.
 
+Chat is permission-aware. Users only see and execute tools for apps and data domains they can access. A basic authenticated user can still ask for help, use Customer Portal guidance, and update profile/settings context, but cannot retrieve CMDB, Admin, Arc, reporting, discovery, or ITSM operational data through chat.
+
 Related guides:
 
 - [CMDB and Service Mapping](workflows/cmdb-and-service-mapping.md)

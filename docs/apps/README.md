@@ -101,6 +101,8 @@ Related: [Reporting](../workflows/reporting.md)
 
 Manages platform applications and the app ecosystem.
 
+Access: Admin and Security Admin only.
+
 Use it to:
 
 - Browse installed and available apps.
@@ -240,7 +242,7 @@ Related: [ITSM Workflows](../workflows/itsm.md)
 
 ### Customer Portal
 
-Self-service front door for requesters.
+Authenticated self-service front door for all users, including users without a platform role.
 
 Use it to:
 

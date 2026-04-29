@@ -41,10 +41,13 @@ Use this path when introducing Specora to a new user.
 
 Available apps and actions depend on your role.
 
+- **Authenticated user with no platform role** - use Settings and Customer Portal self-service. Operational apps and operational chat tools are hidden.
 - **Viewer** - read platform data and use basic workspace features.
 - **Operator** - create and update operational records.
 - **Admin** - manage CMDB data, discovery, users, and platform configuration.
 - **Security Admin** - manage access, RBAC, audit, and security-sensitive administration.
+
+Specora Arc is restricted to Admin and Security Admin users. Customer Portal is available to every authenticated user.
 
 ## Where To Go Next
 

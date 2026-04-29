@@ -90,4 +90,4 @@ Optional settings:
 
 ## Missing Screenshots
 
-If a screenshot does not exist yet, keep the Markdown image reference in place. Add the image before publishing external documentation.
+Do not publish external documentation with missing screenshots. Run `pnpm docs:check` before review and refresh images with `pnpm docs:screenshots` when UI flows materially change.
