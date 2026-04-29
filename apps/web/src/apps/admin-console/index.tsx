@@ -19,7 +19,6 @@ import {
   Shield,
   ShieldCheck,
   Users,
-  Trash2,
 } from "lucide-react";
 import ChangeStateMachinePanel from "@/apps/change-manager/StateMachinePanel";
 import { CredentialsPanel } from "./CredentialsPanel";
@@ -34,6 +33,7 @@ import { RbacAuditSection } from "./RbacAuditSection";
 import { RbacFieldRestrictionsSection } from "./RbacFieldRestrictionsSection";
 import { RbacGrantBuilderSection } from "./RbacGrantBuilderSection";
 import { RbacPolicyDriftSection } from "./RbacPolicyDriftSection";
+import { RbacRoleGrantsSection } from "./RbacRoleGrantsSection";
 import { RbacTableAccessSection } from "./RbacTableAccessSection";
 import { RbacToolAccessSection } from "./RbacToolAccessSection";
 import { SystemPropertiesPanel } from "./SystemPropertiesPanel";
@@ -1720,35 +1720,7 @@ export default function AdminConsoleApp({ shell }: { shell: any }) {
             onAddPermission={addPermission}
             onBulkGrant={bulkGrantPermissions}
           />
-          {roles.map((role) => (
-            <div key={role} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-              <div className="px-4 py-3 bg-gray-800/50 border-b border-gray-800">
-                <h3 className="text-sm font-medium text-gray-200 capitalize">{role}</h3>
-              </div>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-gray-500 border-b border-gray-800">
-                    <th className="px-4 py-2 font-medium">Resource</th>
-                    <th className="px-4 py-2 font-medium">Action</th>
-                    <th className="px-4 py-2 font-medium w-16"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {permissions.filter((p) => p.role === role).map((p) => (
-                    <tr key={p.id} className="border-b border-gray-800/50 last:border-0">
-                      <td className="px-4 py-2 text-gray-300">{p.resource}</td>
-                      <td className="px-4 py-2 text-gray-300">{p.action}</td>
-                      <td className="px-4 py-2">
-                        <button onClick={() => deletePermission(p.id)} className="text-gray-500 hover:text-red-400 transition-colors">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
+          <RbacRoleGrantsSection roles={roles} permissions={permissions} onDeletePermission={deletePermission} />
         </div>
       );
     }
