@@ -82,7 +82,34 @@ describe("appsRoutes", () => {
     const body = JSON.parse(res.body);
     const ids = body.apps.map((entry: any) => entry.id);
     expect(ids).toContain("customer-portal");
+    expect(ids).toContain("settings");
     expect(ids).not.toContain("arc");
+    expect(ids).not.toContain("cmdb-explorer");
+    expect(ids).not.toContain("service-map");
+  });
+
+  it("keeps Arc restricted to platform administrators across the access matrix", async () => {
+    const cases = [
+      { label: "no-role", role: null, permissions: [] },
+      { label: "viewer", role: "viewer", permissions: [{ resource: "cmdb", action: "read" }] },
+      { label: "operator", role: "operator", permissions: [{ resource: "cmdb", action: "read" }, { resource: "cmdb", action: "write" }] },
+      { label: "admin", role: "admin", permissions: [] },
+      { label: "security_admin", role: "security_admin", permissions: [] },
+    ];
+
+    for (const matrixCase of cases) {
+      const app = await buildApp(mockPg(matrixCase.role, matrixCase.permissions), { id: `u-${matrixCase.label}`, role: matrixCase.role ?? undefined });
+      const res = await app.inject({ method: "GET", url: "/api/apps/registry" });
+      const ids = JSON.parse(res.body).apps.map((entry: any) => entry.id);
+
+      expect(ids).toContain("customer-portal");
+      expect(ids).toContain("settings");
+      if (matrixCase.role === "admin" || matrixCase.role === "security_admin") {
+        expect(ids).toContain("arc");
+      } else {
+        expect(ids).not.toContain("arc");
+      }
+    }
   });
 
   it("returns all registered apps for admins", async () => {

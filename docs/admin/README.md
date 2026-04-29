@@ -47,6 +47,22 @@ RBAC controls:
 
 Keep RBAC changes small and auditable.
 
+### Release Access Matrix
+
+Use this matrix as the default release-candidate expectation for built-in app visibility and chat tooling.
+
+| User state | Expected app baseline | Chat/tooling expectation |
+| --- | --- | --- |
+| Authenticated, no platform role | Settings and Customer Portal only | General help, profile/settings guidance, and Customer Portal self-service. No CMDB, Admin, Arc, ITSM, discovery, reporting, or operational data tools. |
+| Viewer | Read-oriented operational apps granted by RBAC, plus Settings and Customer Portal | Read-only tools for permitted domains. No write actions or Arc package governance. |
+| Operator | Operational read/write apps granted by RBAC, plus Settings and Customer Portal | Read/write tools for permitted operational domains, with write-tool approval where required. No Arc package governance unless separately elevated. |
+| Admin | Full platform apps except RBAC/security-only functions where reserved | Platform administration, Arc package governance, and operational tools. |
+| Security Admin | Full security/governance access, including Arc and RBAC | Security, RBAC, audit, package governance, and operational tools. |
+
+Customer Portal is the authenticated self-service home. Specora Arc is restricted to `admin` and `security_admin`.
+
+When validating access, check both app visibility and backend enforcement. Hidden apps must not expose app tools through direct API calls, and chat must not show or execute tools for modules outside the user's access.
+
 ## Credentials
 
 ![Credential manager](../screenshots/admin-credentials.png)

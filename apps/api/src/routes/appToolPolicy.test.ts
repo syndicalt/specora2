@@ -22,14 +22,25 @@ describe("appToolPolicy", () => {
     });
   });
 
-  it("allows system calls without a role and checks RBAC for user calls", async () => {
+  it("denies non-portal app tool calls without a role and checks RBAC for user calls", async () => {
     const policy = resolveAppToolPolicy("incident-manager", "create_incident");
     const pg = { query: vi.fn(async () => ({ rows: [{ id: "p1" }] })) };
     const fastify = { pg } as any;
 
-    await expect(authorizeAppTool(fastify, null, policy)).resolves.toMatchObject({ allowed: true });
+    await expect(authorizeAppTool(fastify, null, policy)).resolves.toMatchObject({ allowed: false });
+    await expect(authorizeAppTool(fastify, { id: "u2" }, policy)).resolves.toMatchObject({ allowed: false });
     await expect(authorizeAppTool(fastify, { id: "u1", role: "operator" }, policy)).resolves.toMatchObject({ allowed: true });
     expect(pg.query).toHaveBeenCalled();
+  });
+
+  it("allows authenticated Customer Portal tool calls without a platform role", async () => {
+    const policy = resolveAppToolPolicy("customer-portal", "resolve_intent");
+    const pg = { query: vi.fn(async () => ({ rows: [] })) };
+    const fastify = { pg } as any;
+
+    await expect(authorizeAppTool(fastify, { id: "u1" }, policy)).resolves.toMatchObject({ allowed: true });
+    await expect(authorizeAppTool(fastify, null, policy)).resolves.toMatchObject({ allowed: false });
+    expect(pg.query).not.toHaveBeenCalled();
   });
 
   it("records denied, failed, executed, and queued audit outcomes with consistent metadata", async () => {
