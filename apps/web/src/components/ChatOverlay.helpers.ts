@@ -38,6 +38,20 @@ export type ResultCard =
       edges: Array<{ type?: string; sourceId?: string; targetId?: string }>;
     };
 
+export type DisplayChatMessage = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+export type StoredChatMessage = {
+  id?: string;
+  role: string;
+  content?: string;
+  tool_calls?: unknown;
+  tool_call_id?: string | null;
+  created_at?: string;
+};
+
 export function parseActions(text: string) {
   const actionRegex = /\[\[action\|([^|]+)\|([^|]+)\|([^\[\]]+)\]\]/g;
   const actions: { type: string; payload: string; label: string }[] = [];
@@ -126,11 +140,20 @@ export function sanitizeXml(text: string): string {
     .trim();
 }
 
-export function resultCardForTool(name: string, result: any): ResultCard | null {
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+export function resultCardForTool(name: string, result: any, idSeed = `${Date.now()}`): ResultCard | null {
   if (!result || typeof result !== "object" || result.error) return null;
   if (name === "get_ci_details" && result.id && result.name) {
     return {
-      id: `ci:${result.id}:${Date.now()}`,
+      id: `ci:${result.id}:${idSeed}`,
       type: "ci",
       ci: {
         id: String(result.id),
@@ -143,7 +166,7 @@ export function resultCardForTool(name: string, result: any): ResultCard | null 
   }
   if (name === "get_service_map" && result.rootId && Array.isArray(result.nodes) && Array.isArray(result.edges)) {
     return {
-      id: `service-map:${result.rootId}:${Date.now()}`,
+      id: `service-map:${result.rootId}:${idSeed}`,
       type: "service-map",
       rootId: String(result.rootId),
       nodes: result.nodes,
@@ -151,6 +174,45 @@ export function resultCardForTool(name: string, result: any): ResultCard | null 
     };
   }
   return null;
+}
+
+export function displayMessagesFromStored(messages: StoredChatMessage[]): DisplayChatMessage[] {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      role: message.role as "user" | "assistant",
+      text: message.content || "",
+    }));
+}
+
+export function resultCardsFromStoredMessages(messages: StoredChatMessage[]): ResultCard[] {
+  const toolNamesByCallId = new Map<string, string>();
+  const cards: ResultCard[] = [];
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      const toolCalls = parseMaybeJson(message.tool_calls);
+      if (Array.isArray(toolCalls)) {
+        for (const call of toolCalls) {
+          if (!call || typeof call !== "object") continue;
+          const item = call as { id?: unknown; function?: { name?: unknown } };
+          if (typeof item.id === "string" && typeof item.function?.name === "string") {
+            toolNamesByCallId.set(item.id, item.function.name);
+          }
+        }
+      }
+    }
+
+    if (message.role === "tool" && message.tool_call_id) {
+      const toolName = toolNamesByCallId.get(message.tool_call_id);
+      if (!toolName) continue;
+      const result = parseMaybeJson(message.content || "");
+      const card = resultCardForTool(toolName, result, message.id || message.tool_call_id);
+      if (card) cards.push(card);
+    }
+  }
+
+  return cards;
 }
 
 export function parseSseChunk(chunk: string) {

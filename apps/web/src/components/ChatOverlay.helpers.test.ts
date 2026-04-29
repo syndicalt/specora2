@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appLabel,
   contextChips,
+  displayMessagesFromStored,
   followUpPrompts,
   formatSessionTime,
   parseActions,
   parseSseChunk,
+  resultCardsFromStoredMessages,
   resultCardForTool,
   sanitizeXml,
   toolLabel,
@@ -120,5 +122,82 @@ describe("ChatOverlay helpers", () => {
     expect(resultCardForTool("get_ci_details", { error: "not found" })).toBeNull();
     expect(resultCardForTool("unknown_tool", { id: "ci-1", name: "Billing API" })).toBeNull();
     expect(resultCardForTool("get_service_map", { rootId: "ci-1", nodes: [] })).toBeNull();
+  });
+
+  it("filters stored messages to visible chat messages", () => {
+    expect(displayMessagesFromStored([
+      { id: "m1", role: "user", content: "Show me the map" },
+      { id: "m2", role: "assistant", content: "Here it is" },
+      { id: "m3", role: "tool", content: "{\"rootId\":\"ci-1\"}", tool_call_id: "call-1" },
+    ])).toEqual([
+      { role: "user", text: "Show me the map" },
+      { role: "assistant", text: "Here it is" },
+    ]);
+  });
+
+  it("rebuilds durable result cards from stored tool messages", () => {
+    const cards = resultCardsFromStoredMessages([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "Here is the CI.",
+        tool_calls: JSON.stringify([
+          { id: "call-1", type: "function", function: { name: "get_ci_details", arguments: "{\"id\":\"ci-1\"}" } },
+        ]),
+      },
+      {
+        id: "m2",
+        role: "tool",
+        tool_call_id: "call-1",
+        content: JSON.stringify({ id: "ci-1", name: "Billing API", class: "ApplicationService", relationships: [] }),
+      },
+    ]);
+
+    expect(cards).toEqual([
+      {
+        id: "ci:ci-1:m2",
+        type: "ci",
+        ci: {
+          id: "ci-1",
+          name: "Billing API",
+          class: "ApplicationService",
+          environment: undefined,
+          relationships: [],
+        },
+      },
+    ]);
+  });
+
+  it("rebuilds durable result cards when tool calls are already parsed", () => {
+    const cards = resultCardsFromStoredMessages([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "Here is the map.",
+        tool_calls: [
+          { id: "call-1", type: "function", function: { name: "get_service_map", arguments: "{\"rootId\":\"ci-1\"}" } },
+        ],
+      },
+      {
+        id: "m2",
+        role: "tool",
+        tool_call_id: "call-1",
+        content: JSON.stringify({
+          rootId: "ci-1",
+          nodes: [{ id: "ci-1", name: "Billing API" }],
+          edges: [{ sourceId: "ci-1", targetId: "ci-2", type: "DEPENDS_ON" }],
+        }),
+      },
+    ]);
+
+    expect(cards).toEqual([
+      {
+        id: "service-map:ci-1:m2",
+        type: "service-map",
+        rootId: "ci-1",
+        nodes: [{ id: "ci-1", name: "Billing API" }],
+        edges: [{ sourceId: "ci-1", targetId: "ci-2", type: "DEPENDS_ON" }],
+      },
+    ]);
   });
 });

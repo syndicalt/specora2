@@ -9,14 +9,17 @@ import remarkGfm from "remark-gfm";
 import { Bot, Calendar, Check, ChevronDown, ChevronRight, Clipboard, Clock, Compass, Plus, RotateCcw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 import {
   contextChips,
+  displayMessagesFromStored,
   followUpPrompts,
   formatSessionTime,
   parseActions,
   parseSseChunk,
+  resultCardsFromStoredMessages,
   resultCardForTool,
   sanitizeXml,
   toolLabel,
   updateWorkStep,
+  type DisplayChatMessage,
   type PendingApproval,
   type ResultCard,
   type WorkStep,
@@ -31,10 +34,7 @@ const STARTER_PROMPTS = [
   { label: "Draft remediation", prompt: "Draft a remediation plan using the current platform context." },
 ];
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  text: string;
-}
+type ChatMessage = DisplayChatMessage;
 
 interface Session {
   id: string;
@@ -440,8 +440,9 @@ export function ChatOverlay() {
       const res = await authFetch(`${API_URL}/api/chat/sessions/${id}/messages`);
       if (!res.ok) return;
       const data = await res.json();
-      const loaded = data.messages.map((m: any) => ({ role: m.role, text: m.content }));
+      const loaded = displayMessagesFromStored(data.messages || []);
       setMessages(loaded.length ? loaded : [{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
+      setResultCards(resultCardsFromStoredMessages(data.messages || []));
     } catch {
       // silent
     } finally {
