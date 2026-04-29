@@ -76,6 +76,28 @@ describe("Query.ci", () => {
     const result = await resolvers.Query.ci(null, { id: "1" }, mockContext(session));
     expect(result.attributes).toEqual({});
   });
+
+  it("projects typed Neo4j properties into attributes for GraphQL clients", async () => {
+    const session = mockNeo4jSession([{
+      get: () => ({
+        properties: {
+          id: "1",
+          name: "nb-lenovo",
+          class: "Computer",
+          environment: "Production",
+          attributes: { uuid: "device-uuid" },
+          ipAddress: "10.74.214.87",
+          serialNumber: "PF47W7CH",
+        },
+      }),
+    }]);
+    const result = await resolvers.Query.ci(null, { id: "1" }, mockContext(session));
+    expect(result.attributes).toEqual({
+      ipAddress: "10.74.214.87",
+      serialNumber: "PF47W7CH",
+      uuid: "device-uuid",
+    });
+  });
 });
 
 describe("Mutation.ingestCMDB", () => {
@@ -305,7 +327,7 @@ describe("Mutation.createCI", () => {
     );
 
     expect(result.status).toBe("operational");
-    expect(result.attributes).toEqual({ notes: "rack 1" });
+    expect(result.attributes).toEqual({ notes: "rack 1", status: "operational" });
     expect(session.run).toHaveBeenCalledWith(
       expect.stringContaining("SET n += $topLevelProps"),
       expect.objectContaining({
