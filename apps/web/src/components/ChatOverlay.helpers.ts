@@ -4,6 +4,16 @@ export type ContextChip = {
   detail?: string;
 };
 
+export type ScreenContext = {
+  appId: string;
+  appName: string;
+  screenName?: string;
+  purpose: string;
+  primaryActions: string[];
+  boundaries?: string[];
+  state?: Record<string, string | number | boolean | null | undefined>;
+};
+
 export type WorkStep = {
   id: string;
   label: string;
@@ -74,6 +84,160 @@ export function appLabel(value: string | undefined) {
     .join(" ");
 }
 
+const SCREEN_CONTEXTS: Record<string, Omit<ScreenContext, "appId" | "appName"> & { appName: string }> = {
+  "admin-console": {
+    appName: "Admin Console",
+    purpose: "Governance workspace for platform administration: users, access policy, credentials, identity providers, edge enrollment, environments, number sequences, packages, and system properties.",
+    primaryActions: [
+      "Manage platform users and roles",
+      "Issue and revoke edge enrollment tokens",
+      "Review enrolled edge collectors and runtime configuration",
+      "Analyze RBAC, app, tool, table, and field access",
+      "Manage credentials, identity providers, environments, number sequences, packages, and system properties",
+    ],
+    boundaries: [
+      "It is not the CMDB Explorer, Service Map, Incident Manager, Change Manager, Asset Command Center, Customer Portal, or Knowledge Core workspace.",
+      "Do not claim this screen directly browses CIs, handles incidents, manages changes, edits assets, or authors knowledge unless the user opens the corresponding app.",
+    ],
+  },
+  "cmdb-explorer": {
+    appName: "CMDB Explorer",
+    purpose: "Browse, search, inspect, and steward configuration items and their relationship/data-quality posture.",
+    primaryActions: ["Search and filter CIs", "Inspect CI details", "Open related service maps", "Review health/data-quality flags"],
+  },
+  "service-map": {
+    appName: "Service Map",
+    purpose: "Visualize CI dependency graphs and service impact paths.",
+    primaryActions: ["Set a root CI", "Inspect upstream and downstream dependencies", "Add, edit, or remove relationships", "Open linked CI records"],
+  },
+  discovery: {
+    appName: "Discovery",
+    purpose: "Build and run discovery ingestion pipelines from files, samples, and edge collector observations.",
+    primaryActions: ["Select discovery sources or runs", "Profile datasets", "Draft and edit mappings", "Preview, approve, and commit staged records"],
+  },
+  "discovery-insights": {
+    appName: "Discovery Insights",
+    purpose: "Review discovery coverage, freshness, and evidence quality across CMDB data.",
+    primaryActions: ["Analyze coverage gaps", "Review stale or missing discovery evidence", "Prioritize discovery remediation"],
+  },
+  "health-monitor": {
+    appName: "Health Monitor",
+    purpose: "Monitor CMDB health rules, quality findings, orphaned CIs, and stale records.",
+    primaryActions: ["Review health findings", "Open affected CIs", "Prioritize remediation suggestions", "Track structural quality"],
+  },
+  "audit-log": {
+    appName: "Audit Log",
+    purpose: "Review platform audit events and change history.",
+    primaryActions: ["Search audit events", "Inspect actor/action metadata", "Verify administrative and CMDB changes"],
+  },
+  "change-manager": {
+    appName: "Change Manager",
+    purpose: "Create, review, schedule, approve, and govern change requests.",
+    primaryActions: ["Create RFCs", "Assess affected CIs", "Manage approval and state transitions", "Plan implementation and rollback"],
+  },
+  "incident-manager": {
+    appName: "Incident Command Center",
+    purpose: "Create, triage, coordinate, and remediate incidents.",
+    primaryActions: ["Create incidents", "Run triage", "Draft stakeholder updates", "Track timeline and remediation work"],
+  },
+  "knowledge-core": {
+    appName: "Knowledge Core",
+    purpose: "Answer, draft, review, and publish governed operational knowledge.",
+    primaryActions: ["Answer from knowledge", "Draft knowledge articles", "Review stewardship queues", "Publish governed content"],
+  },
+  "prevention-center": {
+    appName: "Prevention Center",
+    purpose: "Identify recurring operational patterns and convert them into prevention work.",
+    primaryActions: ["Detect prevention candidates", "Propose corrective actions", "Create known errors", "Track incident-reduction work"],
+  },
+  "asset-command": {
+    appName: "Asset Command Center",
+    purpose: "Manage asset, contract, entitlement, scan, and software-license posture.",
+    primaryActions: ["Review asset exceptions", "Ingest contracts and procurement records", "Record scan evidence", "Run SAM reconciliation"],
+  },
+  "customer-portal": {
+    appName: "Customer Portal",
+    purpose: "Self-service front door for requests, support, knowledge answers, and escalation.",
+    primaryActions: ["Resolve user intent", "Browse/request services", "Submit requests", "Create support handoffs"],
+  },
+  "engage-agent-workspace": {
+    appName: "Engage Agent Workspace",
+    purpose: "Agent-facing workspace for support engagement, handoffs, and customer context.",
+    primaryActions: ["Review support context", "Coordinate handoffs", "Use chat to draft next steps"],
+  },
+  reporting: {
+    appName: "Reporting",
+    purpose: "Build, review, and publish operational reports from platform data.",
+    primaryActions: ["Browse report definitions", "Preview report data", "Configure report API surfaces"],
+  },
+  tables: {
+    appName: "Tables",
+    purpose: "Browse and edit table-backed platform records with filters, columns, references, and record forms.",
+    primaryActions: ["Search tables", "Filter records", "Edit records", "Manage columns and exports"],
+  },
+  "ci-class-manager": {
+    appName: "CI Class Manager",
+    purpose: "Define CI classes, fields, reference behavior, reconciliation rules, and class metadata.",
+    primaryActions: ["Create and edit CI classes", "Manage fields", "Configure display fields and reconciliation", "Review class schema"],
+  },
+  "data-foundations": {
+    appName: "Data Foundations",
+    purpose: "Manage platform reference data and graph relationship foundations.",
+    primaryActions: ["Manage relationship types", "Review reference data", "Configure data foundation records"],
+  },
+  arc: {
+    appName: "Specora Arc",
+    purpose: "Manage app ecosystem installation, review, and provisioning.",
+    primaryActions: ["Browse apps", "Review submissions", "Install or uninstall packages", "Inspect provisioning jobs"],
+  },
+  settings: {
+    appName: "Profile Settings",
+    purpose: "Manage personal profile preferences such as theme and account display preferences.",
+    primaryActions: ["Change theme", "Review profile metadata", "Manage user preferences"],
+  },
+};
+
+export function screenContextForApp(activeApp: string, uiContext: Record<string, any>): ScreenContext {
+  const dynamic = uiContext.screenContext && typeof uiContext.screenContext === "object" ? uiContext.screenContext : {};
+  const appId = String(dynamic.appId || activeApp || "none");
+  const base = SCREEN_CONTEXTS[appId] || {
+    appName: appLabel(appId),
+    purpose: "Active Specora application surface.",
+    primaryActions: ["Use the visible app controls", "Ask chat for context-specific guidance"],
+  };
+  const state = dynamic.state && typeof dynamic.state === "object" ? dynamic.state : undefined;
+  return {
+    appId,
+    appName: String(dynamic.appName || base.appName),
+    screenName: dynamic.screenName ? String(dynamic.screenName) : undefined,
+    purpose: String(dynamic.purpose || base.purpose),
+    primaryActions: Array.isArray(dynamic.primaryActions) && dynamic.primaryActions.length
+      ? dynamic.primaryActions.map(String)
+      : base.primaryActions,
+    boundaries: Array.isArray(dynamic.boundaries) && dynamic.boundaries.length
+      ? dynamic.boundaries.map(String)
+      : base.boundaries,
+    state,
+  };
+}
+
+export function screenContextLines(activeApp: string, uiContext: Record<string, any>): string[] {
+  const context = screenContextForApp(activeApp, uiContext);
+  const lines = [
+    `Active app/view: ${context.appId}`,
+    `Screen: ${context.screenName ? `${context.appName} - ${context.screenName}` : context.appName}`,
+    `Screen purpose: ${context.purpose}`,
+    `Available screen actions: ${context.primaryActions.join("; ")}`,
+  ];
+  if (context.boundaries?.length) {
+    lines.push(`Screen boundaries: ${context.boundaries.join(" ")}`);
+  }
+  if (context.state && Object.keys(context.state).length > 0) {
+    lines.push(`Screen state: ${Object.entries(context.state).map(([key, value]) => `${key}=${String(value ?? "")}`).join("; ")}`);
+  }
+  return lines;
+}
+
 export function toolLabel(name: string) {
   return name
     .replace(/_/g, " ")
@@ -88,7 +252,8 @@ export function updateWorkStep(steps: WorkStep[], next: WorkStep) {
 }
 
 export function contextChips(uiContext: Record<string, any>, activeApp: string): ContextChip[] {
-  const chips: ContextChip[] = [{ key: "activeApp", label: appLabel(activeApp), detail: "View" }];
+  const screenContext = screenContextForApp(activeApp, uiContext);
+  const chips: ContextChip[] = [{ key: "activeApp", label: screenContext.screenName || screenContext.appName, detail: "View" }];
   if (uiContext.selectedCI) {
     chips.push({
       key: "selectedCI",

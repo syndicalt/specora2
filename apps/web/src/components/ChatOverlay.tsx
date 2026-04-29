@@ -17,6 +17,7 @@ import {
   parseSseChunk,
   resultCardForTool,
   sanitizeXml,
+  screenContextLines,
   toolLabel,
   updateWorkStep,
   type DisplayChatMessage,
@@ -373,6 +374,12 @@ export function ChatOverlay() {
         setUiContext((prev) => ({ ...prev, activeApp: "cmdb-explorer", focusedCI: msg.payload?.id }));
       } else if (msg.type === "APP_ACTIVATED") {
         setUiContext((prev) => ({ ...prev, activeApp: msg.payload?.appId }));
+      } else if (msg.type === "SCREEN_CONTEXT_UPDATED") {
+        setUiContext((prev) => ({
+          ...prev,
+          activeApp: msg.payload?.appId || prev.activeApp,
+          screenContext: msg.payload || prev.screenContext,
+        }));
       } else if (msg.type === "CI_SELECTED" && msg.from === "cmdb-explorer") {
         const ci = msg.payload?.ci;
         if (ci) {
@@ -522,7 +529,7 @@ export function ChatOverlay() {
 
     const apiMessages = newMessages.map((m) => ({ role: m.role, content: m.text }));
 
-    const contextParts: string[] = [`Active app/view: ${activeApp}`];
+    const contextParts: string[] = screenContextLines(activeApp, uiContext);
     if (uiContext.selectedRootCI) contextParts.push(`Selected root CI in Service Map: ${uiContext.selectedRootCI}`);
     if (uiContext.focusedCI) contextParts.push(`Focused CI in CMDB Explorer: ${uiContext.focusedCI}`);
     if (uiContext.selectedCI) contextParts.push(`Selected CI in CMDB Explorer: ${uiContext.selectedCI.name} (${uiContext.selectedCI.id})`);
