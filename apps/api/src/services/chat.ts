@@ -896,6 +896,7 @@ export type ChatStreamEvent =
   | { type: "token"; content: string }
   | { type: "tool_call"; name: string; arguments: Record<string, unknown> }
   | { type: "tool_result"; name: string; result: any }
+  | { type: "approval_required"; name: string; arguments: Record<string, unknown>; risk: "high"; reason: string }
   | { type: "done"; content: string; sessionId: string; toolCalls?: any[] }
   | { type: "error"; message: string };
 
@@ -1091,7 +1092,8 @@ export async function chatStream(
   onEvent: (event: ChatStreamEvent) => void,
   trace?: Trace | SessionTrace,
   uiContext?: string,
-  user?: { id: string; role?: string }
+  user?: { id: string; role?: string },
+  approvedToolNames: string[] = []
 ): Promise<{ content: string; toolCalls?: any[] }> {
   const openai = getOpenAI();
   const provara = getProvaraConfig();
@@ -1188,6 +1190,23 @@ export async function chatStream(
       // Enrich with user context for permission-aware tools
       if (user?.id) args._userId = user.id;
       if (user?.role) args._userRole = user.role;
+
+      const separator = toolCall.function.name.indexOf("_");
+      const appToolName = separator >= 0 ? toolCall.function.name.slice(separator + 1) : toolCall.function.name;
+      const requiresApproval = separator >= 0 && toolToAction(appToolName) === "write" && !approvedToolNames.includes(toolCall.function.name);
+      if (requiresApproval) {
+        onEvent({
+          type: "approval_required",
+          name: toolCall.function.name,
+          arguments: args,
+          risk: "high",
+          reason: "This action can create, update, delete, approve, or otherwise mutate platform data.",
+        });
+        return {
+          content: `Approval required before running ${toolCall.function.name}. Review the staged action and approve it to continue.`,
+          toolCalls: allCallMetas.length > 0 ? allCallMetas : undefined,
+        };
+      }
 
       onEvent({ type: "tool_call", name: toolCall.function.name, arguments: args });
       fastify.log.info({ tool: toolCall.function.name, args, round }, "AI tool call (stream)");

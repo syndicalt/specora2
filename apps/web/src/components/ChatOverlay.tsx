@@ -6,14 +6,35 @@ import { getApiBase } from "@/lib/runtimeApi";
 import { useShell } from "@/shell/AppContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Plus, Trash2, X, ChevronDown, ChevronRight, Calendar, Clock } from "lucide-react";
+import { Bot, Calendar, Check, ChevronDown, ChevronRight, Clipboard, Clock, Compass, Plus, RotateCcw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
+import {
+  appendCardToLatestAssistant,
+  contextChips,
+  displayMessagesFromStored,
+  followUpPrompts,
+  formatSessionTime,
+  parseActions,
+  parseSseChunk,
+  resultCardForTool,
+  sanitizeXml,
+  toolLabel,
+  updateWorkStep,
+  type DisplayChatMessage,
+  type PendingApproval,
+  type ResultCard,
+  type WorkStep,
+} from "./ChatOverlay.helpers";
 
 const API_URL = getApiBase();
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  text: string;
-}
+const STARTER_PROMPTS = [
+  { label: "Investigate a CI", prompt: "Help me investigate the currently selected CI and summarize risk, relationships, and recommended next steps." },
+  { label: "Explain this screen", prompt: "Explain what I am looking at and what actions are available from this app." },
+  { label: "Map service impact", prompt: "Help me understand service impact for the current CI or service map context." },
+  { label: "Draft remediation", prompt: "Draft a remediation plan using the current platform context." },
+];
+
+type ChatMessage = DisplayChatMessage;
 
 interface Session {
   id: string;
@@ -33,27 +54,6 @@ interface AppCapabilityGroup {
   appId: string;
   appName: string;
   capabilities: Capability[];
-}
-
-function parseActions(text: string) {
-  const actionRegex = /\[\[action\|([^|]+)\|([^|]+)\|([^\[\]]+)\]\]/g;
-  const actions: { type: string; payload: string; label: string }[] = [];
-  let match;
-  while ((match = actionRegex.exec(text)) !== null) {
-    actions.push({ type: match[1], payload: match[2], label: match[3] });
-  }
-  const cleanText = text.replace(actionRegex, "").trim();
-  return { cleanText, actions };
-}
-
-function sanitizeXml(text: string): string {
-  if (!text) return text;
-  return text
-    .replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, "")
-    .replace(/<invoke\s+[^>]*>[\s\S]*?<\/invoke>/gi, "")
-    .replace(/<result>[\s\S]*?<\/result>/gi, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
 }
 
 function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
@@ -108,6 +108,148 @@ function DatePickerWidget({ onSubmit }: { onSubmit: (value: string) => void }) {
   );
 }
 
+function WorkingTrace({ steps }: { steps: WorkStep[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <div className="rounded-2xl rounded-bl-md border border-gray-800 bg-gray-900/80 px-3 py-2 text-xs text-gray-400">
+      <div className="mb-1.5 flex items-center gap-2 font-medium text-gray-300">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
+        Working steps
+      </div>
+      <div className="space-y-1">
+        {steps.map((step) => (
+          <div key={step.id} className="flex items-center gap-2">
+            <span className={`h-1.5 w-1.5 rounded-full ${step.status === "completed" ? "bg-emerald-300" : step.status === "error" ? "bg-red-300" : "bg-cyan-300"}`} />
+            <span className={step.status === "active" ? "text-gray-200" : "text-gray-500"}>{step.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ApprovalCard({
+  approval,
+  onApprove,
+  onCancel,
+}: {
+  approval: PendingApproval;
+  onApprove: (approval: PendingApproval) => void;
+  onCancel: (id: string) => void;
+}) {
+  const visibleArgs = Object.entries(approval.arguments)
+    .filter(([key]) => !key.startsWith("_"))
+    .slice(0, 4);
+  return (
+    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-amber-300">Approval Required</div>
+          <div className="mt-1 font-medium text-amber-50">{toolLabel(approval.name)}</div>
+        </div>
+        <span className="rounded-full bg-amber-400/15 px-2 py-1 text-[11px] font-semibold uppercase text-amber-200">{approval.risk} risk</span>
+      </div>
+      <p className="text-xs leading-5 text-amber-100/80">{approval.reason}</p>
+      {visibleArgs.length > 0 && (
+        <div className="mt-2 rounded-xl border border-amber-400/20 bg-gray-950/50 p-2">
+          {visibleArgs.map(([key, value]) => (
+            <div key={key} className="flex gap-2 text-xs">
+              <span className="w-24 shrink-0 text-amber-300/70">{key}</span>
+              <span className="min-w-0 truncate text-amber-50/90">{typeof value === "string" ? value : JSON.stringify(value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => onCancel(approval.id)}
+          className="rounded-lg border border-amber-400/20 px-3 py-1.5 text-xs text-amber-100/80 transition-colors hover:bg-amber-400/10"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => onApprove(approval)}
+          className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-medium text-gray-950 transition-colors hover:bg-amber-200"
+        >
+          Approve
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ResultCardView({ card, onAction }: { card: ResultCard; onAction: (type: string, payload: string) => void }) {
+  if (card.type === "ci") {
+    const relationshipCount = card.ci.relationships?.length || 0;
+    const incoming = card.ci.relationships?.filter((relationship) => relationship.direction === "incoming").length || 0;
+    const outgoing = Math.max(relationshipCount - incoming, 0);
+    return (
+      <div className="rounded-2xl border border-cyan-500/25 bg-cyan-500/10 p-3 text-sm text-cyan-50">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-base font-semibold">{card.ci.name}</div>
+            <div className="mt-0.5 flex flex-wrap gap-2 text-xs text-cyan-100/70">
+              {card.ci.class && <span>{card.ci.class}</span>}
+              {card.ci.environment && <span>{card.ci.environment}</span>}
+              <span>{relationshipCount} relationships</span>
+            </div>
+          </div>
+          <span className="rounded-full bg-cyan-400/15 px-2 py-1 text-[11px] font-semibold uppercase text-cyan-100">CI</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-xl border border-cyan-400/20 bg-gray-950/40 p-2">
+            <div className="text-cyan-100/50">Upstream</div>
+            <div className="mt-1 text-lg font-semibold text-cyan-50">{incoming}</div>
+          </div>
+          <div className="rounded-xl border border-cyan-400/20 bg-gray-950/40 p-2">
+            <div className="text-cyan-100/50">Downstream</div>
+            <div className="mt-1 text-lg font-semibold text-cyan-50">{outgoing}</div>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" onClick={() => onAction("open-ci-details", `id=${card.ci.id}`)} className="rounded-lg bg-cyan-300 px-3 py-1.5 text-xs font-medium text-gray-950 hover:bg-cyan-200">
+            Open CI
+          </button>
+          <button type="button" onClick={() => onAction("open-service-map", `rootId=${card.ci.id}`)} className="rounded-lg border border-cyan-400/30 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-400/10">
+            Service Map
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const root = card.nodes.find((node) => node.id === card.rootId);
+  const classes = Array.from(new Set(card.nodes.map((node) => node.class).filter(Boolean))).slice(0, 3);
+  return (
+    <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-50">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-base font-semibold">{root?.name || card.rootId}</div>
+          <div className="mt-0.5 truncate text-xs text-emerald-100/70">{classes.length ? classes.join(" | ") : "Service map"}</div>
+        </div>
+        <span className="rounded-full bg-emerald-400/15 px-2 py-1 text-[11px] font-semibold uppercase text-emerald-100">Map</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-xl border border-emerald-400/20 bg-gray-950/40 p-2">
+          <div className="text-emerald-100/50">Nodes</div>
+          <div className="mt-1 text-lg font-semibold text-emerald-50">{card.nodes.length}</div>
+        </div>
+        <div className="rounded-xl border border-emerald-400/20 bg-gray-950/40 p-2">
+          <div className="text-emerald-100/50">Relationships</div>
+          <div className="mt-1 text-lg font-semibold text-emerald-50">{card.edges.length}</div>
+        </div>
+      </div>
+      <div className="mt-3">
+        <button type="button" onClick={() => onAction("open-service-map", `rootId=${card.rootId}`)} className="rounded-lg bg-emerald-300 px-3 py-1.5 text-xs font-medium text-gray-950 hover:bg-emerald-200">
+          Open Service Map
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function ChatOverlay() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -115,17 +257,26 @@ export function ChatOverlay() {
     { role: "assistant", text: "Welcome to Specora. How can I help you today?" },
   ]);
   const [input, setInput] = useState("");
+  const [sessionQuery, setSessionQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [capabilityGroups, setCapabilityGroups] = useState<AppCapabilityGroup[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const shell = useShell();
   const [uiContext, setUiContext] = useState<Record<string, any>>({});
   const [forceDatePicker, setForceDatePicker] = useState(false);
-  const doSendRef = useRef<(text: string) => Promise<void>>(async () => {});
+  const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
+  const [workSteps, setWorkSteps] = useState<WorkStep[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
+  const doSendRef = useRef<(text: string, options?: { approvedToolNames?: string[] }) => Promise<void>>(async () => {});
+  const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
+  const chips = contextChips(uiContext, activeApp);
+  const followUps = followUpPrompts(uiContext, activeApp);
+  const filteredSessions = sessions.filter((session) => session.title.toLowerCase().includes(sessionQuery.trim().toLowerCase()));
 
   // Auto-focus input on mount (panel opened) and when session changes
   useEffect(() => {
@@ -144,6 +295,13 @@ export function ChatOverlay() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    const element = inputRef.current;
+    if (!element) return;
+    element.style.height = "0px";
+    element.style.height = `${Math.min(element.scrollHeight, 144)}px`;
+  }, [input]);
 
   useEffect(() => {
     loadSessions();
@@ -263,6 +421,7 @@ export function ChatOverlay() {
       setSessionId(data.session.id);
       setMessages([{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
       setDropdownOpen(false);
+      setSessionQuery("");
       await loadSessions();
     } catch {
       // silent
@@ -273,11 +432,12 @@ export function ChatOverlay() {
     setSessionId(id);
     setLoading(true);
     setDropdownOpen(false);
+    setSessionQuery("");
     try {
       const res = await authFetch(`${API_URL}/api/chat/sessions/${id}/messages`);
       if (!res.ok) return;
       const data = await res.json();
-      const loaded = data.messages.map((m: any) => ({ role: m.role, text: m.content }));
+      const loaded = displayMessagesFromStored(data.messages || []);
       setMessages(loaded.length ? loaded : [{ role: "assistant", text: "Welcome to Specora. How can I help you today?" }]);
     } catch {
       // silent
@@ -303,7 +463,46 @@ export function ChatOverlay() {
     }
   }
 
-  const doSend = useCallback(async (text: string) => {
+  function removeContextChip(key: string) {
+    setUiContext((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      if (key === "activeApp") delete next.activeApp;
+      return next;
+    });
+  }
+
+  function stopResponse() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+  }
+
+  async function copyMessage(text: string, index: number) {
+    try {
+      await navigator.clipboard.writeText(sanitizeXml(parseActions(text).cleanText || text));
+      setCopiedMessageIndex(index);
+      window.setTimeout(() => setCopiedMessageIndex((current) => current === index ? null : current), 1400);
+    } catch {
+      shell.dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: "Unable to copy response", type: "error" } });
+    }
+  }
+
+  function retryLastUserMessage() {
+    const lastUser = [...messages].reverse().find((message) => message.role === "user");
+    if (lastUser) void doSend(lastUser.text);
+  }
+
+  function approveAction(approval: PendingApproval) {
+    setPendingApprovals((items) => items.filter((item) => item.id !== approval.id));
+    void doSend(`Approved action: ${approval.name}`, { approvedToolNames: [approval.name] });
+  }
+
+  function cancelAction(id: string) {
+    setPendingApprovals((items) => items.filter((item) => item.id !== id));
+  }
+
+  const doSend = useCallback(async (text: string, options: { approvedToolNames?: string[] } = {}) => {
     const userMsg = text.trim();
     if (!userMsg || loading) return;
 
@@ -323,19 +522,20 @@ export function ChatOverlay() {
 
     const apiMessages = newMessages.map((m) => ({ role: m.role, content: m.text }));
 
-    const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
     const contextParts: string[] = [`Active app/view: ${activeApp}`];
     if (uiContext.selectedRootCI) contextParts.push(`Selected root CI in Service Map: ${uiContext.selectedRootCI}`);
     if (uiContext.focusedCI) contextParts.push(`Focused CI in CMDB Explorer: ${uiContext.focusedCI}`);
     if (uiContext.selectedCI) contextParts.push(`Selected CI in CMDB Explorer: ${uiContext.selectedCI.name} (${uiContext.selectedCI.id})`);
     const uiContextString = contextParts.join("\n");
 
-    // Use non-streaming endpoint for reliable tool calling
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      abortRef.current = controller;
+      timeoutId = setTimeout(() => controller.abort(), 120000);
+      setWorkSteps([{ id: "context", label: "Preparing platform context", status: "active" }]);
 
-      const res = await authFetch(`${API_URL}/api/chat`, {
+      const res = await authFetch(`${API_URL}/api/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -344,39 +544,118 @@ export function ChatOverlay() {
           messages: apiMessages,
           sessionId: sessionId || undefined,
           uiContext: uiContextString,
+          approvedToolNames: options.approvedToolNames || [],
         }),
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error(`Chat failed with ${res.status}`);
+      if (!res.body) throw new Error("Chat stream unavailable");
 
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      setWorkSteps((steps) => updateWorkStep(updateWorkStep(steps, { id: "context", label: "Preparing platform context", status: "completed" }), { id: "assistant", label: "Asking assistant", status: "active" }));
 
-      const text = sanitizeXml(data.content || "");
-      const { actions } = parseActions(text);
-      // Only add assistant message if it has text or actions (buttons)
-      if (text.trim() || actions.length > 0) {
-        setMessages((prev) => [...prev, { role: "assistant", text }]);
-      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamedText = "";
 
-      if (data.sessionId && !sessionId) {
-        setSessionId(data.sessionId);
-        await loadSessions();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+
+        for (const chunk of chunks) {
+          const event = parseSseChunk(chunk);
+          if (!event) continue;
+
+          if (event.type === "token") {
+            streamedText += event.content || "";
+            setWorkSteps((steps) => updateWorkStep(steps, { id: "assistant", label: "Drafting response", status: "active" }));
+            setMessages((prev) => {
+              const next = [...prev];
+              if (next[next.length - 1]?.role === "assistant") {
+                next[next.length - 1] = { ...next[next.length - 1], role: "assistant", text: streamedText };
+              } else {
+                next.push({ role: "assistant", text: streamedText });
+              }
+              return next;
+            });
+          } else if (event.type === "tool_call") {
+            const id = `tool:${event.name}`;
+            setWorkSteps((steps) => updateWorkStep(updateWorkStep(steps, { id: "assistant", label: "Asking assistant", status: "completed" }), { id, label: `Running ${toolLabel(event.name)}`, status: "active" }));
+          } else if (event.type === "tool_result") {
+            const id = `tool:${event.name}`;
+            setWorkSteps((steps) => updateWorkStep(steps, { id, label: `Ran ${toolLabel(event.name)}`, status: "completed" }));
+            const card = resultCardForTool(event.name, event.result);
+            if (card) setMessages((prev) => appendCardToLatestAssistant(prev, card));
+          } else if (event.type === "approval_required") {
+            const approval: PendingApproval = {
+              id: `${event.name}:${Date.now()}`,
+              name: event.name,
+              arguments: event.arguments || {},
+              risk: event.risk || "high",
+              reason: event.reason || "This action can mutate platform data.",
+            };
+            setPendingApprovals((items) => [...items, approval]);
+            setWorkSteps((steps) => updateWorkStep(steps, { id: `tool:${event.name}`, label: `Waiting for approval: ${toolLabel(event.name)}`, status: "error" }));
+          } else if (event.type === "done") {
+            const text = sanitizeXml(event.content || streamedText);
+            const { actions } = parseActions(text);
+            if (text.trim() || actions.length > 0) {
+              setMessages((prev) => {
+                const next = [...prev];
+                if (next[next.length - 1]?.role === "assistant") {
+                  next[next.length - 1] = { ...next[next.length - 1], role: "assistant", text };
+                } else {
+                  next.push({ role: "assistant", text });
+                }
+                return next;
+              });
+            }
+            if (event.sessionId && !sessionId) {
+              setSessionId(event.sessionId);
+              await loadSessions();
+            }
+            setWorkSteps((steps) => updateWorkStep(steps, { id: "assistant", label: "Drafted response", status: "completed" }));
+          } else if (event.type === "error") {
+            throw new Error(event.message || "Chat failed");
+          }
+        }
       }
     } catch (err: any) {
+      if (err?.name === "AbortError") {
+        setWorkSteps((steps) => updateWorkStep(steps, { id: "assistant", label: "Stopped response", status: "error" }));
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: "Stopped." },
+        ]);
+        return;
+      }
+      setWorkSteps((steps) => updateWorkStep(steps, { id: "assistant", label: "Chat failed", status: "error" }));
       setMessages((prev) => [
         ...prev,
         { role: "assistant", text: `Error: ${err.message || "Failed to reach AI backend"}` },
       ]);
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      abortRef.current = null;
       setLoading(false);
+      window.setTimeout(() => setWorkSteps([]), 1600);
     }
-  }, [messages, loading, sessionId, shell.state.activeCanvasId, shell.state.focusedWindowId, uiContext]);
+  }, [activeApp, messages, loading, sessionId, uiContext]);
   doSendRef.current = doSend;
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     await doSend(input);
+  };
+
+  const handleComposerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void doSend(input);
+    }
   };
 
   const handleAction = (type: string, payload: string) => {
@@ -480,73 +759,122 @@ export function ChatOverlay() {
   const currentTitle = sessions.find((s) => s.id === sessionId)?.title || "New Chat";
 
   const showDatePicker = !loading && forceDatePicker;
+  const hasUserMessages = messages.some((message) => message.role === "user");
 
   return (
-    <div className="flex flex-col h-full w-full bg-gray-900">
+    <div className="flex flex-col h-full w-full bg-gray-950">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="shrink-0 border-b border-gray-800 bg-gray-900/95 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setDropdownOpen((prev) => !prev)}
-              className="flex items-center gap-1.5 text-sm text-gray-300 hover:text-white transition-colors"
+              className="flex items-center gap-2 text-sm text-gray-300 transition-colors hover:text-white"
             >
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-400/10 text-cyan-200">
+                <Bot className="h-4 w-4" />
+              </span>
               <span className="font-medium truncate max-w-[140px]">{currentTitle}</span>
               <ChevronDown className={`w-3.5 h-3.5 transition-transform ${dropdownOpen ? "rotate-180" : ""}`} />
             </button>
             {dropdownOpen && (
-              <div className="absolute top-full left-0 mt-1.5 w-64 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl overflow-hidden z-50">
+              <div className="absolute top-full left-0 z-50 mt-1.5 w-72 overflow-hidden rounded-xl border border-gray-700 bg-gray-800 shadow-2xl">
                 <div className="p-2 border-b border-gray-700">
                   <button
                     onClick={createNewSession}
-                    className="flex items-center gap-2 w-full px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors"
+                    className="flex w-full items-center gap-2 rounded-lg bg-cyan-500 px-3 py-2 text-sm text-gray-950 transition-colors hover:bg-cyan-400"
                   >
                     <Plus className="w-4 h-4" />
                     New Chat
                   </button>
                 </div>
+                {sessions.length > 0 && (
+                  <div className="border-b border-gray-700 p-2">
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+                      <input
+                        value={sessionQuery}
+                        onChange={(event) => setSessionQuery(event.target.value)}
+                        placeholder="Search chats"
+                        className="w-full rounded-lg border border-gray-700 bg-gray-900 py-2 pl-8 pr-3 text-sm text-gray-100 outline-none placeholder:text-gray-600 focus:border-cyan-500"
+                      />
+                    </div>
+                  </div>
+                )}
                 <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
-                  {sessions.map((s) => (
+                  {filteredSessions.map((s) => (
                     <div
                       key={s.id}
                       onClick={() => loadSession(s.id)}
-                      className={`group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+                      className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors ${
                         sessionId === s.id ? "bg-gray-700/60 text-white" : "text-gray-400 hover:bg-gray-700/40 hover:text-gray-200"
                       }`}
                     >
-                      <span className="truncate flex-1">{s.title}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{s.title}</span>
+                        <span className="block truncate text-[11px] text-gray-600">{formatSessionTime(s.updated_at)}</span>
+                      </span>
                       <button
                         onClick={(e) => deleteSession(s.id, e)}
                         className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-opacity ml-2"
+                        title="Delete chat"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   ))}
-                  {sessions.length === 0 && (
+                  {sessions.length === 0 ? (
                     <div className="px-3 py-4 text-center text-xs text-gray-500">No sessions yet</div>
+                  ) : filteredSessions.length === 0 && (
+                    <div className="px-3 py-4 text-center text-xs text-gray-500">No matching chats</div>
                   )}
                 </div>
               </div>
             )}
           </div>
+          <button
+            onClick={() => shell.dispatch({ type: "TOGGLE_RIGHT_PANEL" })}
+            className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
+            title="Collapse panel"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
-        <button
-          onClick={() => shell.dispatch({ type: "TOGGLE_RIGHT_PANEL" })}
-          className="text-gray-400 hover:text-white transition-colors"
-          title="Collapse panel"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        {chips.length > 0 && (
+          <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5">
+            {chips.map((chip) => (
+              <span
+                key={`${chip.key}:${chip.label}`}
+                className="inline-flex max-w-[220px] shrink-0 items-center gap-1.5 rounded-full border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-300"
+                title={chip.detail ? `${chip.detail}: ${chip.label}` : chip.label}
+              >
+                <span className="truncate">
+                  {chip.detail && <span className="text-gray-500">{chip.detail}: </span>}
+                  {chip.label}
+                </span>
+                {chip.key !== "activeApp" && (
+                  <button
+                    type="button"
+                    onClick={() => removeContextChip(chip.key)}
+                    className="rounded-full p-0.5 text-gray-500 hover:bg-gray-800 hover:text-gray-200"
+                    aria-label={`Remove ${chip.label} context`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
         {messages.map((m, i) => {
           if (m.role === "user") {
             return (
               <div key={i} className="flex justify-end">
-                <div className="px-3 py-2 rounded-lg text-sm max-w-[80%] whitespace-pre-wrap bg-indigo-600 text-white">
+                <div className="max-w-[82%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-cyan-500 px-3 py-2 text-sm text-gray-950 shadow-lg shadow-cyan-950/20">
                   {m.text}
                 </div>
               </div>
@@ -557,15 +885,16 @@ export function ChatOverlay() {
           const { cleanText, actions } = parseActions(sanitizedText);
           const isLatestAssistant = i === messages.length - 1 || (i === messages.length - 2 && messages[messages.length - 1]?.role === "user");
           const showPickerForThisMsg = isLatestAssistant && !loading && forceDatePicker;
+          const cards = m.cards || [];
 
-          // Skip rendering assistant messages that have no text and no actions
-          if (!cleanText && actions.length === 0) return null;
+          // Skip rendering assistant messages that have no text, actions, or cards.
+          if (!cleanText && actions.length === 0 && cards.length === 0) return null;
 
           return (
             <div key={i} className="flex justify-start">
-              <div className="max-w-[95%] space-y-2">
+              <div className="max-w-[96%] space-y-2">
                 {cleanText && (
-                  <div className="px-3 py-2 rounded-lg text-sm bg-gray-800 text-gray-200 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_code]:bg-gray-950 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:text-xs [&_a]:text-indigo-400 [&_a]:underline [&_h1]:text-lg [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_blockquote]:border-l-2 [&_blockquote]:border-gray-600 [&_blockquote]:pl-3 [&_blockquote]:italic [&_hr]:border-gray-700">
+                  <div className="rounded-2xl rounded-bl-md border border-gray-800 bg-gray-900/90 px-3.5 py-3 text-sm leading-6 text-gray-200 shadow-sm [&_a]:text-cyan-300 [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-gray-600 [&_blockquote]:pl-3 [&_blockquote]:italic [&_code]:rounded [&_code]:bg-gray-950 [&_code]:px-1 [&_code]:py-0.5 [&_h1]:text-lg [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_hr]:border-gray-700 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:text-xs [&_ul]:list-disc [&_ul]:pl-4">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {cleanText}
                     </ReactMarkdown>
@@ -577,7 +906,7 @@ export function ChatOverlay() {
                       <button
                         key={idx}
                         onClick={() => handleAction(a.type, a.payload)}
-                        className="px-3 py-1.5 rounded-full text-xs bg-indigo-900/40 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-900/60 transition-colors"
+                        className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs text-cyan-200 transition-colors hover:bg-cyan-500/20"
                       >
                         {a.label}
                       </button>
@@ -587,12 +916,90 @@ export function ChatOverlay() {
                 {showPickerForThisMsg && (
                   <DatePickerWidget onSubmit={(val) => doSend(val)} />
                 )}
+                {cards.length > 0 && (
+                  <div className="space-y-2">
+                    {cards.map((card) => (
+                      <ResultCardView key={card.id} card={card} onAction={handleAction} />
+                    ))}
+                  </div>
+                )}
+                {cleanText && (
+                  <div className="flex flex-wrap items-center gap-1.5 pl-1">
+                    <button
+                      type="button"
+                      onClick={() => copyMessage(cleanText, i)}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-gray-500 transition-colors hover:bg-gray-900 hover:text-gray-200"
+                    >
+                      {copiedMessageIndex === i ? <Check className="h-3 w-3 text-emerald-300" /> : <Clipboard className="h-3 w-3" />}
+                      {copiedMessageIndex === i ? "Copied" : "Copy"}
+                    </button>
+                    {isLatestAssistant && hasUserMessages && !loading && (
+                      <button
+                        type="button"
+                        onClick={retryLastUserMessage}
+                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-gray-500 transition-colors hover:bg-gray-900 hover:text-gray-200"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
+                {isLatestAssistant && hasUserMessages && !loading && followUps.length > 0 && (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {followUps.map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={() => doSend(item.prompt)}
+                        className="rounded-full border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-cyan-500/40 hover:text-cyan-100"
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
+        {!loading && !hasUserMessages && (
+          <div className="rounded-2xl border border-gray-800 bg-gray-900/70 p-3 shadow-sm">
+            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-gray-200">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-200">
+                <Sparkles className="h-4 w-4" />
+              </span>
+              Start with platform context
+            </div>
+            <div className="grid gap-2">
+              {STARTER_PROMPTS.map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={() => doSend(item.prompt)}
+                  className="group flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-950 px-3 py-2 text-left text-sm text-gray-300 transition-colors hover:border-cyan-500/40 hover:text-gray-100"
+                >
+                  <Compass className="h-4 w-4 shrink-0 text-gray-500 group-hover:text-cyan-300" />
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {pendingApprovals.length > 0 && (
+          <div className="space-y-3">
+            {pendingApprovals.map((approval) => (
+              <ApprovalCard
+                key={approval.id}
+                approval={approval}
+                onApprove={approveAction}
+                onCancel={cancelAction}
+              />
+            ))}
+          </div>
+        )}
         {/* Capability accordion — shown when conversation is fresh */}
-        {!loading && messages.filter((m) => m.role === "user").length === 0 && capabilityGroups.length > 0 && (
+        {!loading && !hasUserMessages && capabilityGroups.length > 0 && (
           <div className="mt-2 space-y-1">
             <p className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">What you can do</p>
             {capabilityGroups.map((group) => {
@@ -635,39 +1042,78 @@ export function ChatOverlay() {
 
         {loading && (
           <div className="flex justify-start">
-            <div className="px-3 py-2 rounded-lg text-sm bg-gray-800 text-gray-400 animate-pulse">
-              Thinking...
-            </div>
+            <WorkingTrace steps={workSteps.length > 0 ? workSteps : [{ id: "assistant", label: "Working with platform context", status: "active" }]} />
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
       {/* Input */}
-      <form onSubmit={sendMessage} className="p-3 border-t border-gray-800 shrink-0">
-        <div className="relative">
-          <input
+      <form onSubmit={sendMessage} className="shrink-0 border-t border-gray-800 bg-gray-900/95 p-3">
+        <div className="rounded-2xl border border-gray-700 bg-gray-950 p-2 shadow-inner shadow-black/30 transition-colors focus-within:border-cyan-500/70">
+          <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleComposerKeyDown}
             placeholder="Ask about your CMDB, incidents, or services..."
-            className="w-full px-3 py-2.5 rounded-lg bg-gray-950 border border-gray-700 focus:outline-none focus:border-indigo-500 text-sm transition-colors pr-10"
+            rows={1}
+            className="max-h-36 min-h-[48px] w-full resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm leading-5 text-gray-100 outline-none placeholder:text-gray-600"
             disabled={loading}
           />
-          {showDatePicker && (
-            <button
-              type="button"
-              onClick={() => {
-                const today = new Date().toISOString().slice(0, 10);
-                setInput((prev) => (prev ? prev : today));
-                inputRef.current?.focus();
-              }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-indigo-400 transition-colors"
-              title="Insert today's date"
-            >
-              <Calendar className="w-4 h-4" />
-            </button>
-          )}
+          <div className="flex items-center justify-between gap-2 border-t border-gray-800 px-1 pt-2">
+            <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-gray-600">
+              {chips.length > 0 && <span className="truncate">{chips.length} context {chips.length === 1 ? "item" : "items"}</span>}
+            </div>
+            <div className="flex items-center gap-1.5">
+              {input.trim() && !loading && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInput("");
+                    inputRef.current?.focus();
+                  }}
+                  className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-900 hover:text-gray-200"
+                  title="Clear draft"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+              {showDatePicker && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const today = new Date().toISOString().slice(0, 10);
+                    setInput((prev) => (prev ? prev : today));
+                    inputRef.current?.focus();
+                  }}
+                  className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-900 hover:text-cyan-300"
+                  title="Insert today's date"
+                >
+                  <Calendar className="h-4 w-4" />
+                </button>
+              )}
+              {loading ? (
+                <button
+                  type="button"
+                  onClick={stopResponse}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-red-400/30 bg-red-500/10 text-red-200 transition-colors hover:bg-red-500/20"
+                  title="Stop response"
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!input.trim()}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-400 text-gray-950 transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-gray-800 disabled:text-gray-600"
+                  title="Send message"
+                >
+                  <Send className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </form>
     </div>
