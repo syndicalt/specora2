@@ -6,9 +6,16 @@ import { getApiBase } from "@/lib/runtimeApi";
 import { useShell } from "@/shell/AppContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Plus, Trash2, X, ChevronDown, ChevronRight, Calendar, Clock } from "lucide-react";
+import { Bot, Calendar, ChevronDown, ChevronRight, Clock, Compass, Plus, Send, Sparkles, Square, Trash2, X } from "lucide-react";
 
 const API_URL = getApiBase();
+
+const STARTER_PROMPTS = [
+  { label: "Investigate a CI", prompt: "Help me investigate the currently selected CI and summarize risk, relationships, and recommended next steps." },
+  { label: "Explain this screen", prompt: "Explain what I am looking at and what actions are available from this app." },
+  { label: "Map service impact", prompt: "Help me understand service impact for the current CI or service map context." },
+  { label: "Draft remediation", prompt: "Draft a remediation plan using the current platform context." },
+];
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -35,6 +42,12 @@ interface AppCapabilityGroup {
   capabilities: Capability[];
 }
 
+type ContextChip = {
+  key: string;
+  label: string;
+  detail?: string;
+};
+
 function parseActions(text: string) {
   const actionRegex = /\[\[action\|([^|]+)\|([^|]+)\|([^\[\]]+)\]\]/g;
   const actions: { type: string; payload: string; label: string }[] = [];
@@ -44,6 +57,30 @@ function parseActions(text: string) {
   }
   const cleanText = text.replace(actionRegex, "").trim();
   return { cleanText, actions };
+}
+
+function appLabel(value: string | undefined) {
+  if (!value || value === "none") return "No active app";
+  return value
+    .replace(/^builtin_/, "")
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function contextChips(uiContext: Record<string, any>, activeApp: string): ContextChip[] {
+  const chips: ContextChip[] = [{ key: "activeApp", label: appLabel(activeApp), detail: "View" }];
+  if (uiContext.selectedCI) {
+    chips.push({
+      key: "selectedCI",
+      label: uiContext.selectedCI.name || uiContext.selectedCI.id,
+      detail: uiContext.selectedCI.class || "Selected CI",
+    });
+  }
+  if (uiContext.selectedRootCI) chips.push({ key: "selectedRootCI", label: uiContext.selectedRootCI, detail: "Service root" });
+  if (uiContext.focusedCI) chips.push({ key: "focusedCI", label: uiContext.focusedCI, detail: "Focused CI" });
+  return chips.filter((chip, index, list) => list.findIndex((item) => item.key === chip.key && item.label === chip.label) === index);
 }
 
 function sanitizeXml(text: string): string {
@@ -120,12 +157,15 @@ export function ChatOverlay() {
   const [capabilityGroups, setCapabilityGroups] = useState<AppCapabilityGroup[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const shell = useShell();
   const [uiContext, setUiContext] = useState<Record<string, any>>({});
   const [forceDatePicker, setForceDatePicker] = useState(false);
   const doSendRef = useRef<(text: string) => Promise<void>>(async () => {});
+  const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
+  const chips = contextChips(uiContext, activeApp);
 
   // Auto-focus input on mount (panel opened) and when session changes
   useEffect(() => {
@@ -303,6 +343,21 @@ export function ChatOverlay() {
     }
   }
 
+  function removeContextChip(key: string) {
+    setUiContext((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      if (key === "activeApp") delete next.activeApp;
+      return next;
+    });
+  }
+
+  function stopResponse() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+  }
+
   const doSend = useCallback(async (text: string) => {
     const userMsg = text.trim();
     if (!userMsg || loading) return;
@@ -323,7 +378,6 @@ export function ChatOverlay() {
 
     const apiMessages = newMessages.map((m) => ({ role: m.role, content: m.text }));
 
-    const activeApp = shell.state.activeCanvasId || shell.state.focusedWindowId || uiContext.activeApp || "none";
     const contextParts: string[] = [`Active app/view: ${activeApp}`];
     if (uiContext.selectedRootCI) contextParts.push(`Selected root CI in Service Map: ${uiContext.selectedRootCI}`);
     if (uiContext.focusedCI) contextParts.push(`Focused CI in CMDB Explorer: ${uiContext.focusedCI}`);
@@ -333,6 +387,7 @@ export function ChatOverlay() {
     // Use non-streaming endpoint for reliable tool calling
     try {
       const controller = new AbortController();
+      abortRef.current = controller;
       const timeoutId = setTimeout(() => controller.abort(), 60000);
 
       const res = await authFetch(`${API_URL}/api/chat`, {
@@ -364,19 +419,34 @@ export function ChatOverlay() {
         await loadSessions();
       }
     } catch (err: any) {
+      if (err?.name === "AbortError") {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: "Stopped." },
+        ]);
+        return;
+      }
       setMessages((prev) => [
         ...prev,
         { role: "assistant", text: `Error: ${err.message || "Failed to reach AI backend"}` },
       ]);
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
-  }, [messages, loading, sessionId, shell.state.activeCanvasId, shell.state.focusedWindowId, uiContext]);
+  }, [activeApp, messages, loading, sessionId, uiContext]);
   doSendRef.current = doSend;
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     await doSend(input);
+  };
+
+  const handleComposerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void doSend(input);
+    }
   };
 
   const handleAction = (type: string, payload: string) => {
@@ -482,15 +552,18 @@ export function ChatOverlay() {
   const showDatePicker = !loading && forceDatePicker;
 
   return (
-    <div className="flex flex-col h-full w-full bg-gray-900">
+    <div className="flex flex-col h-full w-full bg-gray-950">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="shrink-0 border-b border-gray-800 bg-gray-900/95 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setDropdownOpen((prev) => !prev)}
-              className="flex items-center gap-1.5 text-sm text-gray-300 hover:text-white transition-colors"
+              className="flex items-center gap-2 text-sm text-gray-300 transition-colors hover:text-white"
             >
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-400/10 text-cyan-200">
+                <Bot className="h-4 w-4" />
+              </span>
               <span className="font-medium truncate max-w-[140px]">{currentTitle}</span>
               <ChevronDown className={`w-3.5 h-3.5 transition-transform ${dropdownOpen ? "rotate-180" : ""}`} />
             </button>
@@ -530,23 +603,49 @@ export function ChatOverlay() {
               </div>
             )}
           </div>
+          <button
+            onClick={() => shell.dispatch({ type: "TOGGLE_RIGHT_PANEL" })}
+            className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
+            title="Collapse panel"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
-        <button
-          onClick={() => shell.dispatch({ type: "TOGGLE_RIGHT_PANEL" })}
-          className="text-gray-400 hover:text-white transition-colors"
-          title="Collapse panel"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        {chips.length > 0 && (
+          <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5">
+            {chips.map((chip) => (
+              <span
+                key={`${chip.key}:${chip.label}`}
+                className="inline-flex max-w-[220px] shrink-0 items-center gap-1.5 rounded-full border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-300"
+                title={chip.detail ? `${chip.detail}: ${chip.label}` : chip.label}
+              >
+                <span className="truncate">
+                  {chip.detail && <span className="text-gray-500">{chip.detail}: </span>}
+                  {chip.label}
+                </span>
+                {chip.key !== "activeApp" && (
+                  <button
+                    type="button"
+                    onClick={() => removeContextChip(chip.key)}
+                    className="rounded-full p-0.5 text-gray-500 hover:bg-gray-800 hover:text-gray-200"
+                    aria-label={`Remove ${chip.label} context`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
         {messages.map((m, i) => {
           if (m.role === "user") {
             return (
               <div key={i} className="flex justify-end">
-                <div className="px-3 py-2 rounded-lg text-sm max-w-[80%] whitespace-pre-wrap bg-indigo-600 text-white">
+                <div className="max-w-[82%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-cyan-500 px-3 py-2 text-sm text-gray-950 shadow-lg shadow-cyan-950/20">
                   {m.text}
                 </div>
               </div>
@@ -563,9 +662,9 @@ export function ChatOverlay() {
 
           return (
             <div key={i} className="flex justify-start">
-              <div className="max-w-[95%] space-y-2">
+              <div className="max-w-[96%] space-y-2">
                 {cleanText && (
-                  <div className="px-3 py-2 rounded-lg text-sm bg-gray-800 text-gray-200 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_code]:bg-gray-950 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:text-xs [&_a]:text-indigo-400 [&_a]:underline [&_h1]:text-lg [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_blockquote]:border-l-2 [&_blockquote]:border-gray-600 [&_blockquote]:pl-3 [&_blockquote]:italic [&_hr]:border-gray-700">
+                  <div className="rounded-2xl rounded-bl-md border border-gray-800 bg-gray-900/90 px-3.5 py-3 text-sm leading-6 text-gray-200 shadow-sm [&_a]:text-cyan-300 [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-gray-600 [&_blockquote]:pl-3 [&_blockquote]:italic [&_code]:rounded [&_code]:bg-gray-950 [&_code]:px-1 [&_code]:py-0.5 [&_h1]:text-lg [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_hr]:border-gray-700 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:text-xs [&_ul]:list-disc [&_ul]:pl-4">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {cleanText}
                     </ReactMarkdown>
@@ -577,7 +676,7 @@ export function ChatOverlay() {
                       <button
                         key={idx}
                         onClick={() => handleAction(a.type, a.payload)}
-                        className="px-3 py-1.5 rounded-full text-xs bg-indigo-900/40 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-900/60 transition-colors"
+                        className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs text-cyan-200 transition-colors hover:bg-cyan-500/20"
                       >
                         {a.label}
                       </button>
@@ -591,6 +690,29 @@ export function ChatOverlay() {
             </div>
           );
         })}
+        {!loading && messages.filter((m) => m.role === "user").length === 0 && (
+          <div className="rounded-2xl border border-gray-800 bg-gray-900/70 p-3 shadow-sm">
+            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-gray-200">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-200">
+                <Sparkles className="h-4 w-4" />
+              </span>
+              Start with platform context
+            </div>
+            <div className="grid gap-2">
+              {STARTER_PROMPTS.map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={() => doSend(item.prompt)}
+                  className="group flex items-center gap-2 rounded-xl border border-gray-800 bg-gray-950 px-3 py-2 text-left text-sm text-gray-300 transition-colors hover:border-cyan-500/40 hover:text-gray-100"
+                >
+                  <Compass className="h-4 w-4 shrink-0 text-gray-500 group-hover:text-cyan-300" />
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {/* Capability accordion — shown when conversation is fresh */}
         {!loading && messages.filter((m) => m.role === "user").length === 0 && capabilityGroups.length > 0 && (
           <div className="mt-2 space-y-1">
@@ -635,8 +757,9 @@ export function ChatOverlay() {
 
         {loading && (
           <div className="flex justify-start">
-            <div className="px-3 py-2 rounded-lg text-sm bg-gray-800 text-gray-400 animate-pulse">
-              Thinking...
+            <div className="flex items-center gap-2 rounded-2xl rounded-bl-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-400">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
+              Working with platform context...
             </div>
           </div>
         )}
@@ -644,30 +767,59 @@ export function ChatOverlay() {
       </div>
 
       {/* Input */}
-      <form onSubmit={sendMessage} className="p-3 border-t border-gray-800 shrink-0">
-        <div className="relative">
-          <input
+      <form onSubmit={sendMessage} className="shrink-0 border-t border-gray-800 bg-gray-900/95 p-3">
+        <div className="rounded-2xl border border-gray-700 bg-gray-950 p-2 shadow-inner shadow-black/30 transition-colors focus-within:border-cyan-500/70">
+          <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleComposerKeyDown}
             placeholder="Ask about your CMDB, incidents, or services..."
-            className="w-full px-3 py-2.5 rounded-lg bg-gray-950 border border-gray-700 focus:outline-none focus:border-indigo-500 text-sm transition-colors pr-10"
+            className="max-h-36 min-h-[48px] w-full resize-none bg-transparent px-2 py-2 text-sm leading-5 text-gray-100 outline-none placeholder:text-gray-600"
             disabled={loading}
           />
-          {showDatePicker && (
-            <button
-              type="button"
-              onClick={() => {
-                const today = new Date().toISOString().slice(0, 10);
-                setInput((prev) => (prev ? prev : today));
-                inputRef.current?.focus();
-              }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-indigo-400 transition-colors"
-              title="Insert today's date"
-            >
-              <Calendar className="w-4 h-4" />
-            </button>
-          )}
+          <div className="flex items-center justify-between gap-2 border-t border-gray-800 px-1 pt-2">
+            <div className="flex items-center gap-1.5 text-[11px] text-gray-600">
+              <span>Enter to send</span>
+              <span className="text-gray-800">/</span>
+              <span>Shift+Enter newline</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {showDatePicker && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const today = new Date().toISOString().slice(0, 10);
+                    setInput((prev) => (prev ? prev : today));
+                    inputRef.current?.focus();
+                  }}
+                  className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-900 hover:text-cyan-300"
+                  title="Insert today's date"
+                >
+                  <Calendar className="h-4 w-4" />
+                </button>
+              )}
+              {loading ? (
+                <button
+                  type="button"
+                  onClick={stopResponse}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-red-400/30 bg-red-500/10 text-red-200 transition-colors hover:bg-red-500/20"
+                  title="Stop response"
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!input.trim()}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-400 text-gray-950 transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-gray-800 disabled:text-gray-600"
+                  title="Send message"
+                >
+                  <Send className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </form>
     </div>
