@@ -11,6 +11,8 @@ import {
   resultCardsFromStoredMessages,
   resultCardForTool,
   sanitizeXml,
+  screenContextForApp,
+  screenContextLines,
   toolLabel,
   updateWorkStep,
 } from "./ChatOverlay.helpers";
@@ -33,6 +35,37 @@ describe("ChatOverlay helpers", () => {
     expect(contextChips({ selectedCI: { id: "ci-1", name: "nb-lenovo", class: "Computer" } }, "service-map")).toEqual([
       { key: "activeApp", label: "Service Map", detail: "View" },
       { key: "selectedCI", label: "nb-lenovo", detail: "Computer" },
+    ]);
+  });
+
+  it("builds accurate admin console screen context", () => {
+    const context = screenContextForApp("admin-console", {});
+
+    expect(context.appName).toBe("Admin Console");
+    expect(context.purpose).toContain("Governance workspace");
+    expect(context.primaryActions).toContain("Manage platform users and roles");
+    expect(context.boundaries?.join(" ")).toContain("not the CMDB Explorer");
+  });
+
+  it("uses dynamic screen context from active apps", () => {
+    const lines = screenContextLines("admin-console", {
+      screenContext: {
+        appId: "admin-console",
+        appName: "Admin Console",
+        screenName: "Edge Enrollment",
+        purpose: "Issue enrollment tokens and review collectors.",
+        primaryActions: ["Issue enrollment tokens", "Delete collector registrations"],
+        state: { collectors: 2 },
+      },
+    });
+
+    expect(lines).toEqual([
+      "Active app/view: admin-console",
+      "Screen: Admin Console - Edge Enrollment",
+      "Screen purpose: Issue enrollment tokens and review collectors.",
+      "Available screen actions: Issue enrollment tokens; Delete collector registrations",
+      expect.stringContaining("Screen boundaries: It is not the CMDB Explorer"),
+      "Screen state: collectors=2",
     ]);
   });
 

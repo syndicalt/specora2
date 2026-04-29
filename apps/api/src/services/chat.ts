@@ -910,12 +910,14 @@ async function callLlmStream(
   _provara: any,
   onEvent: (event: ChatStreamEvent) => void,
   trace?: Trace | SessionTrace,
+  round = 0,
   includeTools = true,
   user?: { role?: string }
 ): Promise<{ content: string; toolCalls?: any[] }> {
   const tools = includeTools ? await getAllTools(_fastify, user) : [];
   const model = usedProvara ? "provara-router" : "gpt-4o-mini";
   const provider = usedProvara ? "provara" : "openai";
+  const toolChoice = (includeTools && tools.length > 0) ? (round === 0 ? "required" : "auto") : undefined;
 
   const span = trace?.span("llm.chat.stream", "llm", {
     model,
@@ -928,6 +930,7 @@ async function callLlmStream(
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
       })),
       temperature: 0.3,
+      toolChoice,
       toolCount: tools.length,
     },
   });
@@ -962,7 +965,7 @@ async function callLlmStream(
           model: "provara-router",
           messages,
           tools: tools.length > 0 ? tools : undefined,
-          tool_choice: tools.length > 0 ? "auto" : undefined,
+          tool_choice: toolChoice,
           temperature: 0.3,
           requires_structured_output: true,
           stream: true,
@@ -1032,7 +1035,7 @@ async function callLlmStream(
       const stream = await openai!.chat.completions.create({
         model: "gpt-4o-mini",
         messages,
-        ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
+        ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
         temperature: 0.3,
         stream: true,
       });
@@ -1126,7 +1129,7 @@ export async function chatStream(
     // Always pass tools (matching non-streaming behavior). The model uses them
     // only when it chooses to; omitting them in later rounds can confuse
     // Provara's router when tool_calls exist in the history.
-    let { content, toolCalls } = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, true, user);
+    let { content, toolCalls } = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, round, true, user);
 
     // Fallback: check for XML and action-directive tool calls BEFORE sanitizing content.
     const rawContent = content || "";
@@ -1157,7 +1160,7 @@ export async function chatStream(
       // in streaming mode when tools are present, even for simple prompts.
       if (!content) {
         fastify.log.warn({ round }, "chatStream empty content — retrying without tools");
-        const retry = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, false, user);
+        const retry = await callLlmStream(currentMessages, fastify, usedProvara, openai, provara, onEvent, trace, round, false, user);
         const retryRaw = retry.content || "";
         const retryXml = parseXmlToolCalls(retryRaw);
         if (retryXml && (!retry.toolCalls || retry.toolCalls.length === 0)) {
@@ -1260,7 +1263,7 @@ export async function chatStream(
     ...currentMessages,
     { role: "user", content: "Please provide a final answer based on the tool results above." },
   ];
-  const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, false, user);
+  const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, MAX_TOOL_ROUNDS, false, user);
   let sanitizedFinal = sanitizeAssistantContent(finalContent || "");
 
   // Auto-append action directives if the model fetched data but forgot to offer the visual
