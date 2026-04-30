@@ -1,9 +1,34 @@
 import { GraphQLError } from "graphql";
 import bcrypt from "bcryptjs";
 import { getPasswordPolicy, passwordPolicyMessage, validatePasswordAgainstPolicy } from "../services/passwordPolicy";
-import { mapUserRow } from "./resolverSupport";
+import { mapUserRow, type UserRow } from "./resolverSupport";
 
-async function findUserByContext(pg: any, user: any) {
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type AuthenticatedUser = {
+  id?: string;
+  email?: string;
+};
+
+type UserResolverContext = {
+  pg: QueryablePg;
+  user?: AuthenticatedUser | null;
+};
+
+type PreferencesInput = {
+  preferences: Record<string, unknown>;
+};
+
+function requireUserId(context: UserResolverContext): string {
+  if (!context.user?.id) {
+    throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
+  }
+  return context.user.id;
+}
+
+async function findUserByContext(pg: QueryablePg, user: AuthenticatedUser): Promise<UserRow | null> {
   let result = await pg.query(
     `SELECT u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required,
             COUNT(oa.id)::int AS oauth_accounts
@@ -24,29 +49,27 @@ async function findUserByContext(pg: any, user: any) {
       [user.email]
     );
   }
-  return result.rows[0] || null;
+  return (result.rows[0] as UserRow | undefined) || null;
 }
 
 export const userQueries = {
-  async me(_parent: any, _args: any, context: any) {
+  async me(_parent: unknown, _args: Record<string, never>, context: UserResolverContext) {
     if (!context.user?.id) return null;
     const user = await findUserByContext(context.pg, context.user);
     return user ? mapUserRow(user) : null;
   },
 
-  async passwordPolicy(_parent: any, _args: any, context: any) {
+  async passwordPolicy(_parent: unknown, _args: Record<string, never>, context: UserResolverContext) {
     return getPasswordPolicy(context.pg);
   },
 };
 
 export const userMutations = {
-  async updatePreferences(_parent: any, args: { preferences: any }, context: any) {
-    if (!context.user?.id) {
-      throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
-    }
+  async updatePreferences(_parent: unknown, args: PreferencesInput, context: UserResolverContext) {
+    const userId = requireUserId(context);
     let result = await context.pg.query(
       "UPDATE users SET preferences = COALESCE(preferences, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2 RETURNING id, name, email, preferences",
-      [JSON.stringify(args.preferences), context.user.id]
+      [JSON.stringify(args.preferences), userId]
     );
     if (!result.rows.length && context.user?.email) {
       result = await context.pg.query(
@@ -57,13 +80,11 @@ export const userMutations = {
     if (!result.rows.length) {
       throw new GraphQLError("User not found", { extensions: { code: "NOT_FOUND" } });
     }
-    return result.rows[0];
+    return result.rows[0] as UserRow;
   },
 
-  async updateProfile(_parent: any, args: { name: string }, context: any) {
-    if (!context.user?.id) {
-      throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
-    }
+  async updateProfile(_parent: unknown, args: { name: string }, context: UserResolverContext) {
+    const userId = requireUserId(context);
     const name = String(args.name || "").trim();
     if (name.length < 2 || name.length > 120) {
       throw new GraphQLError("Display name must be between 2 and 120 characters", { extensions: { code: "BAD_USER_INPUT" } });
@@ -77,7 +98,7 @@ export const userMutations = {
        FROM updated u
        LEFT JOIN oauth_accounts oa ON oa.user_id = u.id
        GROUP BY u.id, u.name, u.email, u.preferences, u.role, u.password_hash, u.password_change_required`,
-      [name, context.user.id]
+      [name, userId]
     );
     if (!result.rows.length && context.user?.email) {
       result = await context.pg.query(
@@ -95,13 +116,11 @@ export const userMutations = {
     if (!result.rows.length) {
       throw new GraphQLError("User not found", { extensions: { code: "NOT_FOUND" } });
     }
-    return mapUserRow(result.rows[0]);
+    return mapUserRow(result.rows[0] as UserRow);
   },
 
-  async changePassword(_parent: any, args: { currentPassword: string; newPassword: string }, context: any) {
-    if (!context.user?.id) {
-      throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
-    }
+  async changePassword(_parent: unknown, args: { currentPassword: string; newPassword: string }, context: UserResolverContext) {
+    const userId = requireUserId(context);
     const currentPassword = String(args.currentPassword || "");
     const newPassword = String(args.newPassword || "");
     const policy = await getPasswordPolicy(context.pg);
@@ -113,7 +132,7 @@ export const userMutations = {
       throw new GraphQLError("New password must be different from the current password", { extensions: { code: "BAD_USER_INPUT" } });
     }
 
-    const user = await findUserByContext(context.pg, context.user);
+    const user = await findUserByContext(context.pg, { id: userId, email: context.user?.email });
     if (!user) throw new GraphQLError("User not found", { extensions: { code: "NOT_FOUND" } });
     const currentHash = String(user.password_hash || "");
     if (!currentHash || currentHash.startsWith("oauth:") || currentHash.startsWith("sso:")) {
@@ -134,6 +153,6 @@ export const userMutations = {
        RETURNING id, name, email, preferences, role, password_hash, password_change_required, 0::int AS oauth_accounts`,
       [nextHash, user.id]
     );
-    return mapUserRow(result.rows[0]);
+    return mapUserRow(result.rows[0] as UserRow);
   },
 };

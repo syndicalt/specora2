@@ -22,7 +22,18 @@ export function mapEnvironmentChoice(row: any) {
   };
 }
 
-export function mapUserRow(row: any) {
+export type UserRow = {
+  id: string;
+  name?: string | null;
+  email?: string | null;
+  preferences?: Record<string, unknown> | null;
+  role?: string | null;
+  password_hash?: string | null;
+  password_change_required?: boolean | null;
+  oauth_accounts?: number | string | null;
+};
+
+export function mapUserRow(row: UserRow) {
   const passwordHash = String(row.password_hash || "");
   const federatedOnly = passwordHash.startsWith("oauth:") || passwordHash.startsWith("sso:");
   const oauthAccounts = Number(row.oauth_accounts || 0);
