@@ -1,10 +1,80 @@
 import neo4j from "neo4j-driver";
+import type { Driver, Node, Relationship } from "neo4j-driver";
 import { parseNode } from "./ciNode";
 import { relationshipPattern } from "./relationshipTypes";
 import { boundedHopCount } from "./resolverSupport";
 
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type GraphResolverContext = {
+  neo4j: Driver;
+  pg: QueryablePg;
+};
+
+type ServiceMapArgs = {
+  rootId: string;
+  classFilter?: string[];
+  environmentFilter?: string[];
+  relationshipFilter?: string[];
+};
+
+type NeighborsArgs = {
+  nodeId: string;
+  types?: string[];
+  limit?: number;
+};
+
+type DependencyPathArgs = {
+  fromId: string;
+  toId: string;
+  maxHops?: number;
+};
+
+type ConfigurationItem = ReturnType<typeof parseNode>;
+
+type GraphEdge = {
+  id: string;
+  type: string;
+  sourceId: string;
+  targetId: string;
+};
+
+type GraphResult = {
+  root?: ConfigurationItem | null;
+  nodes: ConfigurationItem[];
+  edges: GraphEdge[];
+};
+
+type PathRelationshipProjection = {
+  reltype: string;
+  sourceid: string;
+  targetid: string;
+};
+
+function nodeFromRecord(value: unknown): ConfigurationItem {
+  return parseNode((value as Node).properties);
+}
+
+function relationshipFromRecord(value: unknown): Relationship {
+  return value as Relationship;
+}
+
+function addEdge(edges: GraphEdge[], edgeSet: Set<string>, sourceId: string, targetId: string, type: string) {
+  const edgeKey = `${sourceId}-${targetId}-${type}`;
+  if (edgeSet.has(edgeKey)) return;
+  edgeSet.add(edgeKey);
+  edges.push({
+    id: edgeKey,
+    type,
+    sourceId,
+    targetId,
+  });
+}
+
 export const graphQueries = {
-  async serviceMap(_parent: any, args: { rootId: string; classFilter?: string[]; environmentFilter?: string[]; relationshipFilter?: string[] }, context: any) {
+  async serviceMap(_parent: unknown, args: ServiceMapArgs, context: GraphResolverContext): Promise<GraphResult> {
     const session = context.neo4j.session();
     try {
       const rootResult = await session.run(
@@ -12,7 +82,7 @@ export const graphQueries = {
         { rootId: args.rootId }
       );
       const rootRecord = rootResult.records[0];
-      const rootNode = rootRecord ? parseNode(rootRecord.get("root").properties) : null;
+      const rootNode = rootRecord ? nodeFromRecord(rootRecord.get("root")) : null;
 
       const relTypes = await relationshipPattern(context.pg, args.relationshipFilter);
 
@@ -35,37 +105,28 @@ WHERE type(rel) IN $relationshipFilter`;
 RETURN rel, src, tgt
 LIMIT 50`;
 
-      const params: any = { rootId: args.rootId };
+      const params: Record<string, unknown> = { rootId: args.rootId };
       if (args.classFilter?.length) params.classFilter = args.classFilter;
       if (args.environmentFilter?.length) params.environmentFilter = args.environmentFilter;
       if (args.relationshipFilter?.length) params.relationshipFilter = args.relationshipFilter;
 
       const result = await session.run(query, params);
 
-      const nodesMap = new Map();
+      const nodesMap = new Map<string, ConfigurationItem>();
       const edgeSet = new Set<string>();
-      const edges: any[] = [];
+      const edges: GraphEdge[] = [];
 
       if (rootNode) {
         nodesMap.set(rootNode.id, rootNode);
       }
 
       for (const record of result.records) {
-        const rel = record.get("rel");
-        const src = parseNode(record.get("src").properties);
-        const tgt = parseNode(record.get("tgt").properties);
+        const rel = relationshipFromRecord(record.get("rel"));
+        const src = nodeFromRecord(record.get("src"));
+        const tgt = nodeFromRecord(record.get("tgt"));
         nodesMap.set(src.id, src);
         nodesMap.set(tgt.id, tgt);
-        const edgeKey = `${src.id}-${tgt.id}-${rel.type}`;
-        if (!edgeSet.has(edgeKey)) {
-          edgeSet.add(edgeKey);
-          edges.push({
-            id: edgeKey,
-            type: rel.type,
-            sourceId: src.id,
-            targetId: tgt.id,
-          });
-        }
+        addEdge(edges, edgeSet, src.id, tgt.id, rel.type);
       }
       return {
         root: nodesMap.get(args.rootId) || rootNode,
@@ -77,14 +138,14 @@ LIMIT 50`;
     }
   },
 
-  async neighbors(_parent: any, args: { nodeId: string; types?: string[]; limit?: number }, context: any) {
+  async neighbors(_parent: unknown, args: NeighborsArgs, context: GraphResolverContext): Promise<GraphResult> {
     const session = context.neo4j.session();
     try {
       const rootResult = await session.run(
         `MATCH (root:ConfigurationItem {id: $nodeId}) RETURN root`,
         { nodeId: args.nodeId }
       );
-      const rootNode = rootResult.records[0] ? parseNode(rootResult.records[0].get("root").properties) : null;
+      const rootNode = rootResult.records[0] ? nodeFromRecord(rootResult.records[0].get("root")) : null;
 
       const relTypes = await relationshipPattern(context.pg, args.types);
       const limit = args.limit ?? 50;
@@ -98,30 +159,21 @@ LIMIT 50`;
         { nodeId: args.nodeId, limit: neo4j.int(limit) }
       );
 
-      const nodesMap = new Map();
+      const nodesMap = new Map<string, ConfigurationItem>();
       const edgeSet = new Set<string>();
-      const edges: any[] = [];
+      const edges: GraphEdge[] = [];
 
       if (rootNode) {
         nodesMap.set(rootNode.id, rootNode);
       }
 
       for (const record of result.records) {
-        const rel = record.get("rel");
-        const src = parseNode(record.get("src").properties);
-        const tgt = parseNode(record.get("tgt").properties);
+        const rel = relationshipFromRecord(record.get("rel"));
+        const src = nodeFromRecord(record.get("src"));
+        const tgt = nodeFromRecord(record.get("tgt"));
         nodesMap.set(src.id, src);
         nodesMap.set(tgt.id, tgt);
-        const edgeKey = `${src.id}-${tgt.id}-${rel.type}`;
-        if (!edgeSet.has(edgeKey)) {
-          edgeSet.add(edgeKey);
-          edges.push({
-            id: edgeKey,
-            type: rel.type,
-            sourceId: src.id,
-            targetId: tgt.id,
-          });
-        }
+        addEdge(edges, edgeSet, src.id, tgt.id, rel.type);
       }
       return {
         root: rootNode,
@@ -133,7 +185,7 @@ LIMIT 50`;
     }
   },
 
-  async dependencyPath(_parent: any, args: { fromId: string; toId: string; maxHops?: number }, context: any) {
+  async dependencyPath(_parent: unknown, args: DependencyPathArgs, context: GraphResolverContext): Promise<Omit<GraphResult, "root"> | null> {
     const session = context.neo4j.session();
     try {
       const maxHops = boundedHopCount(args.maxHops, 10);
@@ -155,10 +207,10 @@ LIMIT 50`;
       if (!result.records.length) return null;
 
       const record = result.records[0];
-      const pathNodes = record.get("pathNodes").map((node: any) => parseNode(node.properties));
-      const pathRels = record.get("pathRels");
-      const nodesMap = new Map(pathNodes.map((node: any) => [node.id, node]));
-      const edges = pathRels.map((rel: any) => ({
+      const pathNodes = (record.get("pathNodes") as Node[]).map((node) => parseNode(node.properties));
+      const pathRels = record.get("pathRels") as PathRelationshipProjection[];
+      const nodesMap = new Map<string, ConfigurationItem>(pathNodes.map((node) => [node.id, node]));
+      const edges = pathRels.map((rel) => ({
         id: `${rel.sourceid}-${rel.targetid}-${rel.reltype}`,
         type: rel.reltype,
         sourceId: rel.sourceid,
