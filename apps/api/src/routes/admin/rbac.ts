@@ -7,6 +7,83 @@ import { recordAuditEvent } from "../../services/auditLog";
 import { getAllAppToolDefinitions } from "../../services/appTools";
 import { resolveAppToolPolicy } from "../appToolPolicy";
 
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type PermissionRisk = "critical" | "high" | "medium" | "low";
+
+type PermissionTarget = {
+  resource: string;
+  action: string;
+  label: string;
+  description: string;
+  category: string;
+  source: string;
+  risk: PermissionRisk;
+};
+
+type PermissionTargetOverrides = Partial<Omit<PermissionTarget, "resource" | "action">>;
+
+type PermissionGrant = {
+  id?: string;
+  role: string;
+  resource: string;
+  action: string;
+  group_id?: string;
+  group_name?: string;
+  group_slug?: string;
+};
+
+type AccessUser = {
+  id: string;
+  name?: string | null;
+  email?: string | null;
+  role?: string | null;
+};
+
+type IdentityGroupRow = {
+  id: string;
+  name: string;
+  slug?: string | null;
+  description?: string | null;
+  source?: string | null;
+  external_id?: string | null;
+  cmdb_ci_id?: string | null;
+};
+
+type FieldRestriction = { resource: string; tableId?: string; field?: string };
+
+type AccessSubjectBody = { userId?: string; email?: string; role?: string };
+
+type TraceEntry = { status: "allow" | "deny" | "info"; label: string; detail: string };
+
+type RequiredPermissionTarget = {
+  resource: string;
+  action: string;
+  label: string;
+  risk: PermissionRisk;
+  apps: Array<{ id: string; name: string }>;
+};
+
+type RbacRequestBody = AccessSubjectBody & {
+  resource?: string;
+  action?: string;
+  appId?: string;
+  toolName?: string;
+  tableId?: string;
+  fieldName?: string;
+  accessMode?: string;
+};
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : fallback;
+}
+
+function actorId(user: unknown) {
+  return typeof user === "object" && user !== null && "id" in user ? String(user.id) : undefined;
+}
+
 const CORE_PERMISSION_TARGETS = [
   permissionTarget("users", "read", {
     label: "User Management",
@@ -87,7 +164,7 @@ const CORE_PERMISSION_TARGETS = [
   }),
 ];
 
-function permissionRisk(resource: string, action: string) {
+function permissionRisk(resource: string, action: string): PermissionRisk {
   if (resource === "rbac" || resource === "system-properties" || resource === "identity" || resource === "identity-groups" || resource === "credentials") return "critical";
   if (resource.startsWith("field:") && action === "write") return "high";
   if (resource.startsWith("field:")) return "medium";
@@ -146,7 +223,7 @@ function permissionDescription(resource: string, action: string, label?: string)
   return `Allows a role to ${actionPhrase(action)} ${label || resource}.`;
 }
 
-function permissionTarget(resource: string, action: string, overrides: Record<string, any> = {}) {
+function permissionTarget(resource: string, action: string, overrides: PermissionTargetOverrides = {}): PermissionTarget {
   const label = overrides.label || resource;
   return {
     resource,
@@ -161,7 +238,18 @@ function permissionTarget(resource: string, action: string, overrides: Record<st
 
 type AdminTableField = { name: string; label: string; writable: boolean };
 
-function tableFieldsForExplanation(table: any): AdminTableField[] {
+type AdminTableLike = {
+  id: string;
+  name: string;
+  label: string;
+  provider?: string;
+  category?: string;
+  nameField?: string;
+  hasNumber?: boolean;
+  attributes?: Array<{ name: string; displayName?: string | null }>;
+};
+
+function tableFieldsForExplanation(table: AdminTableLike): AdminTableField[] {
   const seen = new Set<string>();
   const fields: AdminTableField[] = [];
   const add = (field: AdminTableField) => {
@@ -179,9 +267,9 @@ function tableFieldsForExplanation(table: any): AdminTableField[] {
   return fields;
 }
 
-async function loadFieldRestrictions(pg: any): Promise<Array<{ resource: string; tableId?: string; field?: string }>> {
+async function loadFieldRestrictions(pg: QueryablePg): Promise<FieldRestriction[]> {
   const result = await pg.query("SELECT value FROM system_properties WHERE key = 'security.field_restrictions'");
-  const raw = result.rows[0]?.value;
+  const raw = (result.rows[0] as { value?: string } | undefined)?.value;
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -198,7 +286,7 @@ async function loadFieldRestrictions(pg: any): Promise<Array<{ resource: string;
         }
         return null;
       })
-      .filter((item): item is { resource: string; tableId?: string; field?: string } => Boolean(item?.resource));
+      .filter((item): item is FieldRestriction => Boolean(item?.resource));
   } catch {
     return [];
   }
@@ -208,7 +296,7 @@ function normalizeFieldRestriction(tableId: string, field: string) {
   return { tableId, field, resource: `field:${tableId}.${field}` };
 }
 
-async function saveFieldRestrictions(pg: any, restrictions: Array<{ resource: string; tableId?: string; field?: string }>) {
+async function saveFieldRestrictions(pg: QueryablePg, restrictions: FieldRestriction[]) {
   const normalized = Array.from(new Map(restrictions
     .filter((item) => item.resource?.startsWith("field:"))
     .map((item) => [item.resource, item])).values())
@@ -232,15 +320,15 @@ function permissionLabel(value: string) {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
-async function roleHasGrant(pg: any, role: string, resource: string, action: string) {
+async function roleHasGrant(pg: QueryablePg, role: string, resource: string, action: string): Promise<PermissionGrant | null> {
   const result = await pg.query(
     "SELECT id, role, resource, action FROM app_permissions WHERE role = $1 AND resource = $2 AND action = $3",
     [role, resource, action]
   );
-  return result.rows[0] || null;
+  return (result.rows[0] as PermissionGrant | undefined) || null;
 }
 
-async function userGroupGrants(pg: any, userId?: string | null) {
+async function userGroupGrants(pg: QueryablePg, userId?: string | null): Promise<{ groups: IdentityGroupRow[]; grants: PermissionGrant[] }> {
   if (!userId) return { groups: [], grants: [] };
   const groups = await pg.query(
     `SELECT g.id, g.name, g.slug, g.description, g.source, g.external_id, g.cmdb_ci_id
@@ -259,13 +347,13 @@ async function userGroupGrants(pg: any, userId?: string | null) {
      ORDER BY g.name, gp.resource, gp.action`,
     [userId]
   );
-  return { groups: groups.rows, grants: grants.rows };
+  return { groups: groups.rows as IdentityGroupRow[], grants: grants.rows as PermissionGrant[] };
 }
 
-function evaluateGrantWithGroups(role: string, grants: any[], groupGrants: any[], resource: string, action: string) {
+function evaluateGrantWithGroups(role: string, grants: PermissionGrant[], groupGrants: PermissionGrant[], resource: string, action: string) {
   const base = evaluateGrant(role, grants, resource, action);
   if (base.allowed) return { ...base, inheritedGrant: null };
-  const inheritedGrant = groupGrants.find((grant: any) => grant.resource === resource && grant.action === action) || null;
+  const inheritedGrant = groupGrants.find((grant) => grant.resource === resource && grant.action === action) || null;
   if (inheritedGrant) {
     return { allowed: true, reason: "inherited_group_grant", directGrant: null, inheritedGrant };
   }
@@ -282,13 +370,13 @@ async function analyzeAccess(
     return { error: "resource and action required" };
   }
 
-  let user: any = null;
+  let user: AccessUser | null = null;
   if (body.userId) {
     const result = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE id = $1", [body.userId]);
-    user = result.rows[0] || null;
+    user = (result.rows[0] as AccessUser | undefined) || null;
   } else if (body.email) {
     const result = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE email = $1", [body.email]);
-    user = result.rows[0] || null;
+    user = (result.rows[0] as AccessUser | undefined) || null;
   }
 
   const role = body.role || user?.role;
@@ -296,16 +384,16 @@ async function analyzeAccess(
     return { error: "user or role required" };
   }
 
-  const trace: Array<{ status: "allow" | "deny" | "info"; label: string; detail: string }> = [];
+  const trace: TraceEntry[] = [];
   const grantsResult = await fastify.pg.query(
     "SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY resource, action",
     [role]
   );
-  const grants = grantsResult.rows;
+  const grants = grantsResult.rows as PermissionGrant[];
   const inherited = await userGroupGrants(fastify.pg, user?.id);
-  const directGrant = grants.find((grant: any) => grant.resource === resource && grant.action === action) ||
+  const directGrant = grants.find((grant) => grant.resource === resource && grant.action === action) ||
     await roleHasGrant(fastify.pg, role, resource, action);
-  const inheritedGrant = inherited.grants.find((grant: any) => grant.resource === resource && grant.action === action) || null;
+  const inheritedGrant = inherited.grants.find((grant) => grant.resource === resource && grant.action === action) || null;
 
   let allowed = false;
   let reason = "missing_permission";
@@ -363,24 +451,21 @@ async function analyzeAccess(
   };
 }
 
-async function resolveAccessSubject(
-  fastify: FastifyInstance,
-  body: { userId?: string; email?: string; role?: string }
-) {
-  let user: any = null;
+async function resolveAccessSubject(fastify: FastifyInstance, body: AccessSubjectBody) {
+  let user: AccessUser | null = null;
   if (body.userId) {
     const result = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE id = $1", [body.userId]);
-    user = result.rows[0] || null;
+    user = (result.rows[0] as AccessUser | undefined) || null;
   } else if (body.email) {
     const result = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE email = $1", [body.email]);
-    user = result.rows[0] || null;
+    user = (result.rows[0] as AccessUser | undefined) || null;
   }
   const role = body.role || user?.role;
   return { user, role };
 }
 
-function evaluateGrant(role: string, grants: any[], resource: string, action: string) {
-  const directGrant = grants.find((grant: any) => grant.resource === resource && grant.action === action) || null;
+function evaluateGrant(role: string, grants: PermissionGrant[], resource: string, action: string) {
+  const directGrant = grants.find((grant) => grant.resource === resource && grant.action === action) || null;
   if (role === "security_admin") {
     return { allowed: true, reason: "security_admin_implicit_allow", directGrant };
   }
@@ -501,14 +586,14 @@ type RegisteredAppTool = {
   toolName: string;
   fullName: string;
   description: string;
-  parameters: any;
+  parameters: unknown;
   resource: string;
   action: string;
 };
 
 function registeredAppTools(): RegisteredAppTool[] {
   return getAllAppToolDefinitions()
-    .map((tool: any) => {
+    .map((tool: { name: string; description: string; parameters: unknown }) => {
       const parts = toolNameParts(tool.name);
       if (!parts) return null;
       const policy = resolveAppToolPolicy(parts.appId, parts.toolName);
@@ -531,9 +616,9 @@ async function buildPolicyDrift(fastify: FastifyInstance) {
     fastify.pg.query("SELECT id, role, resource, action FROM app_permissions ORDER BY role, resource, action"),
     getAllRegisteredApps(fastify),
   ]);
-  const grants = permissionsResult.rows;
-  const roles = Array.from(new Set(grants.map((grant: any) => grant.role).filter(Boolean))).sort();
-  const requiredTargets = new Map<string, any>();
+  const grants = permissionsResult.rows as PermissionGrant[];
+  const roles = Array.from(new Set(grants.map((grant) => grant.role).filter(Boolean))).sort();
+  const requiredTargets = new Map<string, RequiredPermissionTarget>();
 
   for (const app of apps) {
     for (const permission of app.permissions || []) {
@@ -561,15 +646,15 @@ async function buildPolicyDrift(fastify: FastifyInstance) {
       risk: permissionRisk(tool.resource, tool.action),
       apps: [],
     };
-    if (!current.apps.some((app: any) => app.id === tool.appId)) {
+    if (!current.apps.some((app) => app.id === tool.appId)) {
       current.apps.push({ id: tool.appId, name: tool.appId });
     }
     requiredTargets.set(key, current);
   }
 
   const orphaned = grants
-    .filter((grant: any) => !requiredTargets.has(`${grant.resource}\u0000${grant.action}`) && !grant.resource.startsWith("field:"))
-    .map((grant: any) => ({
+    .filter((grant) => !requiredTargets.has(`${grant.resource}\u0000${grant.action}`) && !grant.resource.startsWith("field:"))
+    .map((grant) => ({
       id: grant.id,
       role: grant.role,
       resource: grant.resource,
@@ -580,7 +665,7 @@ async function buildPolicyDrift(fastify: FastifyInstance) {
 
   const roleCoverage = roles.map((role) => {
     const missing = Array.from(requiredTargets.values())
-      .filter((target) => !evaluateGrant(role, grants.filter((grant: any) => grant.role === role), target.resource, target.action).allowed)
+      .filter((target) => !evaluateGrant(role, grants.filter((grant) => grant.role === role), target.resource, target.action).allowed)
       .map((target) => ({ role, resource: target.resource, action: target.action, risk: target.risk, apps: target.apps }));
     return {
       role,
@@ -592,9 +677,9 @@ async function buildPolicyDrift(fastify: FastifyInstance) {
   });
 
   const missingCritical = roleCoverage.flatMap((coverage) =>
-    coverage.missing.filter((item: any) => item.risk === "critical" || item.risk === "high")
+    coverage.missing.filter((item) => item.risk === "critical" || item.risk === "high")
   );
-  const duplicateCount = grants.length - new Set(grants.map((grant: any) => `${grant.role}:${grant.resource}:${grant.action}`)).size;
+  const duplicateCount = grants.length - new Set(grants.map((grant) => `${grant.role}:${grant.resource}:${grant.action}`)).size;
 
   return {
     generatedAt: new Date().toISOString(),
@@ -828,13 +913,15 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
         getAllRegisteredApps(fastify),
       ]);
       const tables = await getTables(fastify).catch(() => []);
+      const users = usersResult.rows as AccessUser[];
+      const permissions = permissionsResult.rows as PermissionGrant[];
       const roles = Array.from(new Set([
-        ...usersResult.rows.map((user: any) => user.role).filter(Boolean),
-        ...permissionsResult.rows.map((permission: any) => permission.role).filter(Boolean),
+        ...users.map((user) => user.role).filter(Boolean),
+        ...permissions.map((permission) => permission.role).filter(Boolean),
       ])).sort();
-      const permissionEntries: Array<[string, any]> = [
-        ...CORE_PERMISSION_TARGETS.map((target): [string, any] => [`${target.resource}:${target.action}`, target]),
-        ...permissionsResult.rows.map((permission: any): [string, any] => [
+      const permissionEntries: Array<[string, PermissionTarget]> = [
+        ...CORE_PERMISSION_TARGETS.map((target): [string, PermissionTarget] => [`${target.resource}:${target.action}`, target]),
+        ...permissions.map((permission): [string, PermissionTarget] => [
           `${permission.resource}:${permission.action}`,
           permissionTarget(permission.resource, permission.action, { source: "Existing Grant" }),
         ]),
@@ -844,27 +931,27 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
             label: app.name,
             source: `Native app: ${app.name}`,
             category: "Application",
-          })] as [string, any] : null;
-        }).filter((entry): entry is [string, any] => Boolean(entry))),
+          })] as [string, PermissionTarget] : null;
+        }).filter((entry): entry is [string, PermissionTarget] => Boolean(entry))),
         ...tables.flatMap((table) => fieldTargetsForTable(table.id, [
           { name: "name", label: "Name" },
           ...(table.hasNumber ? [{ name: "number", label: "Number" }] : []),
           ...(table.provider === "cmdb-class" ? [{ name: "environment", label: "Environment" }] : []),
           ...table.attributes.map((attr) => ({ name: attr.name, label: attr.displayName || attr.name })),
-        ]).map((target): [string, any] => [`${target.resource}:${target.action}`, permissionTarget(target.resource, target.action, {
+        ]).map((target): [string, PermissionTarget] => [`${target.resource}:${target.action}`, permissionTarget(target.resource, target.action, {
           label: `${table.label} / ${target.label}`,
           source: `Table field: ${table.label}`,
           category: "Field",
-          risk: target.risk,
+          risk: target.risk as PermissionRisk,
         })])),
       ];
       const permissionTargets = Array.from(new Map(permissionEntries).values())
-        .sort((a: any, b: any) => `${a.resource}:${a.action}`.localeCompare(`${b.resource}:${b.action}`));
+        .sort((a, b) => `${a.resource}:${a.action}`.localeCompare(`${b.resource}:${b.action}`));
       return {
-        users: usersResult.rows,
+        users,
         groups: groupsResult.rows,
         roles,
-        permissions: permissionsResult.rows,
+        permissions,
         targets: permissionTargets,
         apps: apps.map((app) => ({ id: app.id, name: app.name, permissions: app.permissions })),
         tools: registeredAppTools(),
@@ -878,53 +965,53 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
           fields: tableFieldsForExplanation(table),
         })),
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch RBAC options" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch RBAC options") });
     }
   });
 
   fastify.post("/api/admin/rbac/analyze", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (request, reply) => {
     try {
-      const result = await analyzeAccess(fastify, request.body as any);
+      const result = await analyzeAccess(fastify, request.body as RbacRequestBody);
       if ("error" in result) return reply.status(400).send(result);
       return result;
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to analyze access" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to analyze access") });
     }
   });
 
   fastify.post("/api/admin/rbac/explain-access", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (request, reply) => {
     try {
-      const result = await explainAppAccess(fastify, request.body as any);
+      const result = await explainAppAccess(fastify, request.body as RbacRequestBody);
       if ("error" in result) return reply.status(400).send(result);
       return result;
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to explain app access" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to explain app access") });
     }
   });
 
   fastify.post("/api/admin/rbac/explain-tool-access", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (request, reply) => {
     try {
-      const result = await explainToolAccess(fastify, request.body as any);
+      const result = await explainToolAccess(fastify, request.body as RbacRequestBody);
       if ("error" in result) return reply.status(400).send(result);
       return result;
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to explain app tool access" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to explain app tool access") });
     }
   });
 
   fastify.post("/api/admin/rbac/explain-table-access", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (request, reply) => {
     try {
-      const result = await explainTableAccess(fastify, request.body as any);
+      const result = await explainTableAccess(fastify, request.body as RbacRequestBody);
       if ("error" in result) return reply.status(400).send(result);
       return result;
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to explain table access" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to explain table access") });
     }
   });
 
@@ -950,9 +1037,9 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
           })),
         })),
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch field restrictions" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch field restrictions") });
     }
   });
 
@@ -973,7 +1060,7 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
       const withoutCurrent = current.filter((item) => item.resource !== next.resource);
       const saved = await saveFieldRestrictions(fastify.pg, body.restricted ? [...withoutCurrent, next] : withoutCurrent);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: actorId(request.user),
         action: body.restricted ? "rbac.field_restriction.created" : "rbac.field_restriction.deleted",
         entityType: "FieldRestriction",
         entityId: next.resource,
@@ -982,18 +1069,18 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console", tableId: table.id, field: field.name },
       });
       return { restriction: body.restricted ? next : null, restrictions: saved };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to update field restriction" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to update field restriction") });
     }
   });
 
   fastify.get("/api/admin/rbac/policy-drift", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (_request, reply) => {
     try {
       return await buildPolicyDrift(fastify);
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to build policy drift report" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to build policy drift report") });
     }
   });
 
@@ -1012,8 +1099,8 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: "bulk grants must include 1-100 valid resource/action pairs" });
     }
     try {
-      const created: any[] = [];
-      const skipped: any[] = [];
+      const created: PermissionGrant[] = [];
+      const skipped: Array<{ role: string; resource: string; action: string; reason: string }> = [];
       for (const grant of normalized) {
         const result = await fastify.pg.query(
           `INSERT INTO app_permissions (role, resource, action)
@@ -1023,14 +1110,14 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
           [role, grant.resource, grant.action]
         );
         if (result.rows[0]) {
-          created.push(result.rows[0]);
+          created.push(result.rows[0] as PermissionGrant);
         } else {
           skipped.push({ role, resource: grant.resource, action: grant.action, reason: "already_granted" });
         }
       }
       if (created.length) clearPermissionCache();
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: actorId(request.user),
         action: "rbac.permission.bulk_created",
         entityType: "AppPermission",
         entityId: role,
@@ -1038,9 +1125,9 @@ export function registerAdminRbacRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console", requested: normalized.length, skipped },
       });
       return { role, created, skipped, requested: normalized.length };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to bulk grant permissions" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to bulk grant permissions") });
     }
   });
 
