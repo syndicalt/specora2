@@ -4,6 +4,58 @@ import { emit } from "../eventBus";
 import { assignRecordNumberToRow } from "../numberSequences";
 
 export function registerIncidentManagerTools() {
+type IncidentToolArgs = Record<string, unknown> & {
+  incidentId: string;
+  title: string;
+  description?: string;
+  severity?: string;
+  source?: string;
+  externalRef?: string;
+  service?: string;
+  ciId?: string;
+  affectedCiIds?: string[];
+  autoRemediationAllowed?: boolean;
+  requesterId?: string;
+  ownerId?: string;
+  status?: string;
+  limit?: number;
+  confidence?: number;
+  actionId: string;
+  result?: string;
+  note?: string;
+  type?: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+  _userId?: string;
+};
+
+type CiContextSummary = { id: string; name: string; class: string; environment: string };
+type CiHealthSummary = { overall: number; relationshipCount: number };
+type RelationshipSummary = { sourceId: string; targetId: string; type: string };
+type IncidentCiRow = { ci_id: string; role?: string; distance?: number };
+type IncidentDetails = Record<string, unknown> & {
+  error?: string;
+  affectedCis?: unknown[];
+  relatedChanges?: Array<{ status?: string }>;
+  ciHealth?: Record<string, CiHealthSummary>;
+  ci_id?: string;
+  auto_remediation_allowed?: boolean;
+  severity?: string;
+  status?: string;
+  title?: string;
+  service?: string;
+  ai_summary?: string;
+  ai_next_action?: string;
+};
+
+function toolArgs(args: unknown): IncidentToolArgs {
+  return args && typeof args === "object" ? args as IncidentToolArgs : {} as IncidentToolArgs;
+}
+
+async function incidentDetails(incidentId: string, fastify: FastifyInstance): Promise<IncidentDetails> {
+  return (await (await import("@specora/sdk")).executeTool("incident-manager_get_incident_details", { incidentId }, fastify)) as IncidentDetails;
+}
+
 function incidentPriority(severity?: string): number {
   if (severity === "critical") return 1;
   if (severity === "high") return 2;
@@ -20,11 +72,11 @@ function incidentDecision(input: { severity?: string; confidence?: number; actio
 }
 
 async function lookupCiContext(fastify: FastifyInstance, ciIds: string[]): Promise<{
-  names: Record<string, any>;
-  health: Record<string, any>;
-  relationships: any[];
+  names: Record<string, CiContextSummary>;
+  health: Record<string, CiHealthSummary>;
+  relationships: RelationshipSummary[];
 }> {
-  if (ciIds.length === 0) return { names: {}, health: {}, relationships: [] as any[] };
+  if (ciIds.length === 0) return { names: {}, health: {}, relationships: [] };
   const session = fastify.neo4j.session();
   try {
     const result = await session.run(
@@ -34,8 +86,8 @@ async function lookupCiContext(fastify: FastifyInstance, ciIds: string[]): Promi
               n.healthOverall as health, count(r) as relCount`,
       { ids: ciIds }
     );
-    const names: Record<string, any> = {};
-    const health: Record<string, any> = {};
+    const names: Record<string, CiContextSummary> = {};
+    const health: Record<string, CiHealthSummary> = {};
     for (const record of result.records) {
       const id = record.get("id");
       names[id] = {
@@ -59,10 +111,10 @@ async function lookupCiContext(fastify: FastifyInstance, ciIds: string[]): Promi
     return {
       names,
       health,
-      relationships: relResult.records.map((r: any) => ({
-        sourceId: r.get("sourceId"),
-        targetId: r.get("targetId"),
-        type: r.get("type"),
+      relationships: relResult.records.map((record) => ({
+        sourceId: record.get("sourceId"),
+        targetId: record.get("targetId"),
+        type: record.get("type"),
       })),
     };
   } finally {
@@ -91,7 +143,7 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["title"],
   },
 }, async (args, fastify) => {
-  const { title, description, severity = "medium", source = "manual", externalRef, service, ciId, affectedCiIds, autoRemediationAllowed = false, requesterId, ownerId, _userId } = args as any;
+  const { title, description, severity = "medium", source = "manual", externalRef, service, ciId, affectedCiIds, autoRemediationAllowed = false, requesterId, ownerId, _userId } = toolArgs(args);
   const affected = Array.isArray(affectedCiIds) ? affectedCiIds : [];
   const allCiIds = Array.from(new Set([ciId, ...affected].filter(Boolean)));
   const inferredRequesterId = requesterId || (source === "customer-portal" ? _userId : null);
@@ -136,8 +188,8 @@ registerTool<FastifyInstance>("incident-manager", {
     },
   },
 }, async (args, fastify) => {
-  const { status, severity, ciId, limit = 75 } = args as any;
-  const params: any[] = [];
+  const { status, severity, ciId, limit = 75 } = toolArgs(args);
+  const params: unknown[] = [];
   let query = `SELECT i.*,
                  requester.name AS requester_name, requester.email AS requester_email,
                  owner.name AS owner_name, owner.email AS owner_email,
@@ -162,7 +214,7 @@ registerTool<FastifyInstance>("incident-manager", {
   params.push(Math.min(Number(limit) || 75, 200));
   query += ` ORDER BY i.priority ASC, i.created_at DESC LIMIT $${params.length}`;
   const result = await fastify.pg.query(query, params);
-  return Promise.all(result.rows.map(async (row: any) => {
+  return Promise.all((result.rows as Record<string, unknown>[]).map(async (row) => {
     const incident = await assignRecordNumberToRow(fastify, "incidents", row);
     return {
       ...incident,
@@ -184,7 +236,7 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["incidentId"],
   },
 }, async (args, fastify) => {
-  const { incidentId } = args as any;
+  const { incidentId } = toolArgs(args);
   const incidentResult = await fastify.pg.query(
     `SELECT i.*,
             requester.name AS requester_name, requester.email AS requester_email,
@@ -200,7 +252,8 @@ registerTool<FastifyInstance>("incident-manager", {
   if (!incidentResult.rows.length) return { error: "Incident not found" };
   const incident = await assignRecordNumberToRow(fastify, "incidents", incidentResult.rows[0]);
   const ciResult = await fastify.pg.query(`SELECT ci_id, role, distance FROM incident_cis WHERE incident_id = $1`, [incidentId]);
-  const ciIds = ciResult.rows.map((r: any) => r.ci_id);
+  const ciRows = ciResult.rows as IncidentCiRow[];
+  const ciIds = ciRows.map((row) => row.ci_id);
   const [events, actions, roles, postmortems, changes] = await Promise.all([
     fastify.pg.query(`SELECT e.*, u.name as actor FROM incident_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.incident_id = $1 ORDER BY e.created_at ASC`, [incidentId]),
     fastify.pg.query(`SELECT * FROM incident_actions WHERE incident_id = $1 ORDER BY created_at DESC`, [incidentId]),
@@ -229,7 +282,7 @@ registerTool<FastifyInstance>("incident-manager", {
     requester: incident.requester_id ? { id: incident.requester_id, name: incident.requester_name, email: incident.requester_email } : null,
     owner: incident.owner_id ? { id: incident.owner_id, name: incident.owner_name, email: incident.owner_email } : null,
     commander: incident.commander_id ? { id: incident.commander_id, name: incident.commander_name, email: incident.commander_email } : null,
-    affectedCis: ciResult.rows.map((r: any) => ({ ...r, ...(ciContext.names[r.ci_id] || { id: r.ci_id, name: r.ci_id }) })),
+    affectedCis: ciRows.map((row) => ({ ...row, ...(ciContext.names[row.ci_id] || { id: row.ci_id, name: row.ci_id }) })),
     ciHealth: ciContext.health,
     edges: ciContext.relationships,
     events: events.rows,
@@ -252,12 +305,12 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["incidentId"],
   },
 }, async (args, fastify) => {
-  const { incidentId, confidence } = args as any;
-  const details = await (await import("@specora/sdk")).executeTool("incident-manager_get_incident_details", { incidentId }, fastify) as any;
+  const { incidentId, confidence } = toolArgs(args);
+  const details = await incidentDetails(incidentId, fastify);
   if (details.error) return details;
   const ciCount = details.affectedCis?.length || 0;
   const relatedChangeCount = details.relatedChanges?.length || 0;
-  const healthValues = Object.values(details.ciHealth || {}) as any[];
+  const healthValues = Object.values(details.ciHealth || {});
   const unhealthyCount = healthValues.filter((h) => Number(h.overall ?? 1) < 0.7 || Number(h.relationshipCount ?? 0) === 0).length;
   const inferredConfidence = confidence ?? Math.min(0.96, 0.45 + (details.ci_id ? 0.18 : 0) + (ciCount ? 0.12 : 0) + (relatedChangeCount ? 0.12 : 0) + (unhealthyCount ? 0.09 : 0));
   const summary = [
@@ -296,11 +349,11 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["incidentId"],
   },
 }, async (args, fastify) => {
-  const { incidentId } = args as any;
-  const details = await (await import("@specora/sdk")).executeTool("incident-manager_get_incident_details", { incidentId }, fastify) as any;
+  const { incidentId } = toolArgs(args);
+  const details = await incidentDetails(incidentId, fastify);
   if (details.error) return details;
-  const hasRecentChange = (details.relatedChanges || []).some((c: any) => ["approved", "implemented"].includes(c.status));
-  const lowHealth = Object.values(details.ciHealth || {}).some((h: any) => Number(h.overall ?? 1) < 0.7);
+  const hasRecentChange = (details.relatedChanges || []).some((change) => ["approved", "implemented"].includes(change.status || ""));
+  const lowHealth = Object.values(details.ciHealth || {}).some((health) => Number(health.overall ?? 1) < 0.7);
   const proposals = [
     hasRecentChange
       ? { name: "Review and roll back the most recent related change", kind: "rollback", risk: "high", confidence: 0.72, approval: true }
@@ -322,7 +375,7 @@ registerTool<FastifyInstance>("incident-manager", {
   await fastify.pg.query(`INSERT INTO incident_events (incident_id, type, message, metadata) VALUES ($1, 'ai.remediation_recommended', $2, $3)`, [
     incidentId,
     `${rows.length} remediation actions proposed`,
-    JSON.stringify({ actionIds: rows.map((r: any) => r.id) }),
+    JSON.stringify({ actionIds: (rows as Array<{ id: string }>).map((row) => row.id) }),
   ]);
   emit("incident.actions_proposed", { incidentId, count: rows.length });
   return { incidentId, actions: rows };
@@ -340,7 +393,7 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["actionId"],
   },
 }, async (args, fastify) => {
-  const { actionId, result, _userId } = args as any;
+  const { actionId, result, _userId } = toolArgs(args);
   const actionResult = await fastify.pg.query(`SELECT * FROM incident_actions WHERE id = $1`, [actionId]);
   if (!actionResult.rows.length) return { error: "Action not found" };
   const action = actionResult.rows[0];
@@ -375,7 +428,7 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["actionId"],
   },
 }, async (args, fastify) => {
-  const { actionId, _userId } = args as any;
+  const { actionId, _userId } = toolArgs(args);
   const result = await fastify.pg.query(
     `UPDATE incident_actions SET status = 'approved', approved_by = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
     [_userId || null, actionId]
@@ -402,7 +455,7 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["incidentId", "status"],
   },
 }, async (args, fastify) => {
-  const { incidentId, status, note, _userId } = args as any;
+  const { incidentId, status, note, _userId } = toolArgs(args);
   const result = await fastify.pg.query(
     `UPDATE incidents SET status = $1::text,
        acknowledged_at = CASE WHEN $1::text IN ('investigating', 'major', 'remediating') AND acknowledged_at IS NULL THEN NOW() ELSE acknowledged_at END,
@@ -434,7 +487,7 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["incidentId", "message"],
   },
 }, async (args, fastify) => {
-  const { incidentId, type = "note", message, metadata = {}, _userId } = args as any;
+  const { incidentId, type = "note", message, metadata = {}, _userId } = toolArgs(args);
   const result = await fastify.pg.query(
     `INSERT INTO incident_events (incident_id, type, message, actor_id, metadata) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
     [incidentId, type, message, _userId || null, JSON.stringify(metadata)]
@@ -454,8 +507,8 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["incidentId"],
   },
 }, async (args, fastify) => {
-  const { incidentId } = args as any;
-  const details = await (await import("@specora/sdk")).executeTool("incident-manager_get_incident_details", { incidentId }, fastify) as any;
+  const { incidentId } = toolArgs(args);
+  const details = await incidentDetails(incidentId, fastify);
   if (details.error) return details;
   const update = `${details.severity?.toUpperCase?.() || "MEDIUM"} incident: ${details.title}. Current status: ${details.status}. ${details.ai_summary || "Investigation is in progress."} Next: ${details.ai_next_action || "Responder review is underway."}`;
   return { incidentId, update, audience: details.status === "major" ? "executive-and-customer" : "internal" };
@@ -472,8 +525,8 @@ registerTool<FastifyInstance>("incident-manager", {
     required: ["incidentId"],
   },
 }, async (args, fastify) => {
-  const { incidentId, _userId } = args as any;
-  const details = await (await import("@specora/sdk")).executeTool("incident-manager_get_incident_details", { incidentId }, fastify) as any;
+  const { incidentId, _userId } = toolArgs(args);
+  const details = await incidentDetails(incidentId, fastify);
   if (details.error) return details;
   const preventionItems = [
     { type: "health", title: "Add or tune proactive health signal", source: "incident-manager" },
