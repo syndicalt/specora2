@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "crypto";
+import type { Node } from "neo4j-driver";
 import type { FieldAccess } from "../../services/fieldRbac";
 import { assignRecordNumberToRow } from "../../services/numberSequences";
 import type { TableDefinition, TableFilter, TableImportDecision, TableImportMode, TableImportRow } from "../tableDefinitions";
@@ -17,14 +18,71 @@ import {
   timestampString,
 } from "./helpers";
 
-export function tableViewRow(row: any) {
+type DbRow = Record<string, unknown>;
+
+type TableRecord = DbRow & {
+  id: string;
+  name: string;
+  number: string | null;
+  class?: string;
+  environment: string | null;
+  attributes: Record<string, unknown>;
+};
+
+type TableViewDbRow = {
+  id: string;
+  table_id: string;
+  name: string;
+  search_query?: string | null;
+  filters?: unknown;
+  columns?: unknown;
+  density?: string | null;
+  sort_field?: string | null;
+  sort_direction?: unknown;
+  created_at?: unknown;
+  updated_at?: unknown;
+};
+
+type CleanupReviewDbRow = {
+  id: string;
+  table_id: string;
+  table_label?: string | null;
+  record_id: string;
+  record_label?: string | null;
+  reason: string;
+  severity: string;
+  status: string;
+  requested_by?: string | null;
+  requester_name?: string | null;
+  requester_email?: string | null;
+  created_at?: unknown;
+  updated_at?: unknown;
+};
+
+type MatchedImportRecord = {
+  id: string;
+  name?: string | null;
+};
+
+function parseArrayField(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return [];
+  const parsed = JSON.parse(value);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function nodeRecord(value: unknown): TableRecord {
+  return parseNode((value as Node).properties) as TableRecord;
+}
+
+export function tableViewRow(row: TableViewDbRow) {
   return {
     id: row.id,
     tableId: row.table_id,
     name: row.name,
     searchQuery: row.search_query || "",
-    filters: Array.isArray(row.filters) ? row.filters : JSON.parse(row.filters || "[]"),
-    columns: Array.isArray(row.columns) ? row.columns : JSON.parse(row.columns || "[]"),
+    filters: parseArrayField(row.filters),
+    columns: parseArrayField(row.columns),
     density: row.density || "comfortable",
     sortField: row.sort_field || "name",
     sortDirection: normalizeSortDirection(row.sort_direction),
@@ -33,7 +91,7 @@ export function tableViewRow(row: any) {
   };
 }
 
-export function cleanupReviewRow(row: any) {
+export function cleanupReviewRow(row: CleanupReviewDbRow) {
   return {
     id: row.id,
     tableId: row.table_id,
@@ -186,7 +244,7 @@ function buildPostgresFilterWhere(table: TableDefinition, filters: TableFilter[]
   return clauses;
 }
 
-function postgresRecord(table: TableDefinition, row: Record<string, unknown>) {
+function postgresRecord(table: TableDefinition, row: DbRow): TableRecord {
   const attributes: Record<string, unknown> = {};
   for (const attr of table.attributes) {
     attributes[attr.name] = row[attr.name];
@@ -237,8 +295,8 @@ export async function listPostgresRecords(
   ]);
   return {
     table,
-    records: rows.rows.map((row: any) => attachValidationState(table, redactRecord(postgresRecord(table, row), access), access)),
-    total: count.rows[0]?.total || 0,
+    records: (rows.rows as DbRow[]).map((row) => attachValidationState(table, redactRecord(postgresRecord(table, row), access), access)),
+    total: Number((count.rows[0] as { total?: number } | undefined)?.total || 0),
   };
 }
 
@@ -257,7 +315,7 @@ export async function getPostgresRecordsById(fastify: FastifyInstance, table: Ta
     `SELECT * FROM ${quoteIdentifier(table.tableName)} WHERE id::text = ANY($1) ORDER BY ${quoteIdentifier(table.nameField || "id")} NULLS LAST LIMIT 1000`,
     [ids]
   );
-  return result.rows.map((row: any) => redactRecord(postgresRecord(table, row), access));
+  return (result.rows as DbRow[]).map((row) => redactRecord(postgresRecord(table, row), access));
 }
 
 export async function getRecordsByIdForCleanup(fastify: FastifyInstance, table: TableDefinition, ids: string[], access: Map<string, FieldAccess>) {
@@ -275,7 +333,7 @@ export async function getRecordsByIdForCleanup(fastify: FastifyInstance, table: 
        LIMIT 250`,
       { className: table.className, ids }
     );
-    return result.records.map((record) => redactRecord(parseNode(record.get("n")), access));
+    return result.records.map((record) => redactRecord(nodeRecord(record.get("n")), access));
   } finally {
     await session.close();
   }
@@ -338,7 +396,7 @@ export async function createCmdbRecord(
        RETURN n`,
       record
     );
-    return parseNode(result.records[0].get("n"));
+    return nodeRecord(result.records[0].get("n"));
   } finally {
     await session.close();
   }
@@ -374,7 +432,7 @@ export async function updateCmdbRecord(
       }
     );
     const node = result.records[0]?.get("n");
-    return node ? parseNode(node) : null;
+    return node ? nodeRecord(node) : null;
   } finally {
     await session.close();
   }
@@ -391,7 +449,7 @@ export async function getCmdbRecord(fastify: FastifyInstance, table: TableDefini
     );
     const node = result.records[0]?.get("n");
     if (!node) return null;
-    const record = parseNode(node);
+    const record = nodeRecord(node);
     return access ? redactRecord(record, access) : record;
   } finally {
     await session.close();
@@ -425,7 +483,7 @@ async function findImportMatches(
   table: TableDefinition,
   row: TableImportRow,
   matchKeys: string[]
-) {
+) : Promise<MatchedImportRecord[]> {
   if (!matchKeys.length || matchKeys.some((key) => isMissing(importValueForField(row, key)))) return [];
   if (table.provider === "postgres-table") {
     if (!table.tableName) return [];
@@ -439,7 +497,7 @@ async function findImportMatches(
       `SELECT * FROM ${quoteIdentifier(table.tableName)} WHERE ${clauses.join(" AND ")} LIMIT 3`,
       params
     );
-    return result.rows.map((item: any) => postgresRecord(table, item));
+    return (result.rows as DbRow[]).map((item) => postgresRecord(table, item));
   }
 
   const params: Record<string, unknown> = { className: table.className };
@@ -457,7 +515,7 @@ async function findImportMatches(
        LIMIT 3`,
       params
     );
-    return result.records.map((record) => parseNode(record.get("n")));
+    return result.records.map((record) => nodeRecord(record.get("n")));
   } finally {
     await session.close();
   }
