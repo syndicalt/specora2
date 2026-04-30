@@ -19,6 +19,7 @@ import type { ShellAPI } from "@/sdk/types";
 import { Link2, Search, MapPin, X, ChevronDown } from "lucide-react";
 import { ContextMenu } from "./ContextMenu";
 import { CIEditModal } from "./CIEditModal";
+import { FilterPanel } from "./FilterPanel";
 import { RelTypePicker } from "./RelTypePicker";
 import { SidebarPanel } from "./SidebarPanel";
 import { ServiceMapNode, NodeData } from "./ServiceMapNode";
@@ -1046,73 +1047,20 @@ function ServiceMapInner({ shell }: { shell: ShellAPI }) {
 
       {/* Filter Panel */}
       {filterPanelOpen && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 w-full max-w-lg bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium text-gray-200">Filter Graph</h3>
-            <button onClick={() => { setClassFilters([]); setEnvironmentFilters([]); setRelationshipFilters([]); }}
-              className="text-xs text-gray-400 hover:text-gray-200 transition-colors">Reset all</button>
-          </div>
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <h4 className="text-xs text-gray-500 mb-2">Class</h4>
-              <div className="space-y-1.5 max-h-32 overflow-y-auto scrollbar-thin">
-                {availableClasses.map((cls) => (
-                  <label key={cls} className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer hover:text-gray-100 select-none">
-                    <div className="relative flex items-center">
-                      <input type="checkbox" checked={classFilters.includes(cls)}
-                        onChange={(e) => setClassFilters((prev) => e.target.checked ? [...prev, cls] : prev.filter((c) => c !== cls))}
-                        className="peer sr-only" />
-                      <div className="w-3.5 h-3.5 rounded border border-gray-600 bg-gray-800 peer-checked:bg-indigo-500 peer-checked:border-indigo-500 transition-colors" />
-                      <svg className="absolute left-0.5 top-0.5 w-2.5 h-2.5 text-white opacity-0 peer-checked:opacity-100 pointer-events-none" viewBox="0 0 14 14" fill="none">
-                        <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </div>
-                    {classDisplayNames[cls] || cls}
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div>
-              <h4 className="text-xs text-gray-500 mb-2">Environment</h4>
-              <div className="space-y-1.5 max-h-32 overflow-y-auto scrollbar-thin">
-                {availableEnvironments.map((env) => (
-                  <label key={env} className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer hover:text-gray-100 select-none">
-                    <div className="relative flex items-center">
-                      <input type="checkbox" checked={environmentFilters.includes(env)}
-                        onChange={(e) => setEnvironmentFilters((prev) => e.target.checked ? [...prev, env] : prev.filter((e) => e !== env))}
-                        className="peer sr-only" />
-                      <div className="w-3.5 h-3.5 rounded border border-gray-600 bg-gray-800 peer-checked:bg-indigo-500 peer-checked:border-indigo-500 transition-colors" />
-                      <svg className="absolute left-0.5 top-0.5 w-2.5 h-2.5 text-white opacity-0 peer-checked:opacity-100 pointer-events-none" viewBox="0 0 14 14" fill="none">
-                        <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </div>
-                    {env}
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div>
-              <h4 className="text-xs text-gray-500 mb-2">Relationship</h4>
-              <div className="space-y-1.5 max-h-32 overflow-y-auto scrollbar-thin">
-                {relationshipOptions.map((rel) => (
-                  <label key={rel.name} className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer hover:text-gray-100 select-none">
-                    <div className="relative flex items-center">
-                      <input type="checkbox" checked={relationshipFilters.includes(rel.name)}
-                        onChange={(e) => setRelationshipFilters((prev) => e.target.checked ? [...prev, rel.name] : prev.filter((r) => r !== rel.name))}
-                        className="peer sr-only" />
-                      <div className="w-3.5 h-3.5 rounded border border-gray-600 bg-gray-800 peer-checked:bg-indigo-500 peer-checked:border-indigo-500 transition-colors" />
-                      <svg className="absolute left-0.5 top-0.5 w-2.5 h-2.5 text-white opacity-0 peer-checked:opacity-100 pointer-events-none" viewBox="0 0 14 14" fill="none">
-                        <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </div>
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: rel.color || relationshipColor(rel.name).stroke }} />
-                    {rel.displayName || relLabel(rel.name)}
-                  </label>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
+        <FilterPanel
+          availableClasses={availableClasses}
+          classDisplayNames={classDisplayNames}
+          classFilters={classFilters}
+          environmentFilters={environmentFilters}
+          availableEnvironments={availableEnvironments}
+          relationshipOptions={relationshipOptions}
+          relationshipFilters={relationshipFilters}
+          relationshipColor={relationshipColor}
+          onReset={() => { setClassFilters([]); setEnvironmentFilters([]); setRelationshipFilters([]); }}
+          setClassFilters={setClassFilters}
+          setEnvironmentFilters={setEnvironmentFilters}
+          setRelationshipFilters={setRelationshipFilters}
+        />
       )}
 
       {linkMode && (
