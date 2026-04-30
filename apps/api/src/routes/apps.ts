@@ -1,8 +1,10 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { getAllRegisteredApps, getAppCatalog, getVisibleApps } from "../services/appRegistry";
 import { recordAuditEvent } from "../services/auditLog";
 
-async function requireAdmin(user: any, reply: any) {
+type AuthUser = { id?: string; role?: string } | null | undefined;
+
+async function requireAdmin(user: AuthUser, reply: FastifyReply) {
   if (!["admin", "security_admin"].includes(user?.role || "")) {
     reply.status(403).send({ error: "Forbidden" });
     return false;
@@ -108,7 +110,7 @@ export async function appsRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/apps/provisioning-jobs", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await requireAdmin(user, reply))) return;
     const result = await fastify.pg.query(
       `SELECT id, app_id, action, status, requested_by, clear_data_on_uninstall, data_retention_policy, message, metadata, created_at, updated_at, completed_at
@@ -118,7 +120,7 @@ export async function appsRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/apps/:id/install", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await requireAdmin(user, reply))) return;
     const { id } = request.params as { id: string };
     const result = await createProvisioningJob(fastify, { appId: id, action: "install", userId: user?.id });
@@ -127,7 +129,7 @@ export async function appsRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/apps/:id/uninstall", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await requireAdmin(user, reply))) return;
     const { id } = request.params as { id: string };
     const body = request.body as { clearData?: boolean; dataRetentionPolicy?: string };

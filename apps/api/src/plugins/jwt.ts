@@ -12,12 +12,12 @@ export const authPlugin = fp(async (fastify) => {
   fastify.decorate("authenticate", async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       await request.jwtVerify();
-      const user = request.user as { typ?: string; type?: string };
+      const user = request.user;
       if (user.typ && user.typ !== "access" && user.type !== "ws-ticket") {
         return reply.code(401).send({ error: "Unauthorized" });
       }
       if (user.typ === "access") {
-        const active = await isAccessSessionActive(fastify, (request.user as any).sid, (request.user as any).id);
+        const active = await isAccessSessionActive(fastify, request.user.sid, request.user.id);
         if (!active) return reply.code(401).send({ error: "Unauthorized" });
       }
     } catch {

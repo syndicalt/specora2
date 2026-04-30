@@ -1,9 +1,30 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { enqueueJob, listJobs, getJobStatus, getJobQueueSummary, listDeadLetterJobs, requeueStaleRunningJobs } from "../services/jobQueue";
+
+type JobCreateBody = {
+  type?: string;
+  payload?: Record<string, unknown>;
+  priority?: number;
+};
+
+type JobSummaryQuery = {
+  staleAfterMinutes?: string;
+};
+
+type JobListQuery = {
+  status?: string;
+  type?: string;
+  limit?: string;
+};
+
+type RequeueBody = {
+  staleAfterMinutes?: number;
+  limit?: number;
+};
 
 export async function jobQueueRoutes(fastify: FastifyInstance) {
   fastify.post("/api/jobs", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const { type, payload, priority } = request.body as any;
+    const { type, payload, priority } = request.body as JobCreateBody;
     if (!type || !payload) {
       return reply.status(400).send({ error: "type and payload required" });
     }
@@ -12,23 +33,23 @@ export async function jobQueueRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/jobs/summary", { onRequest: [fastify.authenticate] }, async (request) => {
-    const { staleAfterMinutes } = request.query as any;
+    const { staleAfterMinutes } = request.query as JobSummaryQuery;
     return getJobQueueSummary(fastify, staleAfterMinutes ? Number(staleAfterMinutes) : undefined);
   });
 
   fastify.get("/api/jobs/dead-letter", { onRequest: [fastify.authenticate] }, async (request) => {
-    const { limit } = request.query as any;
+    const { limit } = request.query as { limit?: string };
     const jobs = await listDeadLetterJobs(fastify, limit ? Number(limit) : undefined);
     return { jobs };
   });
 
   fastify.post("/api/jobs/requeue-stale", { onRequest: [fastify.authenticate] }, async (request) => {
-    const { staleAfterMinutes, limit } = request.body as any || {};
+    const { staleAfterMinutes, limit } = (request.body || {}) as RequeueBody;
     return requeueStaleRunningJobs(fastify, staleAfterMinutes, limit);
   });
 
   fastify.get("/api/jobs", { onRequest: [fastify.authenticate] }, async (request, _reply) => {
-    const { status, type, limit } = request.query as any;
+    const { status, type, limit } = request.query as JobListQuery;
     const jobs = await listJobs(fastify, { status, type, limit: limit ? Number(limit) : undefined });
     return { jobs };
   });
