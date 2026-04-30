@@ -934,7 +934,7 @@ export async function proposeTransform(profile: SourceProfile, targetClasses: Ta
         body: JSON.stringify({ model: config.model, messages, temperature: 0.15, requires_structured_output: true }),
       });
       if (!response.ok) return fallback;
-      const data = await response.json() as any;
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
       return parseProposal(data.choices?.[0]?.message?.content || "", fallback);
     }
 
