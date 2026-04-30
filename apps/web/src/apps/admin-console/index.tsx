@@ -4,23 +4,11 @@ import { useState, useEffect, useMemo } from "react";
 import { getToken } from "@/lib/auth";
 import { DEFAULT_PASSWORD_POLICY, normalizePasswordPolicy } from "@/lib/passwordPolicy";
 import {
-  Activity,
-  ClipboardCheck,
-  Database,
-  Download,
-  GitBranch,
-  Hash,
-  KeyRound,
-  LayoutDashboard,
   Loader2,
-  Radio,
   Search,
   Settings,
   Shield,
-  ShieldCheck,
-  Users,
 } from "lucide-react";
-import ChangeStateMachinePanel from "@/apps/change-manager/StateMachinePanel";
 import { CredentialsPanel } from "./CredentialsPanel";
 import { EdgeEnrollmentPanel } from "./EdgeEnrollmentPanel";
 import { EnvironmentsPanel } from "./EnvironmentsPanel";
@@ -97,28 +85,7 @@ import {
   deleteEdgeCollectorRecord,
   revokeEdgeEnrollmentTokenRecord,
 } from "./adminEdgeApi";
-
-
-
-const PANEL_COMPONENTS: Record<string, React.ComponentType<{ shell: any }>> = {
-  "change-manager-state-machine": ChangeStateMachinePanel,
-};
-
-const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  Activity,
-  ClipboardCheck,
-  Database,
-  Download,
-  GitBranch,
-  Hash,
-  KeyRound,
-  LayoutDashboard,
-  Settings,
-  Shield,
-  ShieldCheck,
-  Users,
-  Radio,
-};
+import { ICONS, PANEL_COMPONENTS } from "./panelRegistry";
 
 export default function AdminConsoleApp({ shell }: { shell: any }) {
   const [activeTab, setActiveTab] = useState<string>("overview");
