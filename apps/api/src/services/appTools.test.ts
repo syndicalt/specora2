@@ -48,6 +48,27 @@ vi.mock("./impactScoring", () => ({
   ])),
 }));
 
+vi.mock("./healthRules", () => ({
+  HARDCODED_RULES: [{
+    id: "missing-owner",
+    name: "Missing owner",
+    severity: "warn",
+    description: "CI has no owner",
+    cypher: "MATCH (n) RETURN n.id AS ciId",
+  }],
+  runHardcodedRules: vi.fn(() => Promise.resolve([{ ruleId: "all-rules", ciId: "ci-1" }])),
+}));
+
+vi.mock("./aiRuleGenerator", () => ({
+  generateRules: vi.fn(() => Promise.resolve([{ id: "generated-rule", cypher: "MATCH (n) RETURN n LIMIT 1" }])),
+  executeGeneratedRule: vi.fn((_fastify, cypher: string) => Promise.resolve({ cypher, results: [{ ciId: "ci-1" }] })),
+}));
+
+vi.mock("./remediation", () => ({
+  getRemediationSuggestions: vi.fn(() => Promise.resolve([{ sourceId: "ci-1", targetId: "ci-2", relType: "DEPENDS_ON" }])),
+  applyRemediation: vi.fn((_fastify, fix: any) => Promise.resolve({ success: true, fix })),
+}));
+
 describe("appTools", () => {
   beforeEach(() => {
     mockTools.length = 0;
@@ -169,6 +190,46 @@ describe("appTools", () => {
     const neo4j = { session: () => ({ run: vi.fn(async () => ({ records: [] })), close: vi.fn() }) };
 
     await expect(scoreCi({ ciId: "missing" }, { neo4j })).resolves.toEqual({ error: "CI not found" });
+  });
+
+  it("health monitor governance tools run rules and remediation helpers", async () => {
+    await register();
+    const completeness = tool("health-monitor_check_completeness");
+    const generateRules = tool("health-monitor_generate_rules");
+    const executeGenerated = tool("health-monitor_execute_generated_rule");
+    const suggestions = tool("health-monitor_get_remediation_suggestions");
+    const apply = tool("health-monitor_apply_remediation");
+    const close = vi.fn();
+    const neo4j = {
+      session: () => ({
+        run: vi.fn(async () => ({
+          records: [{
+            get: (key: string) => ({ ciId: "ci-1", ciName: "API", ciClass: "ApplicationService" } as any)[key],
+          }],
+        })),
+        close,
+      }),
+    };
+
+    await expect(completeness({ ruleId: "missing-owner" }, { neo4j })).resolves.toEqual([{
+      ruleId: "missing-owner",
+      ruleName: "Missing owner",
+      severity: "warn",
+      message: "CI has no owner",
+      ciId: "ci-1",
+      ciName: "API",
+      ciClass: "ApplicationService",
+    }]);
+    await expect(completeness({ ruleId: "unknown" }, { neo4j })).resolves.toEqual({ error: "Rule not found" });
+    await expect(completeness({}, { neo4j })).resolves.toEqual([{ ruleId: "all-rules", ciId: "ci-1" }]);
+    await expect(generateRules({}, { neo4j })).resolves.toEqual([{ id: "generated-rule", cypher: "MATCH (n) RETURN n LIMIT 1" }]);
+    await expect(executeGenerated({ cypher: "MATCH (n) RETURN n" }, { neo4j })).resolves.toEqual({ cypher: "MATCH (n) RETURN n", results: [{ ciId: "ci-1" }] });
+    await expect(suggestions({}, { neo4j })).resolves.toEqual([{ sourceId: "ci-1", targetId: "ci-2", relType: "DEPENDS_ON" }]);
+    await expect(apply({ sourceId: "ci-1", targetId: "ci-2", relType: "DEPENDS_ON" }, { neo4j })).resolves.toMatchObject({
+      success: true,
+      fix: { type: "create_relationship", sourceId: "ci-1", targetId: "ci-2", relType: "DEPENDS_ON" },
+    });
+    expect(close).toHaveBeenCalled();
   });
 
   it("delete_rfc handles not found, non-draft, unauthorized, and success paths", async () => {
