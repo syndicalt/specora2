@@ -2,7 +2,46 @@ import type { FastifyInstance } from "fastify";
 import { hasPermission } from "../services/rbac";
 import { recordRouteAudit } from "./auditHelpers";
 
-async function canUseItVisibility(fastify: FastifyInstance, user: any, action: "read" | "write" | "operate") {
+type AuthUser = { id?: string; role?: string };
+
+type DcimSiteRow = {
+  id: string;
+  capacity_kw?: string | number | null;
+  used_kw?: string | number | null;
+};
+
+type DcimRackRow = {
+  id: string;
+  ru_total?: string | number | null;
+  ru_used?: string | number | null;
+  power_capacity_kw?: string | number | null;
+  power_used_kw?: string | number | null;
+  weight_capacity_kg?: string | number | null;
+  weight_used_kg?: string | number | null;
+  risk_score?: string | number | null;
+  redundancy?: string | null;
+};
+
+type DcimPowerRow = {
+  rack_id: string;
+  path_count?: string | number | null;
+};
+
+type DcimEventRow = {
+  severity?: string | null;
+};
+
+type PlacementCandidate = {
+  rack: DcimRackRow;
+  score: number;
+  viable: boolean;
+  freeRu: number;
+  powerAvailable: number;
+  weightAvailable: number;
+  violations: string[];
+};
+
+async function canUseItVisibility(fastify: FastifyInstance, user: AuthUser | null | undefined, action: "read" | "write" | "operate") {
   if (!user?.role) return false;
   if (user.role === "admin" || user.role === "security_admin") return true;
   return hasPermission(fastify.pg, { role: user.role, resource: "it-visibility", action });
@@ -29,7 +68,7 @@ function jsonValue(value: unknown, fallback: Record<string, unknown> = {}) {
 
 export async function itVisibilityRoutes(fastify: FastifyInstance) {
   fastify.get("/api/it-visibility/dcim/overview", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "read"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -101,9 +140,12 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
       floorplanRow = { ...floorplanRow, connections: connections.rows };
     }
 
-    const powerByRack = new Map(power.rows.map((row: any) => [row.rack_id, row]));
-    const enrichedRacks = racks.rows.map((rack: any) => {
-      const powerRow = powerByRack.get(rack.id) as any;
+    const siteRows = sites.rows as DcimSiteRow[];
+    const rackRows = racks.rows as DcimRackRow[];
+    const eventRows = events.rows as DcimEventRow[];
+    const powerByRack = new Map((power.rows as DcimPowerRow[]).map((row) => [row.rack_id, row]));
+    const enrichedRacks = rackRows.map((rack) => {
+      const powerRow = powerByRack.get(rack.id);
       const powerUsed = Number(rack.power_used_kw || 0);
       const powerCapacity = Number(rack.power_capacity_kw || 0);
       return {
@@ -115,11 +157,11 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
       };
     });
 
-    const openCriticalEvents = events.rows.filter((event: any) => event.severity === "critical").length;
-    const totalCapacityKw = sites.rows.reduce((sum: number, site: any) => sum + Number(site.capacity_kw || 0), 0);
-    const usedKw = sites.rows.reduce((sum: number, site: any) => sum + Number(site.used_kw || 0), 0);
+    const openCriticalEvents = eventRows.filter((event) => event.severity === "critical").length;
+    const totalCapacityKw = siteRows.reduce((sum, site) => sum + Number(site.capacity_kw || 0), 0);
+    const usedKw = siteRows.reduce((sum, site) => sum + Number(site.used_kw || 0), 0);
     const avgRisk = enrichedRacks.length
-      ? Math.round(enrichedRacks.reduce((sum: number, rack: any) => sum + Number(rack.risk_score || 0), 0) / enrichedRacks.length)
+      ? Math.round(enrichedRacks.reduce((sum, rack) => sum + Number(rack.risk_score || 0), 0) / enrichedRacks.length)
       : 0;
 
     return {
@@ -141,16 +183,16 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
         powerUtilization: utilization(usedKw, totalCapacityKw),
         avgRisk,
       },
-      sites: sites.rows,
+      sites: siteRows,
       racks: enrichedRacks,
       assets: assets.rows,
-      events: events.rows,
+      events: eventRows,
       floorplan: floorplanRow,
     };
   });
 
   fastify.patch("/api/it-visibility/dcim/floorplans/:floorplanId/objects/:objectId", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -194,7 +236,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/it-visibility/dcim/floorplans/:floorplanId/objects", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -247,7 +289,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.delete("/api/it-visibility/dcim/floorplans/:floorplanId/objects/:objectId", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -270,7 +312,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/it-visibility/dcim/floorplans/:floorplanId/connections", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -319,7 +361,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.patch("/api/it-visibility/dcim/floorplans/:floorplanId/connections/:connectionId", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -355,7 +397,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.delete("/api/it-visibility/dcim/floorplans/:floorplanId/connections/:connectionId", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -378,7 +420,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/it-visibility/dcim/racks", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -468,7 +510,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.patch("/api/it-visibility/dcim/racks/:rackId", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -532,7 +574,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/it-visibility/dcim/placement/plan", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "read"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -555,7 +597,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
        ORDER BY r.risk_score ASC, r.power_used_kw ASC, r.ru_used ASC`,
       [body.siteId || null]
     );
-    const candidates = result.rows.map((rack: any) => {
+    const candidates = (result.rows as DcimRackRow[]).map((rack): PlacementCandidate => {
       const freeRu = numberValue(rack.ru_total) - numberValue(rack.ru_used);
       const powerAvailable = numberValue(rack.power_capacity_kw) - numberValue(rack.power_used_kw);
       const weightAvailable = numberValue(rack.weight_capacity_kg) - numberValue(rack.weight_used_kg);
@@ -564,7 +606,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
         powerAvailable < powerKw ? `Needs ${powerKw} kW, only ${powerAvailable.toFixed(2)} kW available` : null,
         weightAvailable < weightKg ? `Needs ${weightKg} kg, only ${weightAvailable.toFixed(1)} kg available` : null,
         body.redundancy && rack.redundancy !== body.redundancy ? `Requested ${body.redundancy} redundancy, rack is ${rack.redundancy}` : null,
-      ].filter(Boolean);
+      ].filter((violation): violation is string => Boolean(violation));
       const score = Math.max(0, 100 - numberValue(rack.risk_score) - utilization(numberValue(rack.power_used_kw) + powerKw, numberValue(rack.power_capacity_kw)));
       return {
         rack,
@@ -575,17 +617,17 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
         weightAvailable,
         violations,
       };
-    }).sort((a: any, b: any) => Number(b.viable) - Number(a.viable) || b.score - a.score);
+    }).sort((a, b) => Number(b.viable) - Number(a.viable) || b.score - a.score);
 
     return {
       request: { ruHeight, powerKw, weightKg, redundancy: body.redundancy || null },
-      recommendation: candidates.find((candidate: any) => candidate.viable) || candidates[0] || null,
+      recommendation: candidates.find((candidate) => candidate.viable) || candidates[0] || null,
       candidates,
     };
   });
 
   fastify.post("/api/it-visibility/dcim/rack-assignments", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "operate"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -671,7 +713,7 @@ export async function itVisibilityRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/it-visibility/dcim/events", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = request.user;
     if (!(await canUseItVisibility(fastify, user, "operate"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
