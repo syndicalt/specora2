@@ -49,6 +49,17 @@ describe("knowledgeAutomationRoutes", () => {
     }), expect.anything());
   });
 
+  it("rejects authenticated users without a platform role", async () => {
+    const app = await buildApp({ id: "u1" } as any);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/knowledge/answer",
+      payload: { query: "worker is stuck" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it("creates knowledge items through external automation", async () => {
     executeTool.mockResolvedValueOnce({ id: "kb-1", status: "draft" });
     const app = await buildApp();

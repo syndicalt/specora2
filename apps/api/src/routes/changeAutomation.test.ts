@@ -50,6 +50,17 @@ describe("changeAutomationRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["change_automation.request_created", "ChangeRequest", "rfc-1"]));
   });
 
+  it("rejects authenticated users without a platform role", async () => {
+    const app = await buildApp({ id: "u1" } as any);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/change-automation/requests",
+      payload: { ciId: "ci-1", title: "Deploy release" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it("returns a gate decision for existing RFCs", async () => {
     executeTool
       .mockResolvedValueOnce({ riskScore: 64 })

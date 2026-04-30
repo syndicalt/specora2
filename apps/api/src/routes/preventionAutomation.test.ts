@@ -45,6 +45,17 @@ describe("preventionAutomationRoutes", () => {
     expect(executeTool).toHaveBeenCalledWith("prevention-center_detect_candidates", expect.objectContaining({ windowDays: 14 }), expect.anything());
   });
 
+  it("rejects authenticated users without a platform role", async () => {
+    const app = await buildApp({ id: "u1" } as any);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/prevention/detect",
+      payload: { windowDays: 14 },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it("creates prevention candidates", async () => {
     executeTool.mockResolvedValueOnce({ id: "prb-1", status: "candidate" });
     const app = await buildApp();

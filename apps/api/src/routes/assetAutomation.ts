@@ -27,7 +27,7 @@ function toolObjectResult(value: unknown): AssetToolResult {
 }
 
 async function requireAssetPermission(fastify: FastifyInstance, user: RouteUser, action: AssetAutomationAction) {
-  if (!user?.role) return true;
+  if (!user?.role) return false;
   if (user.role === "admin" || user.role === "security_admin") return true;
   return hasPermission(fastify.pg, { role: user.role, resource: "asset-command", action });
 }

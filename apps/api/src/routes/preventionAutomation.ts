@@ -25,7 +25,7 @@ function toolObjectResult(value: unknown): ToolObjectResult {
 }
 
 async function requirePreventionPermission(fastify: FastifyInstance, user: RouteUser, action: PreventionAutomationAction) {
-  if (!user?.role) return true;
+  if (!user?.role) return false;
   if (user.role === "admin" || user.role === "security_admin") return true;
   return hasPermission(fastify.pg, { role: user.role, resource: "prevention-center", action });
 }

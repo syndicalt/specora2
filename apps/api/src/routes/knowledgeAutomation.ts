@@ -23,7 +23,7 @@ function toolObjectResult(value: unknown): Record<string, unknown> {
 }
 
 async function requireKnowledgePermission(fastify: FastifyInstance, user: RouteUser, action: KnowledgeAutomationAction) {
-  if (!user?.role) return true;
+  if (!user?.role) return false;
   if (user.role === "admin" || user.role === "security_admin") return true;
   return hasPermission(fastify.pg, { role: user.role, resource: "knowledge-core", action });
 }

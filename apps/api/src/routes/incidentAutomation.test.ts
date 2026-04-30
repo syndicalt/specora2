@@ -55,6 +55,17 @@ describe("incidentAutomationRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["incident_automation.signal_ingested", "Incident", "inc-1"]));
   });
 
+  it("rejects authenticated users without a platform role", async () => {
+    const app = await buildApp({ id: "u1" } as any);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/incident-automation/incidents",
+      payload: { title: "API latency", severity: "medium" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it("creates managed incidents through an external workflow endpoint", async () => {
     executeTool.mockResolvedValueOnce({ id: "inc-2", status: "new" });
     const app = await buildApp();

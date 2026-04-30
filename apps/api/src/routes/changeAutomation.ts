@@ -35,7 +35,7 @@ function gateSignal(value: unknown): GateSignal {
 }
 
 async function requireChangePermission(fastify: FastifyInstance, user: RouteUser, action: ChangeAutomationAction) {
-  if (!user?.role) return true;
+  if (!user?.role) return false;
   return hasPermission(fastify.pg, { role: user.role, resource: "change-manager", action });
 }
 

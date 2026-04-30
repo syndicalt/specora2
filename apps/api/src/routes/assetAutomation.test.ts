@@ -44,6 +44,17 @@ describe("assetAutomationRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["asset_automation.procurement_ingested", "ProcurementOrder", "PO-1"]));
   });
 
+  it("rejects authenticated users without a platform role", async () => {
+    const app = await buildApp({ id: "u1" } as any);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/assets/procurement/orders",
+      payload: { purchaseOrder: "PO-1" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it("ingests software contracts", async () => {
     executeTool.mockResolvedValueOnce({ contract: { id: "c1" }, entitlements: [] });
     const app = await buildApp();
