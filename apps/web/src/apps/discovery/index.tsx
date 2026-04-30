@@ -77,13 +77,28 @@ import type {
 } from "./types";
 import { CREATE_SOURCE, DELETE_SOURCE, UPDATE_SOURCE } from "./queries";
 import {
+  applyDiscoveryRollback,
+  approveSafeStagedRecords,
+  commitStagedDiscoveryJob,
+  createCollectorDataset,
+  discardStagedDiscoveryJob,
+  loadCollectorDatasets,
   loadCollectorLifecycle as loadCollectorLifecycleData,
+  loadCollectorProfiles,
   loadCollectors,
   loadCredentialReferences,
   loadDiscoveryClasses,
   loadDiscoveryPipelines,
   loadDiscoveryRecords,
+  loadDiscoveryRollbacks,
   loadMappingProfiles,
+  loadPipelineSchedule,
+  loadStagedDiscoveryJob,
+  previewDiscoveryPipeline,
+  publishDiscoveryPipeline,
+  runDiscoveryPipeline,
+  savePipelineSchedule,
+  skipStagedDiscoveryRecord,
 } from "./api";
 import {
   AlertTriangle,
@@ -678,23 +693,18 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     setEdgeProfiles([]);
     setSelectedEdgeEntityType("");
     try {
-      const datasetRes = await shell.fetch(`/discovery/collectors/${collector.id}/datasets`);
-      if (!datasetRes.ok) throw new Error(`Dataset request failed: ${datasetRes.status}`);
-      const datasetData = await datasetRes.json();
-      const datasets = (datasetData.datasets || []) as DiscoveryDataset[];
+      const datasets = await loadCollectorDatasets(shell, collector.id);
       setEdgeDatasets(datasets);
       if (datasets.length && datasets[0].profiles?.length) {
         applyDatasetProfile(collector, datasets[0], datasets[0].profiles[0]);
         shell.notify(`Loaded dataset with ${Object.values(datasets[0].entityCounts || {}).reduce((sum, count) => sum + Number(count || 0), 0)} profiled entities`, "success");
       } else {
-        const res = await shell.fetch(`/discovery/collectors/${collector.id}/profile`);
-        if (!res.ok) throw new Error(`Profile request failed: ${res.status}`);
-        const data = await res.json();
-        const profiles = (data.profiles || []) as EdgeObservationProfile[];
+        const data = await loadCollectorProfiles(shell, collector.id);
+        const profiles = data.profiles;
         setEdgeProfiles(profiles);
         if (profiles.length) {
           applyEdgeProfile(collector, profiles[0]);
-          shell.notify(`Profiled ${data.totalObservations || 0} edge observations across ${profiles.length} entity types`, "success");
+          shell.notify(`Profiled ${data.totalObservations} edge observations across ${profiles.length} entity types`, "success");
         } else {
           applySourceSelectionPatch(collectorSchemaSelectionPatch(collector));
           shell.notify("No edge observations staged yet; using collector schema sample", "info");
@@ -714,10 +724,8 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     if (!datasetId) {
       setSelectedDatasetId("");
       try {
-        const res = await shell.fetch(`/discovery/collectors/${selectedCollector.id}/profile`);
-        if (!res.ok) throw new Error(`Profile request failed: ${res.status}`);
-        const data = await res.json();
-        const profiles = (data.profiles || []) as EdgeObservationProfile[];
+        const data = await loadCollectorProfiles(shell, selectedCollector.id);
+        const profiles = data.profiles;
         setEdgeProfiles(profiles);
         if (profiles.length) applyEdgeProfile(selectedCollector, profiles[0]);
       } catch {
@@ -733,10 +741,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   async function materializeCollectorDataset() {
     if (!selectedCollector) return;
     try {
-      const res = await shell.fetch(`/discovery/collectors/${selectedCollector.id}/datasets`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Dataset could not be created");
-      const dataset = data.dataset as DiscoveryDataset;
+      const dataset = await createCollectorDataset(shell, selectedCollector.id);
       setEdgeDatasets((current) => [dataset, ...current.filter((item) => item.id !== dataset.id)]);
       if (dataset.profiles?.length) applyDatasetProfile(selectedCollector, dataset, dataset.profiles[0]);
       shell.notify("Discovery dataset created", "success");
@@ -747,9 +752,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   async function loadSchedule(pipelineId: string) {
     try {
-      const res = await shell.fetch(`/discovery/pipelines/${pipelineId}/schedule`);
-      if (!res.ok) throw new Error(await res.text());
-      setSchedule(await res.json());
+      setSchedule(await loadPipelineSchedule(shell, pipelineId));
     } catch {
       setSchedule({ enabled: false, interval: "manual", next_run_at: null });
     }
@@ -761,13 +764,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       return;
     }
     try {
-      const res = await shell.fetch(`/discovery/pipelines/${pipelineId}/schedule`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: schedule.enabled, interval: schedule.interval, nextRunAt: schedule.next_run_at || null }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      setSchedule(await res.json());
+      setSchedule(await savePipelineSchedule(shell, pipelineId, schedule));
       shell.notify("Discovery schedule saved", "success");
     } catch {
       shell.notify("Discovery schedule could not be saved", "error");
@@ -785,9 +782,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     }
     setLoading(true);
     try {
-      const res = await shell.fetch(`/discovery/pipelines/${pipelineId}/publish`, { method: "POST" });
-      if (!res.ok) throw new Error(await res.text());
-      const published = await res.json();
+      const published = await publishDiscoveryPipeline(shell, pipelineId);
       setPipelines((current) => [published, ...current.filter((pipeline) => pipeline.id !== published.id)]);
       shell.notify("Pipeline published", "success");
       refresh();
@@ -805,13 +800,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     }
     setLoading(true);
     try {
-      const res = await shell.fetch("/discovery/pipelines/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ definition: definition(), targetClasses: classes }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      setPreview(await res.json());
+      setPreview(await previewDiscoveryPipeline(shell, definition(), classes));
       setStaged(null);
       shell.notify("Pipeline preview generated", "success");
     } catch {
@@ -828,13 +817,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     }
     setLoading(true);
     try {
-      const res = await shell.fetch(`/discovery/pipelines/${pipelineId}/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetClasses: classes }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const run = await res.json();
+      const run = await runDiscoveryPipeline(shell, pipelineId, classes);
       shell.notify(`Discovery staged: ${run.jobId}`, "success");
       await loadStagedJob(run.jobId);
       setView("runs");
@@ -848,9 +831,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   async function loadStagedJob(jobId: string) {
     try {
-      const res = await shell.fetch(`/discovery/jobs/${jobId}/staged`);
-      if (!res.ok) throw new Error(await res.text());
-      setStaged(await res.json());
+      setStaged(await loadStagedDiscoveryJob(shell, jobId));
       await loadRollbacks(jobId);
       setView("runs");
     } catch {
@@ -860,11 +841,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   async function loadRollbacks(jobId?: string) {
     try {
-      const path = jobId ? `/discovery/jobs/${jobId}/rollback` : "/discovery/rollbacks";
-      const res = await shell.fetch(path);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setRollbacks(data.rollbacks || []);
+      setRollbacks(await loadDiscoveryRollbacks(shell, jobId));
     } catch {
       shell.notify("Rollback history could not be loaded", "error");
     }
@@ -873,9 +850,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   async function commitStagedJob(jobId: string) {
     setLoading(true);
     try {
-      const res = await shell.fetch(`/discovery/jobs/${jobId}/commit`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Commit failed");
+      const data = await commitStagedDiscoveryJob(shell, jobId);
       shell.notify(`Discovery committed: ${data.created} created, ${data.updated} updated`, "success");
       await loadStagedJob(jobId);
       refresh();
@@ -889,9 +864,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   async function discardStagedJob(jobId: string) {
     setLoading(true);
     try {
-      const res = await shell.fetch(`/discovery/jobs/${jobId}/staged`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Discard failed");
+      await discardStagedDiscoveryJob(shell, jobId);
       setStaged(null);
       setRollbacks([]);
       shell.notify("Staged discovery run discarded", "success");
@@ -906,9 +879,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   async function applyRollback(rollbackId: string, jobId: string) {
     setLoading(true);
     try {
-      const res = await shell.fetch(`/discovery/rollbacks/${rollbackId}/apply`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Rollback failed");
+      const data = await applyDiscoveryRollback(shell, rollbackId);
       shell.notify(`Rollback applied: ${data.deleted} deleted, ${data.restored} restored`, "success");
       await loadStagedJob(jobId);
       refresh();
@@ -921,8 +892,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   async function approveAllSafe(jobId: string) {
     try {
-      const res = await shell.fetch(`/discovery/jobs/${jobId}/staged/approve-safe`, { method: "POST" });
-      if (!res.ok) throw new Error(await res.text());
+      await approveSafeStagedRecords(shell, jobId);
       await loadStagedJob(jobId);
       shell.notify("Safe staged records approved", "success");
     } catch {
@@ -932,12 +902,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   async function skipStagedRecord(jobId: string, recordId: string) {
     try {
-      const res = await shell.fetch(`/discovery/jobs/${jobId}/staged/status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordIds: [recordId], status: "skipped" }),
-      });
-      if (!res.ok) throw new Error(await res.text());
+      await skipStagedDiscoveryRecord(shell, jobId, recordId);
       await loadStagedJob(jobId);
     } catch {
       shell.notify("Staged record could not be skipped", "error");
