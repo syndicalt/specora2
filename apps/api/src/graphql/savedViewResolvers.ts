@@ -1,7 +1,42 @@
 import { GraphQLError } from "graphql";
 import { checkPermission } from "./resolverSupport";
 
-function mapSavedView(row: any) {
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type SavedViewContext = {
+  pg: QueryablePg;
+  user?: { id?: string; role?: string } | null;
+};
+
+type SavedViewRow = {
+  id: string;
+  name: string;
+  root_id?: string | null;
+  class_filter?: unknown[] | null;
+  environment_filter?: unknown[] | null;
+  relationship_filter?: unknown[] | null;
+  camera_x?: number | null;
+  camera_y?: number | null;
+  camera_zoom?: number | null;
+  created_at?: string | Date;
+  updated_at?: string | Date;
+};
+
+type SaveViewArgs = {
+  id?: string;
+  name?: string;
+  rootId?: string | null;
+  classFilter?: string[];
+  environmentFilter?: string[];
+  relationshipFilter?: string[];
+  cameraX?: number | null;
+  cameraY?: number | null;
+  cameraZoom?: number | null;
+};
+
+function mapSavedView(row: SavedViewRow) {
   return {
     id: row.id,
     name: row.name,
@@ -18,7 +53,7 @@ function mapSavedView(row: any) {
 }
 
 export const savedViewQueries = {
-  async savedViews(_parent: any, _args: any, context: any) {
+  async savedViews(_parent: unknown, _args: Record<string, never>, context: SavedViewContext) {
     if (!context.user?.id) return [];
     try {
       const result = await context.pg.query(
@@ -26,14 +61,14 @@ export const savedViewQueries = {
          FROM saved_views WHERE user_id = $1 ORDER BY updated_at DESC`,
         [context.user.id]
       );
-      return result.rows.map(mapSavedView);
+      return (result.rows as SavedViewRow[]).map(mapSavedView);
     } catch (err) {
       console.error("savedViews error:", err);
       throw err;
     }
   },
 
-  async savedView(_parent: any, args: { id: string }, context: any) {
+  async savedView(_parent: unknown, args: { id: string }, context: SavedViewContext) {
     if (!context.user?.id) return null;
     try {
       const result = await context.pg.query(
@@ -42,7 +77,7 @@ export const savedViewQueries = {
         [args.id, context.user.id]
       );
       if (!result.rows.length) return null;
-      return mapSavedView(result.rows[0]);
+      return mapSavedView(result.rows[0] as SavedViewRow);
     } catch (err) {
       console.error("savedView error:", err);
       throw err;
@@ -51,7 +86,7 @@ export const savedViewQueries = {
 };
 
 export const savedViewMutations = {
-  async createSavedView(_parent: any, args: any, context: any) {
+  async createSavedView(_parent: unknown, args: SaveViewArgs, context: SavedViewContext) {
     await checkPermission(context, "cmdb", "read");
     if (!context.user?.id) {
       throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
@@ -69,21 +104,21 @@ export const savedViewMutations = {
           args.cameraX ?? null, args.cameraY ?? null, args.cameraZoom ?? null,
         ]
       );
-      return mapSavedView(result.rows[0]);
+      return mapSavedView(result.rows[0] as SavedViewRow);
     } catch (err) {
       console.error("createSavedView error:", err);
       throw err;
     }
   },
 
-  async updateSavedView(_parent: any, args: any, context: any) {
+  async updateSavedView(_parent: unknown, args: SaveViewArgs & { id: string }, context: SavedViewContext) {
     await checkPermission(context, "cmdb", "read");
     if (!context.user?.id) {
       throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
     }
     try {
       const updates: string[] = [];
-      const values: any[] = [];
+      const values: unknown[] = [];
       let idx = 1;
       if (args.name !== undefined) { updates.push(`name = $${idx++}`); values.push(args.name); }
       if (args.rootId !== undefined) { updates.push(`root_id = $${idx++}`); values.push(args.rootId); }
@@ -106,14 +141,14 @@ export const savedViewMutations = {
       if (!result.rows.length) {
         throw new GraphQLError("View not found", { extensions: { code: "NOT_FOUND" } });
       }
-      return mapSavedView(result.rows[0]);
+      return mapSavedView(result.rows[0] as SavedViewRow);
     } catch (err) {
       console.error("updateSavedView error:", err);
       throw err;
     }
   },
 
-  async deleteSavedView(_parent: any, args: { id: string }, context: any) {
+  async deleteSavedView(_parent: unknown, args: { id: string }, context: SavedViewContext) {
     await checkPermission(context, "cmdb", "read");
     if (!context.user?.id) {
       throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHORIZED" } });
