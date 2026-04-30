@@ -1,10 +1,21 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
+import type { Record as Neo4jRecord } from "neo4j-driver";
 import { requirePermission, clearPermissionCache } from "../../services/rbac";
 import { recordAuditEvent } from "../../services/auditLog";
 
-async function loadCmdbGroupOptions(fastify: FastifyInstance) {
-  if (!(fastify as any).neo4j?.session) return [];
-  const session = (fastify as any).neo4j.session();
+type DbError = Error & { code?: string };
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+function dbError(err: unknown): DbError {
+  return err instanceof Error ? err as DbError : new Error(String(err)) as DbError;
+}
+
+async function loadCmdbGroupOptions(fastify: FastifyInstance): Promise<Array<{ id: string; name: string }>> {
+  if (!fastify.neo4j?.session) return [];
+  const session = fastify.neo4j.session();
   try {
     const result = await session.run(
       `MATCH (n:Group:ConfigurationItem)
@@ -13,13 +24,13 @@ async function loadCmdbGroupOptions(fastify: FastifyInstance) {
        LIMIT 500`
     );
     return result.records
-      .map((record: any) => ({
+      .map((record: Neo4jRecord) => ({
         id: String(record.get("id") || ""),
         name: String(record.get("name") || record.get("id") || ""),
       }))
       .filter((item: { id: string }) => item.id);
-  } catch (err: any) {
-    fastify.log.warn({ err: err.message }, "Failed to load CMDB group options");
+  } catch (err) {
+    fastify.log.warn({ err: errorMessage(err, "Failed to load CMDB group options") }, "Failed to load CMDB group options");
     return [];
   } finally {
     await session.close();
@@ -48,9 +59,9 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
         loadCmdbGroupOptions(fastify),
       ]);
       return { groups: groups.rows, memberships: memberships.rows, permissions: permissions.rows, cmdbGroupOptions };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch identity groups" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch identity groups") });
     }
   });
 
@@ -67,7 +78,7 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
         [name, slug, body.description || null, body.source || "local", body.externalId || null, body.cmdbCiId || null]
       );
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "identity_group.created",
         entityType: "IdentityGroup",
         entityId: result.rows[0].id,
@@ -75,10 +86,11 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console" },
       });
       return { group: result.rows[0] };
-    } catch (err: any) {
-      if (err.code === "23505") return reply.status(409).send({ error: "Identity group already exists" });
+    } catch (err) {
+      const error = dbError(err);
+      if (error.code === "23505") return reply.status(409).send({ error: "Identity group already exists" });
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to create identity group" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to create identity group") });
     }
   });
 
@@ -99,19 +111,19 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
       );
       if (!result.rows.length) return reply.status(404).send({ error: "Identity group not found" });
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "identity_group.updated",
         entityType: "IdentityGroup",
         entityId: id,
-        oldValues: existing.rows[0] || undefined,
+        oldValues: (existing.rows[0] as Record<string, unknown> | undefined) || undefined,
         newValues: result.rows[0],
         metadata: { source: "api.admin", surface: "admin-console" },
       });
       clearPermissionCache();
       return { group: result.rows[0] };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to update identity group" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to update identity group") });
     }
   });
 
@@ -128,11 +140,11 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
       );
       await fastify.pg.query("DELETE FROM identity_groups WHERE id = $1", [id]);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "identity_group.deleted",
         entityType: "IdentityGroup",
         entityId: id,
-        oldValues: existing.rows[0],
+        oldValues: existing.rows[0] as Record<string, unknown>,
         metadata: {
           source: "api.admin",
           surface: "admin-console",
@@ -142,9 +154,9 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
       });
       clearPermissionCache();
       return { success: true };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to delete identity group" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to delete identity group") });
     }
   });
 
@@ -161,7 +173,7 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
         [id, body.userId, body.source || "local"]
       );
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "identity_group.member_added",
         entityType: "IdentityGroup",
         entityId: id,
@@ -170,9 +182,9 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
       });
       clearPermissionCache();
       return { membership: result.rows[0] };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to add group member" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to add group member") });
     }
   });
 
@@ -180,7 +192,7 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
     const { groupId, userId } = request.params as { groupId: string; userId: string };
     await fastify.pg.query("DELETE FROM identity_group_memberships WHERE group_id = $1 AND user_id = $2", [groupId, userId]);
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: request.user?.id,
       action: "identity_group.member_removed",
       entityType: "IdentityGroup",
       entityId: groupId,
@@ -205,7 +217,7 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
       );
       const grant = result.rows[0] || { group_id: id, resource: body.resource, action: body.action };
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "identity_group.permission_granted",
         entityType: "IdentityGroup",
         entityId: id,
@@ -214,9 +226,9 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
       });
       clearPermissionCache();
       return { permission: grant };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to grant group permission" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to grant group permission") });
     }
   });
 
@@ -225,7 +237,7 @@ export function registerAdminIdentityGroupRoutes(fastify: FastifyInstance) {
     const existing = await fastify.pg.query("SELECT id, group_id, resource, action FROM identity_group_permissions WHERE id = $1 AND group_id = $2", [permissionId, groupId]);
     await fastify.pg.query("DELETE FROM identity_group_permissions WHERE id = $1 AND group_id = $2", [permissionId, groupId]);
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: request.user?.id,
       action: "identity_group.permission_revoked",
       entityType: "IdentityGroup",
       entityId: groupId,
