@@ -38,7 +38,6 @@ import {
   previewRecordDecision,
   relationshipStatusClass,
   relationshipStatusLabel,
-  rowsToCsv,
   sourceConfigFromForm,
   sourceFields,
   sourceFormFromSource,
@@ -52,6 +51,7 @@ import {
   sourceSelectionPatch,
   type SourceSelectionPatch,
 } from "./sourceSelection";
+import { buildPipelineDefinition, loadedPipelineState } from "./pipelineState";
 import type {
   DiscoveryCollector,
   DiscoveryCredentialReference,
@@ -363,17 +363,17 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     clearDerivedRunState();
   }
 
-  const definition = useCallback((): PipelineDefinition => ({
-    source: selectedSource
-      ? { id: selectedSource.id, name: selectedSource.name, type: selectedSource.type, collectorId: String(selectedSource.config?.collectorId || "") || undefined }
-      : selectedCollector
-        ? { id: `collector:${selectedCollector.id}`, collectorId: selectedCollector.id, datasetId: selectedDatasetId || undefined, name: selectedCollector.name, type: "edge", entityType: selectedEdgeProfile?.entityType }
-        : { name: sourceName, type: "manual" },
+  const definition = useCallback((): PipelineDefinition => buildPipelineDefinition({
+    selectedSource,
+    selectedCollector,
+    selectedDatasetId,
+    selectedEdgeProfile,
     sourceName,
-    sample: profile,
-    entityProfiles: edgeProfiles.length ? edgeProfiles : undefined,
+    profile,
+    edgeProfiles,
     proposal,
-    flow: { nodes, edges },
+    nodes,
+    edges,
   }), [selectedSource, selectedCollector, selectedDatasetId, selectedEdgeProfile, sourceName, profile, edgeProfiles, proposal, nodes, edges]);
 
   const refresh = useCallback(async () => {
@@ -596,26 +596,23 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
 
   async function loadPipeline(pipeline: PipelineRecord) {
     undoStackRef.current = [];
-    const saved = pipeline.definition || {};
-    const savedSample = saved.sample || {};
-    const columns = savedSample.columns || Object.keys(savedSample.rows?.[0] || {});
-    const savedEdgeProfiles = saved.entityProfiles || saved.proposal?.sourceProfile?.entityProfiles || [];
-    setCurrentPipelineId(pipeline.id);
-    setSelectedSourceId(saved.source?.id || "");
-    setEdgeProfiles(savedEdgeProfiles);
+    const loaded = loadedPipelineState(pipeline);
+    setCurrentPipelineId(loaded.id);
+    setSelectedSourceId(loaded.selectedSourceId);
+    setEdgeProfiles(loaded.edgeProfiles);
     setEdgeDatasets([]);
-    setSelectedDatasetId(saved.source?.datasetId || "");
-    setSelectedEdgeEntityType(saved.source?.entityType || savedEdgeProfiles[0]?.entityType || "");
-    setSourceName(saved.sourceName || pipeline.name);
-    setSample(rowsToCsv(columns, savedSample.rows || []));
+    setSelectedDatasetId(loaded.selectedDatasetId);
+    setSelectedEdgeEntityType(loaded.selectedEdgeEntityType);
+    setSourceName(loaded.sourceName);
+    setSample(loaded.sample);
     skipGeneratedFlowSyncRef.current = true;
-    setProposal(saved.proposal || null);
-    if (saved.flow?.nodes?.length) {
-      const savedNodes = saved.flow.nodes as Node<DiscoveryFlowNodeData>[];
+    setProposal(loaded.proposal);
+    if (loaded.flow?.nodes?.length) {
+      const savedNodes = loaded.flow.nodes as Node<DiscoveryFlowNodeData>[];
       setNodes(savedNodes);
-      if (saved.flow?.edges?.length) setEdges(withDynamicEdgeHandles(saved.flow.edges, savedNodes));
-    } else if (saved.flow?.edges?.length) {
-      setEdges(saved.flow.edges);
+      if (loaded.flow?.edges?.length) setEdges(withDynamicEdgeHandles(loaded.flow.edges, savedNodes));
+    } else if (loaded.flow?.edges?.length) {
+      setEdges(loaded.flow.edges);
     }
     await loadSchedule(pipeline.id);
     setPreview(null);
