@@ -80,7 +80,7 @@ function errorMessage(err: unknown, fallback: string) {
   return err instanceof Error ? err.message : fallback;
 }
 
-type GenericTableRecord = Record<string, unknown> & { id?: string; name?: string; number?: string | null };
+type GenericTableRecord = Record<string, unknown> & { id?: string; name?: string | null; number?: string | null };
 
 type CleanupReviewRow = Record<string, unknown> & {
   id: string;

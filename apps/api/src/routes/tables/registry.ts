@@ -9,6 +9,45 @@ import { displayName, normalizeEnumValues, postgresAttrType } from "./helpers";
 
 const AUDIT_COLUMNS = new Set(["created_at", "updated_at"]);
 
+type CiClassAttributeRow = {
+  name: string;
+  displayName: string;
+  attrType: string;
+  isMandatory: boolean;
+  isHealthRequired: boolean;
+  isKeyAttribute: boolean;
+  enumValues?: unknown;
+  referenceClass?: string;
+};
+
+type CiClassRow = {
+  id: string;
+  name: string;
+  display_name?: string | null;
+  description?: string | null;
+  icon?: string | null;
+  color?: string | null;
+  display_field?: string | null;
+  secondary_display_fields?: string[] | null;
+  attributes?: unknown;
+};
+
+type PostgresColumnRow = {
+  table_name: string;
+  column_name: string;
+  data_type: string;
+  udt_name: string;
+  is_nullable: "YES" | "NO";
+  column_default?: string | null;
+};
+
+function parseClassAttributes(value: unknown): CiClassAttributeRow[] {
+  if (Array.isArray(value)) return value as CiClassAttributeRow[];
+  if (typeof value !== "string") return [];
+  const parsed = JSON.parse(value || "[]") as unknown;
+  return Array.isArray(parsed) ? parsed as CiClassAttributeRow[] : [];
+}
+
 export async function getTables(fastify: FastifyInstance): Promise<TableDefinition[]> {
   const [classes, columns] = await Promise.all([
     fastify.pg.query(
@@ -44,8 +83,8 @@ export async function getTables(fastify: FastifyInstance): Promise<TableDefiniti
     ),
   ]);
 
-  const cmdbTables: TableDefinition[] = classes.rows.map((row: any) => {
-    const attrs = Array.isArray(row.attributes) ? row.attributes : JSON.parse(row.attributes || "[]");
+  const cmdbTables: TableDefinition[] = (classes.rows as CiClassRow[]).map((row) => {
+    const attrs = parseClassAttributes(row.attributes);
     return {
       id: `cmdb.${row.name}`,
       name: `cmdb.${row.name}`,
@@ -57,15 +96,15 @@ export async function getTables(fastify: FastifyInstance): Promise<TableDefiniti
       resource: "tables",
       actions: ["read", "write", "delete"] as TableAction[],
       category: FOUNDATION_CLASSES.has(row.name) ? "foundation" as const : "cmdb" as const,
-      attributes: attrs.map((attr: any) => ({
+      attributes: attrs.map((attr) => ({
         ...attr,
         enumValues: normalizeEnumValues(attr.enumValues),
       })),
     };
   });
 
-  const columnsByTable = new Map<string, any[]>();
-  for (const column of columns.rows) {
+  const columnsByTable = new Map<string, PostgresColumnRow[]>();
+  for (const column of columns.rows as PostgresColumnRow[]) {
     if (!columnsByTable.has(column.table_name)) columnsByTable.set(column.table_name, []);
     columnsByTable.get(column.table_name)?.push(column);
   }
@@ -115,4 +154,3 @@ export async function resolveTable(fastify: FastifyInstance, tableId: string): P
   const tables = await getTables(fastify);
   return tables.find((table) => table.id === tableId || table.name === tableId) || null;
 }
-

@@ -10,6 +10,24 @@ export const RELATIONSHIP_FILTER_FIELDS = new Set(["__relationshipState", "__rel
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
 
+type NodeLike = {
+  properties?: unknown;
+};
+
+export type TableRecordLike = Record<string, unknown> & {
+  id?: string;
+  name?: string | null;
+  number?: string | null;
+  environment?: string | null;
+  attributes?: Record<string, unknown>;
+};
+
+type ActorLike = {
+  id?: unknown;
+  email?: unknown;
+  role?: unknown;
+} | null | undefined;
+
 export function parseAttributes(value: unknown): Record<string, unknown> {
   if (!value) return {};
   if (typeof value === "string") {
@@ -22,12 +40,14 @@ export function parseAttributes(value: unknown): Record<string, unknown> {
   return typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
-export function parseNode(node: any) {
-  const props = node.properties || node;
+export function parseNode(node: NodeLike | Record<string, unknown>) {
+  const props = typeof node.properties === "object" && node.properties !== null
+    ? node.properties as Record<string, unknown>
+    : node as Record<string, unknown>;
   return {
     ...props,
     attributes: parseAttributes(props.attributes),
-  };
+  } as TableRecordLike;
 }
 
 export function normalizeEnumValues(value: unknown): string[] | undefined {
@@ -145,7 +165,7 @@ function csvCell(value: unknown): string {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
 }
 
-export function recordValueForColumn(record: any, column: string): unknown {
+export function recordValueForColumn(record: TableRecordLike, column: string): unknown {
   if (column === "id") return record.id;
   if (column === "name") return record.name;
   if (column === "number") return record.number;
@@ -153,7 +173,7 @@ export function recordValueForColumn(record: any, column: string): unknown {
   return (record.attributes || {})[column] ?? record[column];
 }
 
-export function recordsToCsv(records: any[], columns: string[]): string {
+export function recordsToCsv(records: TableRecordLike[], columns: string[]): string {
   const rows = [columns.map(csvCell).join(",")];
   for (const record of records) {
     rows.push(columns.map((column) => csvCell(recordValueForColumn(record, column))).join(","));
@@ -161,7 +181,7 @@ export function recordsToCsv(records: any[], columns: string[]): string {
   return `${rows.join("\n")}\n`;
 }
 
-export function recordsToJson(records: any[], columns: string[]) {
+export function recordsToJson(records: TableRecordLike[], columns: string[]) {
   return JSON.stringify({
     records: records.map((record) => Object.fromEntries(columns.map((column) => [column, recordValueForColumn(record, column)]))),
   }, null, 2);
@@ -188,18 +208,19 @@ export function normalizeCleanupStatus(value: unknown): "open" | "in_progress" |
   return "open";
 }
 
-export function timestampString(value: any) {
+export function timestampString(value: unknown) {
   if (!value) return null;
   if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "string" && typeof value !== "number") return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-export function actorKey(user: any) {
+export function actorKey(user: ActorLike) {
   return user?.id || user?.email || user?.role || "anonymous";
 }
 
-export function actorUuid(user: any) {
+export function actorUuid(user: ActorLike) {
   return typeof user?.id === "string" && UUID_PATTERN.test(user.id) ? user.id : null;
 }
 

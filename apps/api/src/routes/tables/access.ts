@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { type FieldAccess, resolveFieldAccess } from "../../services/fieldRbac";
 import type { TableDefinition, TableFilter } from "../tableDefinitions";
-import { RELATIONSHIP_FILTER_FIELDS, sanitizeColumns, splitAttrs } from "./helpers";
+import { RELATIONSHIP_FILTER_FIELDS, sanitizeColumns, splitAttrs, type TableRecordLike } from "./helpers";
 
 export type TableValidationIssue = {
   field: string;
@@ -64,7 +64,7 @@ export function validationSummary(issues: TableValidationIssue[]) {
   };
 }
 
-export function attachValidationState(table: TableDefinition, record: any, access: Map<string, FieldAccess>) {
+export function attachValidationState(table: TableDefinition, record: TableRecordLike, access: Map<string, FieldAccess>) {
   const issues = validationIssuesForRecord(table, record, access);
   return {
     ...record,
@@ -127,7 +127,7 @@ export function isMissing(value: unknown) {
   return value === undefined || value === null || value === "";
 }
 
-export function validationIssuesForRecord(table: TableDefinition, record: any, access: Map<string, FieldAccess>, relationshipCount?: number): TableValidationIssue[] {
+export function validationIssuesForRecord(table: TableDefinition, record: TableRecordLike, access: Map<string, FieldAccess>, relationshipCount?: number): TableValidationIssue[] {
   const issues: TableValidationIssue[] = [];
   if (access.get("name")?.read !== false && isMissing(record.name)) {
     issues.push({
@@ -171,16 +171,17 @@ export function validationIssuesForRecord(table: TableDefinition, record: any, a
   return issues;
 }
 
-export function redactRecord(record: any, access: Map<string, FieldAccess>) {
+export function redactRecord(record: TableRecordLike, access: Map<string, FieldAccess>) {
   const redactedFields: string[] = [];
-  const next = { ...record, attributes: { ...(record.attributes || {}) } };
+  const next: TableRecordLike & { _redactedFields?: string[] } = { ...record, attributes: { ...(record.attributes || {}) } };
+  const attributes = next.attributes || {};
   for (const [field, fieldAccess] of access) {
     if (fieldAccess.read) continue;
     redactedFields.push(field);
     if (field === "name") next.name = null;
     else if (field === "number") next.number = null;
     else if (field === "environment") next.environment = null;
-    else if (field in next.attributes) next.attributes[field] = null;
+    else if (field in attributes) attributes[field] = null;
     else if (field in next) next[field] = null;
   }
   if (redactedFields.length) next._redactedFields = redactedFields;
