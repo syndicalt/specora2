@@ -18,10 +18,53 @@ export function getProvaraConfig(): { url: string; key: string; tenantId: string
   return { url, key, tenantId: process.env.PROVARA_TENANT_ID || null };
 }
 
-async function callProvara(
-  messages: { role: string; content: string; tool_calls?: any; tool_call_id?: string }[],
-  tools: OpenAI.Chat.ChatCompletionTool[]
-): Promise<OpenAI.Chat.ChatCompletion> {
+type ChatToolCall = {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: ChatToolCall[];
+  tool_call_id?: string;
+};
+
+type ToolArguments = Record<string, unknown>;
+
+type CiSummary = {
+  id: string;
+  name?: string;
+  class?: string;
+  environment?: string;
+};
+
+type CiDetails = CiSummary & {
+  relationships?: Array<{
+    type?: string;
+    target?: CiSummary;
+  }>;
+};
+
+type ServiceMapResult = {
+  rootId: string;
+  nodes?: CiSummary[];
+  edges?: Array<{ sourceId: string; targetId: string; type?: string }>;
+};
+
+function asToolCalls(value: unknown): ChatToolCall[] | undefined {
+  return Array.isArray(value) ? (value as ChatToolCall[]) : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+async function callProvara(messages: ChatMessage[], tools: OpenAI.Chat.ChatCompletionTool[]): Promise<OpenAI.Chat.ChatCompletion> {
   const config = getProvaraConfig()!;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -214,10 +257,10 @@ function sanitizeAssistantContent(text: string): string {
  * Fallback parser for models that output action directives instead of native tool calls.
  * Converts [[action|<type>|<payload>|<label>]] into corresponding tool calls.
  */
-function parseActionToolCalls(text: string): { id: string; type: "function"; function: { name: string; arguments: string } }[] | undefined {
+function parseActionToolCalls(text: string): ChatToolCall[] | undefined {
   if (!text.includes("[[action|")) return undefined;
   const actionRegex = /\[\[action\|([^|]+)\|([^|]+)\|([^\[\]]+)\]\]/g;
-  const toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[] = [];
+  const toolCalls: ChatToolCall[] = [];
   let match;
   while ((match = actionRegex.exec(text)) !== null) {
     const actionType = match[1];
@@ -225,7 +268,7 @@ function parseActionToolCalls(text: string): { id: string; type: "function"; fun
     const params = new URLSearchParams(payload);
 
     if (actionType === "search_cis") {
-      const args: any = {};
+      const args: ToolArguments = {};
       if (params.get("name")) args.name = params.get("name");
       if (params.get("query")) args.query = params.get("query");
       if (params.get("class")) args.class = params.get("class");
@@ -246,7 +289,7 @@ function parseActionToolCalls(text: string): { id: string; type: "function"; fun
         toolCalls.push({ id: `act-${Date.now()}-${toolCalls.length}`, type: "function", function: { name: "get_ci_details", arguments: JSON.stringify({ id }) } });
         continue;
       }
-      const args: any = {};
+      const args: ToolArguments = {};
       if (params.get("query")) args.query = params.get("query");
       if (params.get("name")) args.name = params.get("name");
       if (params.get("class")) args.class = params.get("class");
@@ -261,7 +304,7 @@ function parseActionToolCalls(text: string): { id: string; type: "function"; fun
   return toolCalls.length > 0 ? toolCalls : undefined;
 }
 
-function latestUserContent(messages: any[]): string {
+function latestUserContent(messages: ChatMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role === "user" && typeof message.content === "string") {
@@ -271,7 +314,7 @@ function latestUserContent(messages: any[]): string {
   return "";
 }
 
-function parseJsonContent(value: unknown): any {
+function parseJsonContent(value: unknown): unknown {
   if (typeof value !== "string") return value;
   try {
     return JSON.parse(value);
@@ -280,10 +323,10 @@ function parseJsonContent(value: unknown): any {
   }
 }
 
-function toolNameByCallId(messages: any[]): Map<string, string> {
+function toolNameByCallId(messages: ChatMessage[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const message of messages) {
-    const toolCalls = parseJsonContent(message?.tool_calls);
+    const toolCalls = asToolCalls(parseJsonContent(message?.tool_calls) || message?.tool_calls);
     if (!Array.isArray(toolCalls)) continue;
     for (const call of toolCalls) {
       if (typeof call?.id === "string" && typeof call?.function?.name === "string") {
@@ -294,7 +337,7 @@ function toolNameByCallId(messages: any[]): Map<string, string> {
   return names;
 }
 
-function latestResolvedCi(messages: any[], preferredName?: string): { id: string; source: "search_cis" | "get_ci_details" | "get_service_map" } | null {
+function latestResolvedCi(messages: ChatMessage[], preferredName?: string): { id: string; source: "search_cis" | "get_ci_details" | "get_service_map" } | null {
   const toolNames = toolNameByCallId(messages);
   const normalizedPreferred = preferredName?.trim().toLowerCase();
   let latest: { id: string; source: "search_cis" | "get_ci_details" | "get_service_map" } | null = null;
@@ -302,7 +345,7 @@ function latestResolvedCi(messages: any[], preferredName?: string): { id: string
   for (const message of messages) {
     if (message?.role !== "tool" || typeof message.tool_call_id !== "string") continue;
     const toolName = toolNames.get(message.tool_call_id);
-    const result = parseJsonContent(message.content);
+    const result = parseJsonContent(message.content) as Partial<CiDetails & ServiceMapResult> | null;
     if (typeof result?.id === "string" && Array.isArray(result.relationships)) {
       latest = { id: result.id, source: "get_ci_details" };
       continue;
@@ -313,11 +356,15 @@ function latestResolvedCi(messages: any[], preferredName?: string): { id: string
     }
     if (toolName === "search_cis" && Array.isArray(result)) {
       const exact = normalizedPreferred
-        ? result.find((item) => typeof item?.id === "string" && typeof item?.name === "string" && item.name.toLowerCase() === normalizedPreferred)
+        ? result.find((item: unknown) => {
+          const ci = item as Partial<CiSummary>;
+          return typeof ci.id === "string" && typeof ci.name === "string" && ci.name.toLowerCase() === normalizedPreferred;
+        })
         : undefined;
       const candidate = exact || (result.length === 1 ? result[0] : undefined);
-      if (typeof candidate?.id === "string") {
-        latest = { id: candidate.id, source: "search_cis" };
+      const ci = candidate as Partial<CiSummary> | undefined;
+      if (typeof ci?.id === "string") {
+        latest = { id: ci.id, source: "search_cis" };
       }
     } else if (toolName === "get_ci_details" && typeof result?.id === "string") {
       latest = { id: result.id, source: "get_ci_details" };
@@ -339,18 +386,18 @@ function isPromissoryToolText(text: string): boolean {
   );
 }
 
-function shouldForceFinalFromPromissory(messages: any[], text: string): boolean {
+function shouldForceFinalFromPromissory(messages: ChatMessage[], text: string): boolean {
   return isPromissoryToolText(text) && !!latestResolvedCi(messages, latestUserContent(messages));
 }
 
 const PROMISSORY_FINAL_INSTRUCTION =
   "You already have the available platform tool results in this conversation. Do not promise to fetch, check, retrieve, or analyze more data. Provide the final answer now using the gathered CI details, service map, health, risk, relationship, and context data that is present. If a field is missing, call that out as a limitation and still summarize recommended next actions.";
 
-function deterministicToolSummary(messages: any[]): string | null {
+function deterministicToolSummary(messages: ChatMessage[]): string | null {
   const toolNames = toolNameByCallId(messages);
-  let latestSearch: any[] | null = null;
-  let latestDetails: any | null = null;
-  let latestMap: any | null = null;
+  let latestSearch: CiSummary[] | null = null;
+  let latestDetails: CiDetails | null = null;
+  let latestMap: ServiceMapResult | null = null;
 
   for (const message of messages) {
     if (message?.role !== "tool") continue;
@@ -358,11 +405,11 @@ function deterministicToolSummary(messages: any[]): string | null {
     const result = parseJsonContent(message.content);
     if (!result) continue;
     if ((toolName === "search_cis" || Array.isArray(result)) && Array.isArray(result)) {
-      latestSearch = result;
-    } else if ((toolName === "get_ci_details" || Array.isArray(result.relationships)) && typeof result.id === "string") {
-      latestDetails = result;
-    } else if ((toolName === "get_service_map" || Array.isArray(result.nodes)) && typeof result.rootId === "string") {
-      latestMap = result;
+      latestSearch = result as CiSummary[];
+    } else if (isRecord(result) && (toolName === "get_ci_details" || Array.isArray(result.relationships)) && typeof result.id === "string") {
+      latestDetails = result as CiDetails;
+    } else if (isRecord(result) && (toolName === "get_service_map" || Array.isArray(result.nodes)) && typeof result.rootId === "string") {
+      latestMap = result as ServiceMapResult;
     }
   }
 
@@ -373,7 +420,7 @@ function deterministicToolSummary(messages: any[]): string | null {
     if (relationships.length) {
       lines.push(`It has ${relationships.length} direct relationship${relationships.length === 1 ? "" : "s"}:`);
       for (const rel of relationships.slice(0, 6)) {
-        const target = rel.target || {};
+        const target: Partial<CiSummary> = rel.target || {};
         lines.push(`- ${rel.type || "RELATED_TO"} ${target.name || target.id || "unknown target"}${target.class ? ` (${target.class})` : ""}`);
       }
     } else {
@@ -383,14 +430,14 @@ function deterministicToolSummary(messages: any[]): string | null {
   } else if (latestMap) {
     const nodes = Array.isArray(latestMap.nodes) ? latestMap.nodes : [];
     const edges = Array.isArray(latestMap.edges) ? latestMap.edges : [];
-    const root = nodes.find((node: any) => node.id === latestMap.rootId);
+    const root = nodes.find((node) => node.id === latestMap.rootId);
     lines.push(`I found the service map for ${root?.name || latestMap.rootId}.`);
     lines.push(`The map includes ${nodes.length} node${nodes.length === 1 ? "" : "s"} and ${edges.length} relationship${edges.length === 1 ? "" : "s"}.`);
     if (edges.length) {
       lines.push("Top relationships:");
       for (const edge of edges.slice(0, 6)) {
-        const source = nodes.find((node: any) => node.id === edge.sourceId);
-        const target = nodes.find((node: any) => node.id === edge.targetId);
+        const source = nodes.find((node) => node.id === edge.sourceId);
+        const target = nodes.find((node) => node.id === edge.targetId);
         lines.push(`- ${source?.name || edge.sourceId} ${edge.type || "RELATED_TO"} ${target?.name || edge.targetId}`);
       }
     }
@@ -407,16 +454,16 @@ function deterministicToolSummary(messages: any[]): string | null {
   return lines.length ? lines.join("\n") : null;
 }
 
-function finalContentOrDeterministic(messages: any[], candidate: string): string {
+function finalContentOrDeterministic(messages: ChatMessage[], candidate: string): string {
   const content = sanitizeAssistantContent(candidate || "");
   if (content && !isPromissoryToolText(content)) return content;
   return deterministicToolSummary(messages) || content;
 }
 
 function parsePromissorySearchToolCall(
-  messages: any[],
+  messages: ChatMessage[],
   text: string
-): { id: string; type: "function"; function: { name: string; arguments: string } }[] | undefined {
+): ChatToolCall[] | undefined {
   if (!isPromissoryToolText(text)) return undefined;
   const lower = text.toLowerCase();
 
