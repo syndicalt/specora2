@@ -23,6 +23,16 @@ type WorkerHealthOptions = {
   env?: NodeJS.ProcessEnv;
 };
 
+type DiscoveryStatusRow = {
+  status?: string | null;
+  count?: string | number | null;
+};
+
+type QueueSummary = {
+  deadLetter?: number;
+  staleRunning?: number;
+};
+
 const REQUIRED_ENV = ["DATABASE_URL", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "JWT_SECRET"];
 const RECOMMENDED_ENV = ["WORKER_GRPC_HOST", "REDIS_URL", "PROVARA_URL", "PROVARA_API_KEY"];
 
@@ -31,8 +41,8 @@ async function timed<T>(name: string, fn: () => Promise<T>): Promise<RuntimeChec
   try {
     await fn();
     return { name, status: "ok", latencyMs: Date.now() - started };
-  } catch (err: any) {
-    return { name, status: "fail", latencyMs: Date.now() - started, message: err?.message || "check failed" };
+  } catch (err) {
+    return { name, status: "fail", latencyMs: Date.now() - started, message: err instanceof Error && err.message ? err.message : "check failed" };
   }
 }
 
@@ -95,7 +105,7 @@ export async function buildWorkerHealth(fastify: FastifyInstance, options: Worke
      WHERE created_at >= NOW() - INTERVAL '24 hours'
      GROUP BY status`
   );
-  const discoveryJobs24h = Object.fromEntries(discovery.rows.map((row: any) => [row.status || "unknown", Number(row.count || 0)]));
+  const discoveryJobs24h = Object.fromEntries((discovery.rows as DiscoveryStatusRow[]).map((row) => [row.status || "unknown", Number(row.count || 0)]));
 
   let grpc: RuntimeCheck;
   if (!target) {
@@ -107,8 +117,9 @@ export async function buildWorkerHealth(fastify: FastifyInstance, options: Worke
     if (grpc.status === "ok") grpc.message = `Reachable at ${target}`;
   }
 
-  const deadLetter = Number((queue as any).deadLetter || 0);
-  const staleRunning = Number((queue as any).staleRunning || 0);
+  const queueSummary = queue as QueueSummary;
+  const deadLetter = Number(queueSummary.deadLetter || 0);
+  const staleRunning = Number(queueSummary.staleRunning || 0);
   const failedDiscovery = Number(discoveryJobs24h.failed || 0);
   const status: CheckStatus = grpc.status === "fail" || deadLetter > 0 || staleRunning > 0 || failedDiscovery > 0
     ? "warn"

@@ -1,7 +1,11 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { runHardcodedRules, RuleViolation, SuggestedFix } from "./healthRules";
 
 export { RuleViolation, SuggestedFix };
+
+function errorMessage(err: unknown) {
+  return err instanceof Error && err.message ? err.message : "Remediation failed";
+}
 
 export async function getRemediationSuggestions(fastify: FastifyInstance): Promise<RuleViolation[]> {
   const violations = await runHardcodedRules(fastify);
@@ -63,9 +67,10 @@ export async function applyRemediation(
     }
 
     return { success: true, message: `Created ${fix.relType} relationship` };
-  } catch (err: any) {
-    fastify.log.warn({ error: err.message }, "applyRemediation failed");
-    return { success: false, message: err.message };
+  } catch (err) {
+    const message = errorMessage(err);
+    fastify.log.warn({ error: message }, "applyRemediation failed");
+    return { success: false, message };
   } finally {
     await session.close();
   }
