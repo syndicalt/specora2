@@ -1,4 +1,5 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
+import type { Session } from "neo4j-driver";
 
 export interface HealthRule {
   id: string;
@@ -120,7 +121,7 @@ export const HARDCODED_RULES: HealthRule[] = [
 ];
 
 async function findFixTarget(
-  session: any,
+  session: Session,
   ruleId: string,
   ciId: string,
   _ciClass: string
@@ -264,8 +265,8 @@ export async function runHardcodedRules(fastify: FastifyInstance): Promise<RuleV
             suggestedFix,
           });
         }
-      } catch (err: any) {
-        fastify.log.warn({ ruleId: rule.id, error: err.message }, "Health rule query failed");
+      } catch (err) {
+        fastify.log.warn({ ruleId: rule.id, error: err instanceof Error ? err.message : "Health rule query failed" }, "Health rule query failed");
         // Continue with other rules if one fails
       }
     }

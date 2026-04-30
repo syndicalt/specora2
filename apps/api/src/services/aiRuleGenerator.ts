@@ -1,5 +1,6 @@
 import OpenAI from "openai";
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
+import type { Record as Neo4jRecord } from "neo4j-driver";
 
 function getOpenAI(): OpenAI | null {
   const key = process.env.OPENAI_API_KEY;
@@ -55,8 +56,8 @@ Rules for your responses:
     if (!response.ok) {
       throw new Error(`Provara error ${response.status}`);
     }
-    const data = await response.json() as any;
-    return data.choices[0].message.content;
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    return data.choices?.[0]?.message?.content || "";
   }
 
   const completion = await openai!.chat.completions.create({
@@ -82,7 +83,7 @@ export async function generateRules(fastify: FastifyInstance): Promise<Generated
     const classResult = await session.run(
       `MATCH (n:ConfigurationItem) RETURN n.class as class, count(n) as count ORDER BY count DESC`
     );
-    const classDist = classResult.records.map((r: any) => ({
+    const classDist = classResult.records.map((r: Neo4jRecord) => ({
       class: r.get("class"),
       count: r.get("count").toNumber(),
     }));
@@ -92,7 +93,7 @@ export async function generateRules(fastify: FastifyInstance): Promise<Generated
        RETURN a.class as fromClass, type(r) as relType, b.class as toClass, count(*) as count
        ORDER BY count DESC LIMIT 20`
     );
-    const relPatterns = relResult.records.map((r: any) => ({
+    const relPatterns = relResult.records.map((r: Neo4jRecord) => ({
       from: r.get("fromClass"),
       rel: r.get("relType"),
       to: r.get("toClass"),
@@ -104,7 +105,7 @@ export async function generateRules(fastify: FastifyInstance): Promise<Generated
        RETURN n.class as class, n.name as name, n.id as id
        LIMIT 30`
     );
-    const samples = sampleResult.records.map((r: any) => ({
+    const samples = sampleResult.records.map((r: Neo4jRecord) => ({
       class: r.get("class"),
       name: r.get("name"),
       id: r.get("id"),
@@ -175,7 +176,7 @@ export async function executeGeneratedRule(
     }
 
     const result = await session.run(cypher);
-    return result.records.map((r: any) => ({
+    return result.records.map((r: Neo4jRecord) => ({
       ciId: r.get("ciId"),
       ciName: r.get("ciName"),
       ciClass: r.get("ciClass"),
