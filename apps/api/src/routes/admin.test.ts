@@ -26,12 +26,16 @@ describe("adminRoutes", () => {
     clearFieldRestrictionCache();
   });
 
-  async function buildApp(queryImpl?: (sql: string, params?: any[]) => Promise<{ rows: any[]; rowCount: number }>) {
+  async function buildApp(
+    queryImpl?: (sql: string, params?: any[]) => Promise<{ rows: any[]; rowCount: number }>,
+    neo4j?: any
+  ) {
     const app = Fastify();
     await app.register(jwt, { secret: "test-secret" });
     app.decorate("pg", {
       query: queryImpl ? vi.fn(queryImpl) : vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
     });
+    if (neo4j) app.decorate("neo4j", neo4j);
     await app.register(authPlugin);
     await app.register(adminRoutes);
     return app;
@@ -225,6 +229,69 @@ describe("adminRoutes", () => {
     expect(testRes.statusCode).toBe(200);
     expect(JSON.parse(testRes.payload)).toMatchObject({ ok: true, status: "ok" });
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["credential.reference.tested", "CredentialReference", "cred-1"]));
+  });
+
+  it("updates and deletes credential references with audit events", async () => {
+    const existing = {
+      id: "cred-1",
+      ref: "managed://discovery/inventory-api",
+      name: "Inventory API",
+      provider: "managed",
+      status: "active",
+      description: null,
+      scope: "discovery",
+      secret_env_key: null,
+      external_ref: null,
+      secret_present: true,
+      metadata: {},
+      last_tested_at: null,
+      last_status: null,
+      last_error: null,
+      created_by: "user-1",
+      updated_by: "user-1",
+      created_at: "2026-04-27",
+      updated_at: "2026-04-27",
+    };
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM credential_references WHERE id = $1")) {
+        return Promise.resolve({ rows: [existing], rowCount: 1 });
+      }
+      if (sql.includes("UPDATE credential_references SET")) {
+        return Promise.resolve({
+          rows: [{ ...existing, name: params?.[1], status: params?.[3], updated_by: "user-1" }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("DELETE FROM credential_references")) {
+        return Promise.resolve({ rows: [{ id: params?.[0] }], rowCount: 1 });
+      }
+      if (sql.includes("SELECT entry_hash FROM audit_log") || sql.includes("INSERT INTO audit_log")) {
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/admin/credentials/cred-1",
+      headers: { ...authHeader(app), "Content-Type": "application/json" },
+      payload: { name: "Inventory API v2", status: "disabled" },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(JSON.parse(updated.payload).credential).toMatchObject({ id: "cred-1", name: "Inventory API v2", status: "disabled" });
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/credentials/cred-1",
+      headers: authHeader(app),
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(JSON.parse(deleted.payload)).toEqual({ success: true });
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["credential.reference.updated", "CredentialReference", "cred-1"]));
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["credential.reference.deleted", "CredentialReference", "cred-1"]));
   });
 
   it("manages edge enrollment tokens, runtime config, and collectors", async () => {
@@ -620,6 +687,70 @@ describe("adminRoutes", () => {
     expect(deleted.statusCode).toBe(200);
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity_group.permission_granted", "IdentityGroup", "group-1"]));
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity_group.deleted", "IdentityGroup", "group-1"]));
+  });
+
+  it("lists identity groups with CMDB group options and removes inherited grants", async () => {
+    const neo4jRun = vi.fn(async () => ({
+      records: [{
+        get: (key: string) => key === "id" ? "grp-network-ops" : "Network Operations",
+      }],
+    }));
+    const neo4jSession = { run: neo4jRun, close: vi.fn(async () => {}) };
+    const app = await buildApp((sql: string, params?: any[]) => {
+      if (sql.includes("app_permissions WHERE role = $1")) {
+        return Promise.resolve({ rows: [{ _: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("FROM identity_groups ORDER BY name")) {
+        return Promise.resolve({
+          rows: [{ id: "group-1", name: "Network Operations", slug: "network-operations", source: "local", cmdb_ci_id: "grp-network-ops" }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("FROM identity_group_memberships gm")) {
+        return Promise.resolve({
+          rows: [{ id: "member-1", group_id: "group-1", user_id: "user-2", source: "local", user_name: "Nora Network", user_email: "nora@example.com" }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("FROM identity_group_permissions gp")) {
+        return Promise.resolve({
+          rows: [{ id: "grant-1", group_id: "group-1", resource: "discovery", action: "write" }],
+          rowCount: 1,
+        });
+      }
+      if (sql.includes("SELECT id, group_id, resource, action FROM identity_group_permissions")) {
+        return Promise.resolve({ rows: [{ id: params?.[0], group_id: params?.[1], resource: "discovery", action: "write" }], rowCount: 1 });
+      }
+      if (sql.includes("DELETE FROM identity_group_memberships") || sql.includes("DELETE FROM identity_group_permissions")) {
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      }
+      if (sql.includes("SELECT entry_hash FROM audit_log") || sql.includes("INSERT INTO audit_log")) {
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    }, { session: vi.fn(() => neo4jSession) });
+
+    const listed = await app.inject({ method: "GET", url: "/api/admin/identity/groups", headers: authHeader(app) });
+    expect(listed.statusCode).toBe(200);
+    const body = JSON.parse(listed.payload);
+    expect(body.groups[0]).toMatchObject({ id: "group-1", name: "Network Operations" });
+    expect(body.cmdbGroupOptions).toEqual([{ id: "grp-network-ops", name: "Network Operations" }]);
+
+    const removedMember = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/identity/groups/group-1/members/user-2",
+      headers: authHeader(app),
+    });
+    expect(removedMember.statusCode).toBe(200);
+
+    const revokedGrant = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/identity/groups/group-1/permissions/grant-1",
+      headers: authHeader(app),
+    });
+    expect(revokedGrant.statusCode).toBe(200);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity_group.member_removed", "IdentityGroup", "group-1"]));
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["identity_group.permission_revoked", "IdentityGroup", "group-1"]));
   });
 
   it("analyzes RBAC access decisions", async () => {
