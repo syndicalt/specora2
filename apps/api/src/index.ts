@@ -1,5 +1,5 @@
 import "dotenv/config";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 import { readFileSync } from "fs";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
@@ -36,6 +36,7 @@ import { seedCIClasses } from "./services/ciClassSeed";
 import { registerAllAppTools } from "./services/appTools";
 import { startDiscoveryScheduler } from "./services/discoveryScheduler";
 import { buildReadiness } from "./services/operability";
+import type { PathlightClient } from "./services/pathlightSession";
 
 function localHttpsOptions() {
   const keyPath = process.env.HTTPS_KEY_FILE || process.env.SSL_KEY_FILE;
@@ -49,15 +50,19 @@ function localHttpsOptions() {
 
 const httpsOptions = localHttpsOptions();
 
-const fastify: any = Fastify({
+const fastify = Fastify({
   logger: { transport: { target: "pino-pretty" } },
   https: httpsOptions,
-} as any);
+} as FastifyServerOptions);
 
 declare module "fastify" {
   interface FastifyInstance {
-    pathlight?: any;
+    pathlight?: PathlightClient;
   }
+}
+
+function errorMessage(err: unknown) {
+  return err instanceof Error && err.message ? err.message : String(err);
 }
 
 async function main() {
@@ -88,8 +93,8 @@ async function main() {
       const pathlight = new Pathlight({ baseUrl: pathlightUrl });
       fastify.decorate("pathlight", pathlight);
       fastify.log.info(`Pathlight tracing enabled: ${pathlightUrl}`);
-    } catch (err: any) {
-      fastify.log.warn(`Failed to initialize Pathlight: ${err.message}`);
+    } catch (err) {
+      fastify.log.warn(`Failed to initialize Pathlight: ${errorMessage(err)}`);
     }
   }
 
@@ -126,7 +131,7 @@ async function main() {
 
   fastify.get("/health", async () => ({ status: "ok" }));
   fastify.get("/healthz", async () => ({ status: "ok" }));
-  fastify.get("/ready", async (_request: any, reply: any) => {
+  fastify.get("/ready", async (_request: FastifyRequest, reply: FastifyReply) => {
     const readiness = await buildReadiness(fastify);
     if (readiness.status === "fail") return reply.status(503).send(readiness);
     return readiness;
@@ -149,8 +154,9 @@ async function main() {
     url: "/graphql",
     method: ["POST", "GET", "OPTIONS"],
     onRequest: fastify.authenticate,
-    handler: async (req: any, reply: any) => {
-      const response = await yoga.handleNodeRequest(req, { req, reply } as any);
+    handler: async (req: FastifyRequest, reply: FastifyReply) => {
+      const nodeContext = { req, reply } as unknown as Parameters<typeof yoga.handleNodeRequest>[1];
+      const response = await yoga.handleNodeRequest(req, nodeContext);
       response.headers.forEach((value, key) => reply.header(key, value));
       reply.status(response.status);
       reply.send(response.body);

@@ -13,17 +13,29 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
   oneofs: true,
 });
 
-const proto = grpc.loadPackageDefinition(packageDefinition) as any;
+type WorkerServiceClient = {
+  IngestCMDB: grpc.requestCallback<Buffer>;
+  RunGraphMaintenance: grpc.requestCallback<{ task: string }>;
+};
+
+type WorkerServiceConstructor = new (
+  address: string,
+  credentials: grpc.ChannelCredentials
+) => WorkerServiceClient;
+
+const proto = grpc.loadPackageDefinition(packageDefinition) as unknown as {
+  itops: { WorkerService: WorkerServiceConstructor };
+};
 
 const target = process.env.WORKER_GRPC_HOST || "localhost:50051";
 
 const client = new proto.itops.WorkerService(target, grpc.credentials.createInsecure());
 
 export const workerClient = {
-  ingestCMDB: promisify(client.IngestCMDB.bind(client)) as (
+  ingestCMDB: promisify(client.IngestCMDB.bind(client)) as unknown as (
     request: { job_id: string; source: string; payload: Buffer }
   ) => Promise<{ job_id: string; status: string; message: string }>,
-  runGraphMaintenance: promisify(client.RunGraphMaintenance.bind(client)) as (
+  runGraphMaintenance: promisify(client.RunGraphMaintenance.bind(client)) as unknown as (
     request: { task: string }
   ) => Promise<{ status: string }>,
 };

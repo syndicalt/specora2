@@ -1,8 +1,14 @@
-interface PathlightClient {
-  _createTrace(data: Record<string, unknown>): Promise<any>;
-  _updateTrace(id: string, data: Record<string, unknown>): Promise<any>;
-  _createSpan(data: Record<string, unknown>): Promise<any>;
-  _updateSpan(id: string, data: Record<string, unknown>): Promise<any>;
+export type PathlightClient = {
+  _createTrace(data: Record<string, unknown>): Promise<unknown>;
+  _updateTrace(id: string, data: Record<string, unknown>): Promise<unknown>;
+  _createSpan(data: Record<string, unknown>): Promise<unknown>;
+  _updateSpan(id: string, data: Record<string, unknown>): Promise<unknown>;
+}
+
+function createdId(result: unknown): string {
+  return result && typeof result === "object" && typeof (result as { id?: unknown }).id === "string"
+    ? (result as { id: string }).id
+    : `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 /**
@@ -32,7 +38,7 @@ export class SessionTrace {
         tags: options?.tags,
         metadata: options?.metadata,
       });
-      return new SessionTrace(client, result.id, name);
+      return new SessionTrace(client, createdId(result), name);
     } catch {
       return new SessionTrace(client, `local-${Date.now()}-${Math.random().toString(16).slice(2)}`, name);
     }
@@ -94,7 +100,7 @@ export class SessionSpan {
     this._initPromise = this._init(name, type, options);
   }
 
-  private async _init(name: string, type: string, options?: any): Promise<void> {
+  private async _init(name: string, type: string, options?: Record<string, unknown>): Promise<void> {
     if (this.traceId.startsWith("local-")) return;
     try {
       const result = await this.client._createSpan({
@@ -103,7 +109,7 @@ export class SessionSpan {
         type,
         ...options,
       });
-      this._id = result.id;
+      this._id = createdId(result);
     } catch {
       this._id = null;
     }
