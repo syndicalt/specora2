@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
 
+type EvidenceFacts = Record<string, unknown>;
+
 export type EvidenceRecord = {
   schema?: string;
   source?: { type?: string; id?: string };
   subject?: { type?: string; id?: string };
   observed_at?: string;
-  facts?: Record<string, unknown>;
+  facts?: EvidenceFacts;
   relationships?: unknown[];
   confidence?: number;
   metadata?: Record<string, unknown>;
@@ -13,9 +15,63 @@ export type EvidenceRecord = {
   signing_key_id?: string;
 };
 
+type DiscoveryObservationRow = {
+  entity_type: string;
+  natural_key: string;
+  observed_at?: string | Date | null;
+  facts?: string | EvidenceFacts | null;
+};
+
+type CollectorProfileRow = {
+  entity_type: string;
+  natural_key: string;
+  observed_at?: string | Date | null;
+} & EvidenceFacts;
+
+type CollectorProfile = {
+  entityType: string;
+  recordCount: number;
+  columns: string[];
+  sampleRows: CollectorProfileRow[];
+  fieldStats: Array<{
+    name: string;
+    fillRate: number;
+    distinctCount: number;
+    examples: string[];
+  }>;
+  recentObservedAt: string | Date | null;
+};
+
+type EvidenceDocumentRow = {
+  id: string;
+  run_id?: string | null;
+  created_at: string | Date;
+};
+
+type EvidenceDocument = {
+  id: string;
+  collector_id: string;
+  run_id?: string | null;
+  raw_text?: string | null;
+};
+
+type EvidenceIngestResult = {
+  records: number;
+  status: "invalid_evidence" | "parsed" | "empty";
+  error?: string;
+};
+
+function isObservedTime(value: string | Date | null | undefined): value is string | Date {
+  return Boolean(value);
+}
+
+function isByteArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255);
+}
+
 export function decodeUploadChunk(data: unknown): string {
   if (typeof data === "string") return Buffer.from(data, "base64").toString("utf8");
-  if (Array.isArray(data)) return Buffer.from(data as number[]).toString("utf8");
+  if (isByteArray(data)) return Buffer.from(data).toString("utf8");
   return "";
 }
 
@@ -35,8 +91,9 @@ function parseEvidenceRecords(rawText: string): { records: EvidenceRecord[]; err
       if (!record.observed_at || Number.isNaN(new Date(record.observed_at).getTime())) return { records: [], error: `record ${index + 1} observed_at is invalid` };
       if (!record.facts || !Object.keys(record.facts).length) return { records: [], error: `record ${index + 1} facts are required` };
       records.push(record);
-    } catch (err: any) {
-      return { records: [], error: `record ${index + 1} is not valid JSON: ${err.message}` };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "unknown parse error";
+      return { records: [], error: `record ${index + 1} is not valid JSON: ${message}` };
     }
   }
   return { records };
@@ -60,7 +117,12 @@ function naturalKeyForEvidence(record: EvidenceRecord) {
   return String(record.subject?.id || facts.id || facts.name || facts.address || facts.port || "unknown");
 }
 
-function hostKeyFromRow(row: Record<string, any>) {
+function parseFacts(value: DiscoveryObservationRow["facts"]): EvidenceFacts {
+  if (typeof value === "string") return JSON.parse(value || "{}") as EvidenceFacts;
+  return value || {};
+}
+
+function hostKeyFromRow(row: CollectorProfileRow) {
   const key = String(row.natural_key || row.hostname || row.uuid || row.name || "").trim();
   return key.includes(":") ? key.split(":")[0] : key;
 }
@@ -69,7 +131,7 @@ function isLoopbackAddress(address: string) {
   return address === "::1" || address.startsWith("127.");
 }
 
-function addressScore(row: Record<string, any>) {
+function addressScore(row: CollectorProfileRow) {
   const address = String(row.address || "").trim();
   const iface = String(row.interface || "").toLowerCase();
   if (!address || isLoopbackAddress(address)) return -1;
@@ -81,31 +143,31 @@ function addressScore(row: Record<string, any>) {
   return score;
 }
 
-function preferredAddress(rows: Record<string, any>[]) {
+function preferredAddress(rows: CollectorProfileRow[]) {
   return rows
     .map((row) => ({ row, score: addressScore(row) }))
     .filter((item) => item.score >= 0)
-    .sort((a, b) => b.score - a.score)[0]?.row.address || "";
+    .sort((a, b) => b.score - a.score)[0]?.row.address;
 }
 
-function relatedInterfaceRows(rows: Record<string, any>[], hostKey: string) {
+function relatedInterfaceRows(rows: CollectorProfileRow[], hostKey: string) {
   return rows.filter((row) => {
     const naturalKey = String(row.natural_key || "").trim();
     return naturalKey === hostKey || naturalKey.startsWith(`${hostKey}:`) || String(row.hostname || "").trim() === hostKey;
   });
 }
 
-export function buildCollectorProfiles(rows: any[]) {
-  const groups = new Map<string, Map<string, Record<string, any>>>();
+export function buildCollectorProfiles(rows: DiscoveryObservationRow[]): CollectorProfile[] {
+  const groups = new Map<string, Map<string, CollectorProfileRow>>();
   for (const row of rows) {
-    const facts = typeof row.facts === "string" ? JSON.parse(row.facts || "{}") : row.facts || {};
+    const facts = parseFacts(row.facts);
     const sampleRow = {
       entity_type: row.entity_type,
       natural_key: row.natural_key,
       observed_at: row.observed_at,
       ...facts,
     };
-    const entityRows = groups.get(row.entity_type) || new Map<string, Record<string, any>>();
+    const entityRows = groups.get(row.entity_type) || new Map<string, CollectorProfileRow>();
     const existing = entityRows.get(row.natural_key);
     entityRows.set(row.natural_key, existing ? { ...sampleRow, ...existing, observed_at: existing.observed_at || sampleRow.observed_at } : sampleRow);
     groups.set(row.entity_type, entityRows);
@@ -117,7 +179,7 @@ export function buildCollectorProfiles(rows: any[]) {
       const related = relatedInterfaceRows(interfaceRows, hostKeyFromRow(hostRow) || key);
       const ipAddress = preferredAddress(related);
       const ipAddresses = Array.from(new Set(related.map((row) => String(row.address || "").trim()).filter((address) => address && !isLoopbackAddress(address))));
-      if (ipAddress) hostRow.ipAddress = ipAddress;
+      if (ipAddress) hostRow.ipAddress = String(ipAddress);
       if (ipAddresses.length) hostRow.ipAddresses = ipAddresses;
     }
   }
@@ -163,7 +225,8 @@ export async function createDiscoveryDatasetForCollector(fastify: FastifyInstanc
      LIMIT 10`,
     [collectorId]
   );
-  const documentIds = documents.rows.map((row: any) => row.id);
+  const documentRows = documents.rows as EvidenceDocumentRow[];
+  const documentIds = documentRows.map((row) => row.id);
   if (!documentIds.length) return null;
   const observations = await fastify.pg.query(
     `SELECT entity_type, natural_key, observed_at, facts
@@ -173,14 +236,15 @@ export async function createDiscoveryDatasetForCollector(fastify: FastifyInstanc
      LIMIT 10000`,
     [collectorId, documentIds]
   );
-  const profiles = buildCollectorProfiles(observations.rows);
+  const observationRows = observations.rows as DiscoveryObservationRow[];
+  const profiles = buildCollectorProfiles(observationRows);
   const entityCounts = Object.fromEntries(profiles.map((profile) => [profile.entityType, profile.recordCount]));
-  const observedTimes = observations.rows
-    .map((row: any) => row.observed_at)
-    .filter(Boolean)
+  const observedTimes = observationRows
+    .map((row) => row.observed_at)
+    .filter(isObservedTime)
     .map((value: string | Date) => new Date(value).toISOString())
     .sort();
-  const latestDocument = documents.rows[0];
+  const latestDocument = documentRows[0];
   const name = `Edge dataset ${new Date(latestDocument.created_at).toISOString()}`;
   const result = await fastify.pg.query(
     `INSERT INTO discovery_datasets
@@ -195,7 +259,7 @@ export async function createDiscoveryDatasetForCollector(fastify: FastifyInstanc
       observedTimes[0] || null,
       observedTimes[observedTimes.length - 1] || null,
       JSON.stringify(documentIds),
-      JSON.stringify(Array.from(new Set(documents.rows.map((row: any) => row.run_id).filter(Boolean)))),
+      JSON.stringify(Array.from(new Set(documentRows.map((row) => row.run_id).filter(Boolean)))),
       JSON.stringify(entityCounts),
       JSON.stringify(profiles),
       actorId || null,
@@ -204,7 +268,7 @@ export async function createDiscoveryDatasetForCollector(fastify: FastifyInstanc
   return result.rows[0];
 }
 
-export async function ingestEvidenceDocument(fastify: FastifyInstance, document: any) {
+export async function ingestEvidenceDocument(fastify: FastifyInstance, document: EvidenceDocument): Promise<EvidenceIngestResult> {
   const parsed = parseEvidenceRecords(document.raw_text || "");
   if (parsed.error) {
     await fastify.pg.query(
