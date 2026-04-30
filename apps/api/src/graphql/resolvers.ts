@@ -67,6 +67,42 @@ type CiClassRow = {
   updated_at?: string | Date;
 };
 
+type ConfigurationItemParent = {
+  id: string;
+  class: string;
+  attributes?: Record<string, unknown>;
+  dataQualityScore?: number | null;
+  lastDiscoveredAt?: string | Date | null;
+  [key: string]: unknown;
+};
+
+type ClassAttributeRow = {
+  id: string;
+  name: string;
+  display_name?: string | null;
+  description?: string | null;
+  attr_type?: string | null;
+  is_mandatory?: boolean;
+  is_health_required?: boolean;
+  is_key_attribute?: boolean;
+  default_value?: unknown;
+  validation_regex?: string | null;
+  enum_values?: string[] | null;
+  reference_class?: string | null;
+  sort_order?: number | null;
+};
+
+type ClassAttributeDefinition = ClassAttributeRow & {
+  attrType?: string;
+};
+
+type RelationshipRecord = {
+  start: unknown;
+  end: unknown;
+  type: string;
+  properties?: Record<string, unknown>;
+};
+
 function applyCiFilter(query: string, params: Record<string, unknown>, filter?: CiFilter) {
   const conditions: string[] = [];
   if (filter?.class) {
@@ -113,6 +149,24 @@ function mapCiClassRow(row: CiClassRow) {
     createdByAppId: row.created_by_app_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapClassAttributeRow(row: ClassAttributeRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    displayName: row.display_name,
+    description: row.description,
+    attrType: row.attr_type,
+    isMandatory: row.is_mandatory,
+    isHealthRequired: row.is_health_required,
+    isKeyAttribute: row.is_key_attribute,
+    defaultValue: row.default_value,
+    validationRegex: row.validation_regex,
+    enumValues: row.enum_values,
+    referenceClass: row.reference_class,
+    sortOrder: row.sort_order,
   };
 }
 
@@ -261,7 +315,7 @@ export const resolvers = {
     },
   },
   ConfigurationItem: {
-    async relationships(parent: any, _args: any, context: any) {
+    async relationships(parent: ConfigurationItemParent, _args: Record<string, never>, context: ResolverContext) {
       const session = context.neo4j.session();
       try {
         const result = await session.run(
@@ -269,9 +323,9 @@ export const resolvers = {
            RETURN r, target`,
           { id: parent.id }
         );
-        return result.records.map((r: any) => {
-          const rel = r.get("r");
-          const target = parseNode(r.get("target").properties);
+        return result.records.map((record: Neo4jRecord) => {
+          const rel = record.get("r") as RelationshipRecord;
+          const target = parseNode(record.get("target").properties);
           return {
             id: `${rel.start}-${rel.end}-${rel.type}`,
             type: rel.type,
@@ -283,13 +337,13 @@ export const resolvers = {
         await session.close();
       }
     },
-    dataQualityScore(parent: any) {
+    dataQualityScore(parent: ConfigurationItemParent) {
       return parent.dataQualityScore ?? null;
     },
-    lastDiscoveredAt(parent: any) {
+    lastDiscoveredAt(parent: ConfigurationItemParent) {
       return parent.lastDiscoveredAt ?? null;
     },
-    async health(parent: any, _args: any, context: any) {
+    async health(parent: ConfigurationItemParent, _args: Record<string, never>, context: ResolverContext) {
       const session = context.neo4j.session();
       try {
         // Per-class health scoring
@@ -297,10 +351,10 @@ export const resolvers = {
         let completeness = 1.0;
 
         if (def && def.allAttributes.length > 0) {
-          const healthAttrs = def.allAttributes.filter((a: any) => a.is_health_required);
+          const healthAttrs = (def.allAttributes as ClassAttributeDefinition[]).filter((attr) => attr.is_health_required);
           if (healthAttrs.length > 0) {
-            const populated = healthAttrs.filter((a: any) => {
-              const val = parent[a.name] !== undefined ? parent[a.name] : parent.attributes?.[a.name];
+            const populated = healthAttrs.filter((attr) => {
+              const val = parent[attr.name] !== undefined ? parent[attr.name] : parent.attributes?.[attr.name];
               return val !== undefined && val !== null && val !== "";
             }).length;
             completeness = populated / healthAttrs.length;
@@ -347,34 +401,20 @@ export const resolvers = {
     },
   },
   Relationship: {
-    target(parent: any) {
+    target(parent: { target?: unknown }) {
       return parent.target;
     },
   },
   CIClass: {
-    async attributes(parent: any, _args: any, context: any) {
+    async attributes(parent: { id: string }, _args: Record<string, never>, context: ResolverContext) {
       const result = await context.pg.query(
         `SELECT id, name, display_name, description, attr_type, is_mandatory, is_health_required, is_key_attribute, default_value, validation_regex, enum_values, reference_class, sort_order
          FROM ci_class_attributes WHERE class_id = $1 ORDER BY sort_order, name`,
         [parent.id]
       );
-      return result.rows.map((row: any) => ({
-        id: row.id,
-        name: row.name,
-        displayName: row.display_name,
-        description: row.description,
-        attrType: row.attr_type,
-        isMandatory: row.is_mandatory,
-        isHealthRequired: row.is_health_required,
-        isKeyAttribute: row.is_key_attribute,
-        defaultValue: row.default_value,
-        validationRegex: row.validation_regex,
-        enumValues: row.enum_values,
-        referenceClass: row.reference_class,
-        sortOrder: row.sort_order,
-      }));
+      return (result.rows as ClassAttributeRow[]).map(mapClassAttributeRow);
     },
-    async inheritedAttributes(parent: any, _args: any, context: any) {
+    async inheritedAttributes(parent: { name: string; parentClass?: string | null }, _args: Record<string, never>, context: ResolverContext) {
       if (!parent.parentClass) return [];
       const def = await getClassDefinition(context.pg, parent.name);
       return def?.inheritedAttributes || [];
