@@ -129,6 +129,45 @@ describe("tableRoutes", () => {
     expect(params.filter_0).toBe("Austin");
   });
 
+  it("applies the full CMDB filter operator set and ignores unsupported filters", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", city: "Austin", attributes: "{\"city\":\"Austin\"}" }) })],
+      [makeRecord({ total: { toNumber: () => 1 } })],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+    const filters = encodeURIComponent(JSON.stringify([
+      { field: "city", operator: "contains", value: "us" },
+      { field: "city", operator: "notEquals", value: "Dallas" },
+      { field: "city", operator: "startsWith", value: "Aus" },
+      { field: "city", operator: "endsWith", value: "tin" },
+      { field: "city", operator: "empty" },
+      { field: "city", operator: "notEmpty" },
+      { field: "city", operator: "gt", value: "A" },
+      { field: "city", operator: "gte", value: "A" },
+      { field: "city", operator: "lt", value: "Z" },
+      { field: "city", operator: "lte", value: "Z" },
+      { field: "not_allowed", operator: "equals", value: "ignored" },
+      { field: "city", operator: "unknown", value: "ignored" },
+    ]));
+
+    const res = await app.inject({ method: "GET", url: `/api/tables/cmdb.Location/records?filters=${filters}` });
+
+    expect(res.statusCode).toBe(200);
+    const [cypher, params] = neo4j.run.mock.calls[0];
+    expect(cypher).toContain("CONTAINS");
+    expect(cypher).toContain("n.`city` IS NULL OR n.`city` <> $filter_1");
+    expect(cypher).toContain("STARTS WITH");
+    expect(cypher).toContain("ENDS WITH");
+    expect(cypher).toContain("n.`city` IS NULL OR toString(n.`city`) = \"\"");
+    expect(cypher).toContain("n.`city` IS NOT NULL AND toString(n.`city`) <> \"\"");
+    expect(cypher).toContain("n.`city` > $filter_6");
+    expect(cypher).toContain("n.`city` >= $filter_7");
+    expect(cypher).toContain("n.`city` < $filter_8");
+    expect(cypher).toContain("n.`city` <= $filter_9");
+    expect(cypher).not.toContain("not_allowed");
+    expect(params).toMatchObject({ filter_0: "us", filter_1: "Dallas", filter_9: "Z" });
+  });
+
   it("applies relationship-aware filters to CMDB tables", async () => {
     const neo4j = makeNeo4j([
       [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", attributes: "{\"city\":\"Austin\"}" }) })],
@@ -262,6 +301,46 @@ describe("tableRoutes", () => {
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.view.deleted", "TableSavedView", "view-1"]));
   });
 
+  it("lists saved views and returns not found responses for missing table resources", async () => {
+    const pgHandler = (sql: string, params?: any[]) => {
+      if (sql.includes("DELETE FROM table_saved_views")) return { rows: [] };
+      if (sql.includes("FROM table_saved_views")) {
+        return {
+          rows: [{
+            id: "view-1",
+            user_id: params?.[0],
+            table_id: "cmdb.Location",
+            name: "Locations",
+            search_query: "HQ",
+            filters: "[{\"field\":\"city\",\"operator\":\"equals\",\"value\":\"Austin\"}]",
+            columns: "[\"name\",\"city\"]",
+            density: "spacious",
+            sort_field: "city",
+            sort_direction: "desc",
+            created_at: "2026-04-27T00:00:00.000Z",
+            updated_at: "2026-04-27T00:00:00.000Z",
+          }],
+        };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "admin" }, makeNeo4j(), pgHandler);
+
+    const listed = await app.inject({ method: "GET", url: "/api/tables/views?tableId=cmdb.Location" });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.body).views[0]).toMatchObject({ id: "view-1", filters: [{ field: "city", operator: "equals", value: "Austin" }], columns: ["name", "city"], density: "spacious" });
+
+    const table = await app.inject({ method: "GET", url: "/api/tables/cmdb.Location" });
+    expect(table.statusCode).toBe(200);
+    expect(JSON.parse(table.body).table).toMatchObject({ id: "cmdb.Location", label: "Location" });
+
+    const missingTable = await app.inject({ method: "GET", url: "/api/tables/cmdb.Missing" });
+    expect(missingTable.statusCode).toBe(404);
+
+    const missingView = await app.inject({ method: "DELETE", url: "/api/tables/views/view-missing" });
+    expect(missingView.statusCode).toBe(404);
+  });
+
   it("sorts table records through whitelisted readable fields", async () => {
     const neo4j = makeNeo4j([
       [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", city: "Austin", attributes: "{\"city\":\"Austin\"}" }) })],
@@ -383,6 +462,26 @@ describe("tableRoutes", () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).summary).toMatchObject({ requested: 1, updated: 1, failed: 0 });
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.bulk_updated", "cmdb.Location", "cmdb.Location"]));
+  });
+
+  it("bulk deletes selected CMDB records and reports per-record delete failures", async () => {
+    const neo4j = makeNeo4j([
+      [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", attributes: "{\"city\":\"Austin\"}" }) })],
+      [],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/bulk",
+      payload: { action: "delete", recordIds: ["loc-1", "loc-2"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.summary).toMatchObject({ requested: 2, deleted: 2, failed: 0 });
+    expect(body.deleted).toEqual(["loc-1", "loc-2"]);
+    expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.bulk_deleted", "cmdb.Location", "cmdb.Location"]));
   });
 
   it("generates cleanup assistant suggestions from validation issues", async () => {
