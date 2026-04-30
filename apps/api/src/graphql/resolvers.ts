@@ -19,12 +19,20 @@ import { userMutations, userQueries } from "./userResolvers";
 
 type QueryablePg = {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+  connect?: () => Promise<{
+    query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+    release: () => void;
+  }>;
 };
 
 type ResolverContext = {
   neo4j: Driver;
   pg: QueryablePg;
-  user?: unknown;
+  user?: { id?: string; role?: string } | null;
+  emit?: (event: string, payload: Record<string, unknown>) => void;
+  worker?: {
+    ingestCMDB: (payload: { job_id: string; source: string; payload: Buffer }) => Promise<{ job_id: string; status: string }>;
+  };
 };
 
 type CiFilter = {
@@ -102,6 +110,76 @@ type RelationshipRecord = {
   type: string;
   properties?: Record<string, unknown>;
 };
+
+type CiInput = {
+  id?: string;
+  name?: string;
+  class?: string;
+  environment?: string | null;
+  attributes?: Record<string, unknown>;
+};
+
+type RelationshipInput = {
+  sourceId: string;
+  targetId: string;
+  type: string;
+  newType?: string;
+  attributes?: Record<string, unknown>;
+};
+
+type CiClassAttributeInput = {
+  name: string;
+  displayName?: string;
+  description?: string;
+  attrType?: string;
+  isMandatory?: boolean;
+  isHealthRequired?: boolean;
+  isKeyAttribute?: boolean;
+  defaultValue?: unknown;
+  validationRegex?: string;
+  enumValues?: string[];
+  referenceClass?: string;
+  sortOrder?: number;
+};
+
+type CiClassInput = {
+  name: string;
+  displayName?: string;
+  description?: string;
+  parentClass?: string;
+  icon?: string;
+  color?: string;
+  displayField?: string;
+  secondaryDisplayFields?: string[];
+  attributes?: CiClassAttributeInput[];
+};
+
+type EnvironmentChoiceInput = {
+  code?: string;
+  name?: string;
+  active?: boolean;
+  sortOrder?: number;
+  isProductionLike?: boolean;
+};
+
+type RelationshipTypeInput = {
+  name?: string;
+  displayName?: string;
+  description?: string;
+  color?: string;
+  active?: boolean;
+  directed?: boolean;
+  sortOrder?: number;
+};
+
+type CiClassDbRow = CiClassRow & {
+  is_system?: boolean;
+  created_by_app_id?: string | null;
+};
+
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : "Unexpected error";
+}
 
 function applyCiFilter(query: string, params: Record<string, unknown>, filter?: CiFilter) {
   const conditions: string[] = [];
@@ -251,27 +329,27 @@ export const resolvers = {
       );
       return (result.rows as CiClassRow[]).map(mapCiClassRow);
     },
-    async ciClass(_parent: any, args: { name: string }, context: any) {
+    async ciClass(_parent: unknown, args: { name: string }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "read");
       return getClassDefinition(context.pg, args.name);
     },
-    async ciEnvironmentChoices(_parent: any, args: { activeOnly?: boolean }, context: any) {
+    async ciEnvironmentChoices(_parent: unknown, args: { activeOnly?: boolean }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "read");
       let sql = `SELECT id, code, name, active, sort_order, is_production_like, created_at, updated_at
                  FROM ci_environment_choices`;
       if (args.activeOnly !== false) sql += " WHERE active = true";
       sql += " ORDER BY sort_order, name";
       const result = await context.pg.query(sql);
-      return result.rows.map(mapEnvironmentChoice);
+      return (result.rows as Parameters<typeof mapEnvironmentChoice>[0][]).map(mapEnvironmentChoice);
     },
-    async relationshipTypes(_parent: any, args: { activeOnly?: boolean }, context: any) {
+    async relationshipTypes(_parent: unknown, args: { activeOnly?: boolean }, context: ResolverContext) {
       await checkPermission(context, "relationships", "read");
       let sql = `SELECT id, name, display_name, description, color, active, directed, is_system, sort_order, created_at, updated_at
                  FROM relationship_types`;
       if (args.activeOnly !== false) sql += " WHERE active = true";
       sql += " ORDER BY sort_order, display_name";
       const result = await context.pg.query(sql);
-      return result.rows.map(mapRelationshipType);
+      return (result.rows as Parameters<typeof mapRelationshipType>[0][]).map(mapRelationshipType);
     },
     ...graphQueries,
     ...discoveryQueries,
@@ -421,7 +499,7 @@ export const resolvers = {
     },
   },
   Mutation: {
-    async createCI(_parent: any, args: { input: any }, context: any) {
+    async createCI(_parent: unknown, args: { input: CiInput }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "write");
       const validated = CreateCIInputSchema.safeParse(args.input);
       if (!validated.success) {
@@ -440,8 +518,8 @@ export const resolvers = {
 
         // Build dynamic property set for top-level attributes from class definition
         const def = await getClassDefinition(context.pg, validated.data.class);
-        const topLevelProps: Record<string, any> = {};
-        const attrProps: Record<string, any> = {};
+        const topLevelProps: Record<string, unknown> = {};
+        const attrProps: Record<string, unknown> = {};
 
         for (const attr of def?.allAttributes || []) {
           const val = attrs[attr.name];
@@ -479,7 +557,7 @@ export const resolvers = {
         await session.close();
       }
     },
-    async updateCI(_parent: any, args: { id: string; input: any }, context: any) {
+    async updateCI(_parent: unknown, args: { id: string; input: CiInput }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "write");
       const validated = UpdateCIInputSchema.safeParse(args.input);
       if (!validated.success) {
@@ -501,7 +579,7 @@ export const resolvers = {
         await validateCIAgainstClass(context.pg, className, { ...oldNode, ...validated.data, attributes: mergedAttrs }, "update");
 
         const sets: string[] = [];
-        const params: any = { id: args.id };
+        const params: Record<string, unknown> = { id: args.id };
         if (validated.data.name !== undefined) {
           sets.push("n.name = $name");
           params.name = validated.data.name;
@@ -518,11 +596,11 @@ export const resolvers = {
         // Handle attributes: merge class-defined top-level properties with remaining attrs JSON
         if (validated.data.attributes !== undefined) {
           const def = await getClassDefinition(context.pg, className);
-          const topLevelProps: Record<string, any> = {};
-          const attrProps: Record<string, any> = {};
+          const topLevelProps: Record<string, unknown> = {};
+          const attrProps: Record<string, unknown> = {};
 
           for (const [key, val] of Object.entries(mergedAttrs)) {
-            const isClassAttr = def?.allAttributes.some((a: any) => a.name === key);
+            const isClassAttr = def?.allAttributes.some((attr) => attr.name === key);
             if (isClassAttr) {
               topLevelProps[key] = val;
             } else {
@@ -559,7 +637,7 @@ export const resolvers = {
         await session.close();
       }
     },
-    async deleteCI(_parent: any, args: { id: string }, context: any) {
+    async deleteCI(_parent: unknown, args: { id: string }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "write");
       const session = context.neo4j.session();
       try {
@@ -580,7 +658,7 @@ export const resolvers = {
         await session.close();
       }
     },
-    async createRelationship(_parent: any, args: { input: any }, context: any) {
+    async createRelationship(_parent: unknown, args: { input: RelationshipInput }, context: ResolverContext) {
       await checkPermission(context, "relationships", "write");
       const validated = CreateRelationshipInputSchema.safeParse(args.input);
       if (!validated.success) {
@@ -616,7 +694,7 @@ export const resolvers = {
         await session.close();
       }
     },
-    async deleteRelationship(_parent: any, args: { sourceId: string; targetId: string; type: string }, context: any) {
+    async deleteRelationship(_parent: unknown, args: { sourceId: string; targetId: string; type: string }, context: ResolverContext) {
       await checkPermission(context, "relationships", "write");
       const validated = DeleteRelationshipInputSchema.safeParse(args);
       if (!validated.success) {
@@ -655,9 +733,9 @@ export const resolvers = {
       }
     },
     async updateRelationship(
-      _parent: any,
-      args: { sourceId: string; targetId: string; type: string; newType?: string; attributes?: any },
-      context: any
+      _parent: unknown,
+      args: RelationshipInput,
+      context: ResolverContext
     ) {
       await checkPermission(context, "relationships", "write");
       const validated = UpdateRelationshipInputSchema.safeParse(args);
@@ -723,26 +801,27 @@ export const resolvers = {
         await session.close();
       }
     },
-    async ingestCMDB(_parent: any, args: { payload: any }, context: any) {
+    async ingestCMDB(_parent: unknown, args: { payload: unknown }, context: ResolverContext) {
       await checkPermission(context, "discovery", "write");
       const jobId = crypto.randomUUID();
       try {
+        if (!context.worker) throw new Error("Worker client is not configured");
         const response = await context.worker.ingestCMDB({
           job_id: jobId,
           source: "api",
           payload: Buffer.from(JSON.stringify(args.payload || {}), "utf-8"),
         });
         return { jobId: response.job_id, status: response.status };
-      } catch (err: any) {
-        console.error("gRPC ingestCMDB failed:", err.message);
-        throw new GraphQLError("Failed to queue ingestion job: " + err.message);
+      } catch (err: unknown) {
+        console.error("gRPC ingestCMDB failed:", errorMessage(err));
+        throw new GraphQLError("Failed to queue ingestion job: " + errorMessage(err));
       }
     },
     ...discoveryMutations,
     ...userMutations,
     ...marketplaceMutations,
     ...savedViewMutations,
-    async createCIClass(_parent: any, args: { input: any }, context: any) {
+    async createCIClass(_parent: unknown, args: { input: CiClassInput }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "admin");
       const { name, displayName, description, parentClass, icon, color, displayField, secondaryDisplayFields, attributes } = args.input;
 
@@ -751,6 +830,7 @@ export const resolvers = {
         throw new GraphQLError("Class name must be PascalCase", { extensions: { code: "BAD_USER_INPUT" } });
       }
 
+      if (!context.pg.connect) throw new GraphQLError("Database client does not support transactions");
       const client = await context.pg.connect();
       try {
         await client.query("BEGIN");
@@ -774,9 +854,9 @@ export const resolvers = {
           `INSERT INTO ci_classes (name, display_name, description, parent_class, icon, color, display_field, secondary_display_fields, created_by_app_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            RETURNING id, name, display_name, description, parent_class, icon, color, display_field, secondary_display_fields, is_system, created_by_app_id, created_at, updated_at`,
-          [name, displayName, description || null, parentClass || null, icon || null, color || null, displayField || "name", secondaryDisplayFields || [], context.appId || null]
+          [name, displayName, description || null, parentClass || null, icon || null, color || null, displayField || "name", secondaryDisplayFields || [], null]
         );
-        const cls = classResult.rows[0];
+        const cls = classResult.rows[0] as CiClassDbRow;
 
         // Insert attributes
         if (attributes && attributes.length > 0) {
@@ -829,10 +909,11 @@ export const resolvers = {
         client.release();
       }
     },
-    async updateCIClass(_parent: any, args: { id: string; input: any }, context: any) {
+    async updateCIClass(_parent: unknown, args: { id: string; input: CiClassInput }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "admin");
       const { name, displayName, description, parentClass, icon, color, displayField, secondaryDisplayFields, attributes } = args.input;
 
+      if (!context.pg.connect) throw new GraphQLError("Database client does not support transactions");
       const client = await context.pg.connect();
       try {
         await client.query("BEGIN");
@@ -842,7 +923,7 @@ export const resolvers = {
         if (!existing.rows.length) {
           throw new GraphQLError("Class not found", { extensions: { code: "NOT_FOUND" } });
         }
-        const oldClass = existing.rows[0];
+        const oldClass = existing.rows[0] as CiClassDbRow;
 
         if (oldClass.is_system && name !== oldClass.name) {
           throw new GraphQLError("System class names cannot be changed", { extensions: { code: "FORBIDDEN" } });
@@ -875,7 +956,7 @@ export const resolvers = {
            RETURNING id, name, display_name, description, parent_class, icon, color, display_field, secondary_display_fields, is_system, created_by_app_id, created_at, updated_at`,
           [name, displayName, description || null, parentClass || null, icon || null, color || null, displayField || "name", secondaryDisplayFields || [], args.id]
         );
-        const cls = classResult.rows[0];
+        const cls = classResult.rows[0] as CiClassDbRow;
 
         // Delete old attributes and insert new ones
         await client.query("DELETE FROM ci_class_attributes WHERE class_id = $1", [args.id]);
@@ -929,9 +1010,10 @@ export const resolvers = {
         client.release();
       }
     },
-    async deleteCIClass(_parent: any, args: { id: string }, context: any) {
+    async deleteCIClass(_parent: unknown, args: { id: string }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "admin");
 
+      if (!context.pg.connect) throw new GraphQLError("Database client does not support transactions");
       const client = await context.pg.connect();
       try {
         await client.query("BEGIN");
@@ -940,7 +1022,7 @@ export const resolvers = {
         if (!existing.rows.length) {
           throw new GraphQLError("Class not found", { extensions: { code: "NOT_FOUND" } });
         }
-        const cls = existing.rows[0];
+        const cls = existing.rows[0] as CiClassDbRow;
 
         if (cls.is_system) {
           throw new GraphQLError("System classes cannot be deleted", { extensions: { code: "FORBIDDEN" } });
@@ -979,7 +1061,7 @@ export const resolvers = {
         client.release();
       }
     },
-    async upsertCIEnvironmentChoice(_parent: any, args: { input: any }, context: any) {
+    async upsertCIEnvironmentChoice(_parent: unknown, args: { input: EnvironmentChoiceInput }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "admin");
       const code = String(args.input.code || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
       const name = String(args.input.name || "").trim();
@@ -1004,14 +1086,14 @@ export const resolvers = {
           args.input.isProductionLike ?? false,
         ]
       );
-      return mapEnvironmentChoice(result.rows[0]);
+      return mapEnvironmentChoice(result.rows[0] as Parameters<typeof mapEnvironmentChoice>[0]);
     },
-    async deleteCIEnvironmentChoice(_parent: any, args: { id: string }, context: any) {
+    async deleteCIEnvironmentChoice(_parent: unknown, args: { id: string }, context: ResolverContext) {
       await checkPermission(context, "cmdb", "admin");
       const result = await context.pg.query("DELETE FROM ci_environment_choices WHERE id = $1 RETURNING id", [args.id]);
       return result.rows.length > 0;
     },
-    async upsertRelationshipType(_parent: any, args: { input: any }, context: any) {
+    async upsertRelationshipType(_parent: unknown, args: { input: RelationshipTypeInput }, context: ResolverContext) {
       await checkPermission(context, "relationships", "write");
       const name = String(args.input.name || "").trim().toUpperCase().replace(/[^A-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
       const displayName = String(args.input.displayName || "").trim();
@@ -1040,13 +1122,13 @@ export const resolvers = {
           args.input.sortOrder ?? 100,
         ]
       );
-      return mapRelationshipType(result.rows[0]);
+      return mapRelationshipType(result.rows[0] as Parameters<typeof mapRelationshipType>[0]);
     },
-    async deleteRelationshipType(_parent: any, args: { id: string }, context: any) {
+    async deleteRelationshipType(_parent: unknown, args: { id: string }, context: ResolverContext) {
       await checkPermission(context, "relationships", "write");
       const existing = await context.pg.query("SELECT * FROM relationship_types WHERE id = $1", [args.id]);
       if (!existing.rows.length) return false;
-      const relType = existing.rows[0];
+      const relType = existing.rows[0] as { name: string; is_system?: boolean };
       if (relType.is_system) {
         throw new GraphQLError("System relationship types cannot be deleted", { extensions: { code: "FORBIDDEN" } });
       }
