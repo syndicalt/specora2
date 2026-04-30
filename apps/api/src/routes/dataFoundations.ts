@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { hasPermission, resolveUserRole } from "../services/rbac";
 import { recordRouteAudit } from "./auditHelpers";
 
@@ -30,6 +30,21 @@ type FoundationIssue = {
   action: "register_class" | "add_records" | "edit_record" | "define_key";
 };
 
+type FoundationClassAttribute = {
+  name: string;
+  displayName?: string;
+  isMandatory?: boolean;
+  isHealthRequired?: boolean;
+  isKeyAttribute?: boolean;
+};
+
+type FoundationClassRow = {
+  id: string;
+  name: string;
+  display_name?: string | null;
+  attributes?: unknown;
+};
+
 function parseAttrs(value: unknown): Record<string, unknown> {
   if (!value) return {};
   if (typeof value === "string") {
@@ -53,7 +68,14 @@ function issueSort(a: FoundationIssue, b: FoundationIssue) {
   return weight[a.severity] - weight[b.severity] || a.displayName.localeCompare(b.displayName);
 }
 
-async function authorize(fastify: FastifyInstance, request: any, reply: any, action: "read" | "write") {
+function parseClassAttributes(value: unknown): FoundationClassAttribute[] {
+  if (Array.isArray(value)) return value as FoundationClassAttribute[];
+  if (typeof value !== "string") return [];
+  const parsed = JSON.parse(value || "[]") as unknown;
+  return Array.isArray(parsed) ? parsed as FoundationClassAttribute[] : [];
+}
+
+async function authorize(fastify: FastifyInstance, request: FastifyRequest, reply: FastifyReply, action: "read" | "write") {
   const user = request.user as { id?: string; role?: string } | null;
   const role = await resolveUserRole(fastify.pg, user);
   if (!role || !(await hasPermission(fastify.pg, { role, resource: "data-foundations", action }))) {
@@ -85,7 +107,7 @@ async function loadFoundationClasses(fastify: FastifyInstance) {
      GROUP BY c.id, c.name, c.display_name`,
     [FOUNDATION_CLASSES]
   );
-  return new Map(classes.rows.map((row: any) => [row.name, row]));
+  return new Map((classes.rows as FoundationClassRow[]).map((row) => [row.name, row]));
 }
 
 async function analyzeFoundations(fastify: FastifyInstance) {
@@ -97,7 +119,7 @@ async function analyzeFoundations(fastify: FastifyInstance) {
     const checks = [];
 
     for (const className of FOUNDATION_CLASSES) {
-      const cls = classMap.get(className) as any;
+      const cls = classMap.get(className);
       if (!cls) {
         tables.push({
           table: `cmdb.${className}`,
@@ -128,9 +150,9 @@ async function analyzeFoundations(fastify: FastifyInstance) {
         { className }
       );
       const records = result.records.map((record) => record.get("n").properties as Record<string, unknown>);
-      const attrs = Array.isArray(cls.attributes) ? cls.attributes : JSON.parse(cls.attributes || "[]");
-      const required = attrs.filter((attr: any) => attr.isMandatory);
-      const keyAttrs = attrs.filter((attr: any) => attr.isKeyAttribute);
+      const attrs = parseClassAttributes(cls.attributes);
+      const required = attrs.filter((attr) => attr.isMandatory);
+      const keyAttrs = attrs.filter((attr) => attr.isKeyAttribute);
       let missing = 0;
 
       for (const record of records) {
@@ -188,7 +210,7 @@ async function analyzeFoundations(fastify: FastifyInstance) {
         displayName: cls.display_name || className,
         registered: true,
         recordCount: records.length,
-        requiredAttributes: required.map((attr: any) => ({
+        requiredAttributes: required.map((attr) => ({
           name: attr.name,
           displayName: attr.displayName || attr.name,
         })),
@@ -257,10 +279,10 @@ export async function dataFoundationRoutes(fastify: FastifyInstance) {
     }
 
     const classMap = await loadFoundationClasses(fastify);
-    const cls = classMap.get(className) as any;
+    const cls = classMap.get(className);
     if (!cls) return reply.status(404).send({ error: "Foundation class is not registered" });
-    const attrs = Array.isArray(cls.attributes) ? cls.attributes : JSON.parse(cls.attributes || "[]");
-    const classAttrNames = new Set(attrs.map((attr: any) => attr.name));
+    const attrs = parseClassAttributes(cls.attributes);
+    const classAttrNames = new Set(attrs.map((attr) => attr.name));
 
     const session = fastify.neo4j.session();
     try {
