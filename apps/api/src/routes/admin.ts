@@ -13,20 +13,11 @@ import { registerAdminIdentityGroupRoutes } from "./admin/identityGroups";
 import { registerAdminIdentityProviderRoutes } from "./admin/identityProviders";
 import { registerAdminNumberSequenceRoutes } from "./admin/numberSequences";
 import { registerAdminOperationalIntelligenceRoutes } from "./admin/operationalIntelligence";
+import { registerAdminPanelRoutes } from "./admin/panels";
 import { registerAdminPermissionRoutes } from "./admin/permissions";
 import { registerAdminSystemPropertyRoutes } from "./admin/systemProperties";
 import { registerAdminUserRoutes } from "./admin/users";
 export { getStateMachineConfig } from "./admin/systemProperties";
-
-const CORE_ADMIN_PANELS = [
-  { id: "users", name: "User Management", icon: "Users", permissions: ["users:read"] },
-  { id: "edge-enrollment", name: "Edge Enrollment", icon: "Radio", permissions: ["edge-enrollment:read"] },
-  { id: "rbac", name: "RBAC", icon: "Shield", permissions: ["rbac:read"] },
-  { id: "credentials", name: "Credentials", icon: "KeyRound", permissions: ["credentials:read"] },
-  { id: "identity", name: "Identity Providers", icon: "KeyRound", permissions: ["identity:read"] },
-  { id: "number-sequences", name: "Number Sequences", icon: "Hash", permissions: ["number-sequences:read"] },
-  { id: "system-properties", name: "System Properties", icon: "Settings", permissions: ["system-properties:read"] },
-];
 
 const CORE_PERMISSION_TARGETS = [
   permissionTarget("users", "read", {
@@ -106,16 +97,6 @@ const CORE_PERMISSION_TARGETS = [
     description: "Allows a role to test credential reference availability without reading secret values.",
     risk: "high",
   }),
-];
-
-const BUILT_IN_APP_PANELS = [
-  {
-    id: "change-manager-state-machine",
-    name: "Change State Machine",
-    icon: "GitBranch",
-    permissions: ["system-properties:write"],
-    appId: "change-manager",
-  },
 ];
 
 function permissionRisk(resource: string, action: string) {
@@ -857,69 +838,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
   registerAdminIdentityProviderRoutes(fastify);
   registerAdminNumberSequenceRoutes(fastify);
   registerAdminOperationalIntelligenceRoutes(fastify);
+  registerAdminPanelRoutes(fastify);
   registerAdminPermissionRoutes(fastify);
   registerAdminSystemPropertyRoutes(fastify);
   registerAdminUserRoutes(fastify);
-
-  // Admin Panels Registry
-  fastify.get("/api/admin/panels", { onRequest: [fastify.authenticate] }, async (_request, reply) => {
-    try {
-      const user = (_request as any).user as { id?: string; role?: string } | null;
-      const { hasPermission, resolveUserRole } = await import("../services/rbac");
-      const role = await resolveUserRole(fastify.pg, user);
-
-      // Filter core panels by permission
-      const visibleCore = [];
-      for (const panel of CORE_ADMIN_PANELS) {
-        const firstPerm = panel.permissions?.[0];
-        const allowed = role && firstPerm
-          ? await hasPermission(fastify.pg, { role, resource: firstPerm.split(":")[0], action: "read" })
-          : false;
-        if (allowed) visibleCore.push(panel);
-      }
-
-      // Get app-published panels from marketplace table
-      let dbPanels: any[] = [];
-      try {
-        const appPanelsResult = await fastify.pg.query(
-          `SELECT id, admin_panels FROM marketplace_apps WHERE admin_panels IS NOT NULL`
-        );
-        dbPanels = appPanelsResult.rows.flatMap((app: any) => {
-          try {
-            const panels = JSON.parse(app.admin_panels || "[]");
-            return panels.map((p: any) => ({ ...p, appId: app.id }));
-          } catch {
-            return [];
-          }
-        });
-      } catch (err: any) {
-        // Column may not exist yet; ignore
-        if (err.message?.includes("admin_panels")) {
-          fastify.log.warn("admin_panels column not found in marketplace_apps");
-        } else {
-          throw err;
-        }
-      }
-
-      // Merge built-in app panels
-      const allAppPanels = [...BUILT_IN_APP_PANELS, ...dbPanels];
-
-      // Filter app panels by permission
-      const visibleAppPanels = [];
-      for (const panel of allAppPanels) {
-        const firstPerm = panel.permissions?.[0];
-        const allowed = role && firstPerm
-          ? await hasPermission(fastify.pg, { role, resource: firstPerm.split(":")[0], action: "read" })
-          : false;
-        if (allowed) visibleAppPanels.push(panel);
-      }
-
-      return { panels: [...visibleCore, ...visibleAppPanels] };
-    } catch (err: any) {
-      fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch admin panels" });
-    }
-  });
 
   fastify.get("/api/admin/rbac/options", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (_request, reply) => {
     try {
