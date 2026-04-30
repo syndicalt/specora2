@@ -68,6 +68,47 @@ async function getRole(fastify: FastifyInstance, user: { id?: string; role?: str
   return resolveUserRole(fastify.pg, user);
 }
 
+function authUser(user: unknown): { id?: string; role?: string } | null {
+  return typeof user === "object" && user !== null ? user as { id?: string; role?: string } : null;
+}
+
+function auditActorId(user: unknown): string | undefined {
+  return typeof user === "object" && user !== null && "id" in user ? String(user.id) : undefined;
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : fallback;
+}
+
+type GenericTableRecord = Record<string, unknown> & { id?: string; name?: string; number?: string | null };
+
+type CleanupReviewRow = Record<string, unknown> & {
+  id: string;
+  table_id: string;
+  record_id: string;
+  record_label: string;
+  reason: string;
+  severity: string;
+  status: string;
+  created_at?: string | Date;
+  updated_at?: string | Date;
+};
+
+type AuditLogRow = {
+  id: string;
+  actor_id?: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  old_values?: unknown;
+  new_values?: unknown;
+  metadata?: unknown;
+  previous_hash?: string | null;
+  entry_hash?: string | null;
+  integrity_version?: number | null;
+  created_at?: string | Date;
+};
+
 async function canUseTable(fastify: FastifyInstance, role: string | null, action: TableAction): Promise<boolean> {
   if (!role) return false;
   if (action === "delete") {
@@ -78,7 +119,7 @@ async function canUseTable(fastify: FastifyInstance, role: string | null, action
 
 export async function tableRoutes(fastify: FastifyInstance) {
   fastify.get("/api/tables/views", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -101,7 +142,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/tables/views", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot write table views" });
     }
@@ -147,7 +188,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         ]
       );
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: auditActorId(request.user),
         action: "table.view.saved",
         entityType: "TableSavedView",
         entityId: result.rows[0].id,
@@ -155,14 +196,14 @@ export async function tableRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.tables", tableId: table.id },
       });
       return { view: tableViewRow(result.rows[0]) };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to save table view" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to save table view") });
     }
   });
 
   fastify.delete("/api/tables/views/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot delete table views" });
     }
@@ -174,7 +215,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     );
     if (!result.rows.length) return reply.status(404).send({ error: "View not found" });
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: auditActorId(request.user),
       action: "table.view.deleted",
       entityType: "TableSavedView",
       entityId: id,
@@ -185,7 +226,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/tables", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -195,7 +236,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/tables/:table", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -207,7 +248,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/tables/cleanup-reviews", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -245,7 +286,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const tables = await getTables(fastify);
     const labels = new Map(tables.map((table) => [table.id, table.label]));
     return {
-      reviews: result.rows.map((row: any) => cleanupReviewRow({ ...row, table_label: labels.get(row.table_id) })),
+      reviews: (result.rows as CleanupReviewRow[]).map((row) => cleanupReviewRow({ ...row, table_label: labels.get(String(row.table_id || "")) })),
       total: count.rows[0]?.total || 0,
       limit,
       offset,
@@ -253,7 +294,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.patch("/api/tables/cleanup-reviews/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot write tables" });
     }
@@ -277,7 +318,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     );
     const row = result.rows[0];
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: auditActorId(request.user),
       action: "table.cleanup_review.status_updated",
       entityType: "TableCleanupReview",
       entityId: id,
@@ -289,7 +330,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -360,7 +401,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/tables/:table/records/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -391,7 +432,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/tables/:table/records/:id/validation", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -399,7 +440,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const table = await resolveTable(fastify, tableId);
     if (!table) return reply.status(404).send({ error: "Table not found" });
     const { table: tableForUser, access } = await tableWithFieldAccess(fastify, role!, table);
-    let record: any | null = null;
+    let record: GenericTableRecord | null = null;
     let relationshipCount: number | undefined;
 
     if (table.provider === "postgres-table") {
@@ -440,7 +481,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/api/tables/:table/records/:id/audit", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -456,7 +497,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       [table.id, id]
     );
     return {
-      entries: result.rows.map((row: any) => ({
+      entries: (result.rows as AuditLogRow[]).map((row) => ({
         id: row.id,
         actorId: row.actor_id,
         action: row.action,
@@ -474,7 +515,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/tables/:table/export", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -491,7 +532,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const format = normalizeExportFormat(body.format);
     if (!columns.length) return reply.status(403).send({ error: "Forbidden: no readable export columns" });
 
-    let records: any[] = [];
+    let records: GenericTableRecord[] = [];
     if (table.provider === "postgres-table") {
       records = await getPostgresRecordsById(fastify, tableForUser, recordIds, access);
     } else {
@@ -512,7 +553,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     }
 
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: auditActorId(request.user),
       action: "table.records.exported",
       entityType: table.id,
       entityId: table.id,
@@ -540,7 +581,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/tables/:table/bulk", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot write tables" });
     }
@@ -560,7 +601,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     const action = body.action === "delete" ? "delete" : body.action === "update" ? "update" : null;
     if (!action) return reply.status(400).send({ error: "Unsupported bulk action" });
 
-    const updated: any[] = [];
+    const updated: GenericTableRecord[] = [];
     const deleted: string[] = [];
     const errors: Array<{ recordId: string; error: string }> = [];
 
@@ -582,7 +623,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
           }
           updated.push(record);
           await recordAuditEvent(fastify, {
-            actorId: (request.user as any)?.id,
+            actorId: auditActorId(request.user),
             action: "table.record.updated",
             entityType: table.id,
             entityId: id,
@@ -590,8 +631,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
             newValues: record,
             metadata: { source: "api.tables.bulk", provider: table.provider },
           });
-        } catch (err: any) {
-          errors.push({ recordId: id, error: err.message || "Bulk update failed" });
+        } catch (err: unknown) {
+          errors.push({ recordId: id, error: errorMessage(err, "Bulk update failed") });
         }
       }
     } else {
@@ -617,21 +658,21 @@ export async function tableRoutes(fastify: FastifyInstance) {
           }
           deleted.push(id);
           await recordAuditEvent(fastify, {
-            actorId: (request.user as any)?.id,
+            actorId: auditActorId(request.user),
             action: "table.record.deleted",
             entityType: table.id,
             entityId: id,
             oldValues: before || { id },
             metadata: { source: "api.tables.bulk", provider: table.provider },
           });
-        } catch (err: any) {
-          errors.push({ recordId: id, error: err.message || "Bulk delete failed" });
+        } catch (err: unknown) {
+          errors.push({ recordId: id, error: errorMessage(err, "Bulk delete failed") });
         }
       }
     }
 
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: auditActorId(request.user),
       action: action === "update" ? "table.records.bulk_updated" : "table.records.bulk_deleted",
       entityType: table.id,
       entityId: table.id,
@@ -660,7 +701,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/tables/:table/cleanup-assist", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "read"))) {
       return reply.status(403).send({ error: "Forbidden: cannot read tables" });
     }
@@ -692,7 +733,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     });
 
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: auditActorId(request.user),
       action: "table.cleanup_assist.generated",
       entityType: table.id,
       entityId: table.id,
@@ -703,7 +744,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/tables/:table/cleanup-reviews", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot write tables" });
     }
@@ -740,7 +781,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     }));
 
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: auditActorId(request.user),
       action: "table.cleanup_review.queued",
       entityType: "TableCleanupReview",
       entityId: table.id,
@@ -771,7 +812,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/tables/:table/import", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot write tables" });
     }
@@ -818,7 +859,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     }, {} as Record<TableImportDecision["action"], number>);
     if (body.dryRun) {
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: auditActorId(request.user),
         action: "table.records.import_previewed",
         entityType: table.id,
         entityId: table.id,
@@ -835,8 +876,8 @@ export async function tableRoutes(fastify: FastifyInstance) {
       return { table: tableForUser, decisions, errors: [], summary: { requested: rows.length, ...counts } };
     }
 
-    const created: any[] = [];
-    const updated: any[] = [];
+    const created: GenericTableRecord[] = [];
+    const updated: GenericTableRecord[] = [];
     const skipped: TableImportDecision[] = [];
     for (const decision of decisions) {
       const index = decision.row - 1;
@@ -862,7 +903,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         if (decision.action === "update") updated.push(record);
         else created.push(record);
         await recordAuditEvent(fastify, {
-          actorId: (request.user as any)?.id,
+          actorId: auditActorId(request.user),
           action: decision.action === "update" ? "table.record.updated" : "table.record.created",
           entityType: table.id,
           entityId: record.id,
@@ -870,13 +911,13 @@ export async function tableRoutes(fastify: FastifyInstance) {
           newValues: record,
           metadata: { source: "api.tables.import", provider: table.provider, row: index + 1, mode, matchKeys, fileName: body.source?.filename },
         });
-      } catch (err: any) {
-        errors.push({ row: index + 1, error: err.message || "Failed to create record" });
+      } catch (err: unknown) {
+        errors.push({ row: index + 1, error: errorMessage(err, "Failed to create record") });
       }
     }
 
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: auditActorId(request.user),
       action: "table.records.imported",
       entityType: table.id,
       entityId: table.id,
@@ -916,7 +957,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/tables/:table/records", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot write tables" });
     }
@@ -931,7 +972,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
     if (table.provider === "postgres-table") {
       const record = await createPostgresRecord(fastify, tableForUser, body);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: auditActorId(request.user),
         action: "table.record.created",
         entityType: table.id,
         entityId: record.id,
@@ -943,7 +984,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
 
     const created = await createCmdbRecord(fastify, tableForUser, body);
     await recordAuditEvent(fastify, {
-      actorId: (request.user as any)?.id,
+      actorId: auditActorId(request.user),
       action: "table.record.created",
       entityType: table.id,
       entityId: created.id,
@@ -954,7 +995,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.patch("/api/tables/:table/records/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot write tables" });
     }
@@ -970,7 +1011,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       const record = await updatePostgresRecord(fastify, tableForUser, id, body);
       if (!record) return reply.status(404).send({ error: "Record not found" });
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: auditActorId(request.user),
         action: "table.record.updated",
         entityType: table.id,
         entityId: id,
@@ -1014,7 +1055,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       const record = result.records[0]?.get("n");
       const updated = parseNode(record);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: auditActorId(request.user),
         action: "table.record.updated",
         entityType: table.id,
         entityId: id,
@@ -1029,7 +1070,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
   });
 
   fastify.delete("/api/tables/:table/records/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const role = await getRole(fastify, request.user as any);
+    const role = await getRole(fastify, authUser(request.user));
     if (!(await canUseTable(fastify, role, "write"))) {
       return reply.status(403).send({ error: "Forbidden: cannot write tables" });
     }
@@ -1040,7 +1081,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
       const before = await getPostgresRecord(fastify, table, id);
       await fastify.pg.query(`DELETE FROM ${quoteIdentifier(table.tableName!)} WHERE id = $1`, [id]);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: auditActorId(request.user),
         action: "table.record.deleted",
         entityType: table.id,
         entityId: id,
@@ -1059,7 +1100,7 @@ export async function tableRoutes(fastify: FastifyInstance) {
         { id, className: table.className }
       );
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: auditActorId(request.user),
         action: "table.record.deleted",
         entityType: table.id,
         entityId: id,
