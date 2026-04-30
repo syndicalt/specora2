@@ -15,6 +15,14 @@ type DueSchedule = {
   next_run_at: string | Date | null;
 };
 
+type DiscoveryPipelineRow = {
+  id: string;
+  name: string;
+  version?: number | string | null;
+  definition?: unknown;
+  published_definition?: unknown;
+};
+
 const INTERVALS = new Set<DiscoveryScheduleInterval>(["manual", "hourly", "daily", "weekly", "monthly"]);
 
 export function normalizeScheduleInterval(value: unknown): DiscoveryScheduleInterval {
@@ -48,14 +56,14 @@ export async function runSavedDiscoveryPipeline(
       return { ok: false, pipelineId, status: "not_found", error: "Pipeline not found" };
     }
 
-    const pipelineRow = pipelineResult.rows[0];
+    const pipelineRow = pipelineResult.rows[0] as DiscoveryPipelineRow;
     const definition = pipelineRow.published_definition || pipelineRow.definition || {};
     const staged = await stageDiscoveryPipeline(fastify, {
       pipelineId: pipelineRow.id,
       pipelineName: pipelineRow.name,
       definition,
       targetClasses,
-      pipelineVersion: pipelineRow.version,
+      pipelineVersion: pipelineRow.version === null || pipelineRow.version === undefined ? undefined : Number(pipelineRow.version),
       triggerSource: source,
     });
     if (!staged.ready) {
@@ -69,8 +77,8 @@ export async function runSavedDiscoveryPipeline(
       source === "scheduled" ? 1 : 0
     );
     return { ok: true, pipelineId, discoveryJobId: staged.job.id, preview: staged.preview.summary };
-  } catch (err: any) {
-    return { ok: false, pipelineId, status: "failed", error: err?.message || "Discovery run failed" };
+  } catch (err) {
+    return { ok: false, pipelineId, status: "failed", error: err instanceof Error && err.message ? err.message : "Discovery run failed" };
   }
 }
 
@@ -95,7 +103,7 @@ export async function claimDueDiscoverySchedules(
       [now.toISOString(), limit]
     );
 
-    for (const row of result.rows) {
+    for (const row of result.rows as DueSchedule[]) {
       const interval = normalizeScheduleInterval(row.interval);
       await client.query(
         `UPDATE discovery_pipeline_schedules
@@ -110,7 +118,7 @@ export async function claimDueDiscoverySchedules(
     }
 
     await client.query("COMMIT");
-    return result.rows.map((row: any) => ({
+    return (result.rows as DueSchedule[]).map((row) => ({
       pipeline_id: row.pipeline_id,
       interval: normalizeScheduleInterval(row.interval),
       next_run_at: row.next_run_at,
@@ -161,7 +169,7 @@ export function startDiscoveryScheduler(fastify: FastifyInstance, intervalMs = N
     try {
       const results = await runDiscoverySchedulerCycle(fastify);
       if (results.length) fastify.log.info({ results }, "Discovery scheduler processed due pipelines");
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error({ err }, "Discovery scheduler failed");
     } finally {
       running = false;

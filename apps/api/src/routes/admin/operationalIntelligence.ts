@@ -1,13 +1,16 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
+import type { Record as Neo4jRecord } from "neo4j-driver";
 import { requirePermission } from "../../services/rbac";
 
-function n(value: any) {
+type MetricRow = Record<string, unknown>;
+
+function n(value: unknown) {
   if (value === null || value === undefined) return 0;
   if (typeof value === "number") return value;
   return Number(value) || 0;
 }
 
-function pct(value: any) {
+function pct(value: unknown) {
   const score = n(value);
   if (score <= 1) return Math.round(score * 100);
   return Math.round(score);
@@ -20,9 +23,13 @@ function scoreFromRisks(risks: number[]) {
   return { score, posture: "attention" };
 }
 
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 async function loadCmdbStats(fastify: FastifyInstance) {
-  if (!(fastify as any).neo4j?.session) return null;
-  const session = (fastify as any).neo4j.session();
+  if (!fastify.neo4j?.session) return null;
+  const session = fastify.neo4j.session();
   try {
     const result = await session.run(
       `MATCH (n:ConfigurationItem)
@@ -30,13 +37,13 @@ async function loadCmdbStats(fastify: FastifyInstance) {
        OPTIONAL MATCH ()-[r]-()
        RETURN ciCount, count(r) AS relationshipCount`
     );
-    const row = result.records[0];
+    const row = result.records[0] as Neo4jRecord | undefined;
     return {
       ciCount: row?.get("ciCount")?.toNumber?.() ?? n(row?.get("ciCount")),
       relationshipCount: row?.get("relationshipCount")?.toNumber?.() ?? n(row?.get("relationshipCount")),
     };
-  } catch (err: any) {
-    fastify.log.warn({ err: err.message }, "Failed to load CMDB operational intelligence stats");
+  } catch (err) {
+    fastify.log.warn({ err: errorMessage(err, "Failed to load CMDB operational intelligence stats") }, "Failed to load CMDB operational intelligence stats");
     return null;
   } finally {
     await session.close();
@@ -118,13 +125,13 @@ async function buildOperationalIntelligence(fastify: FastifyInstance) {
     loadCmdbStats(fastify),
   ]);
 
-  const incidentRow = incident.rows[0] || {};
-  const changeRow = change.rows[0] || {};
-  const knowledgeRow = knowledge.rows[0] || {};
-  const requestRow = request.rows[0] || {};
-  const assetRow = asset.rows[0] || {};
-  const discoveryRow = discovery.rows[0] || {};
-  const governanceRow = governance.rows[0] || {};
+  const incidentRow = (incident.rows[0] as MetricRow | undefined) || {};
+  const changeRow = (change.rows[0] as MetricRow | undefined) || {};
+  const knowledgeRow = (knowledge.rows[0] as MetricRow | undefined) || {};
+  const requestRow = (request.rows[0] as MetricRow | undefined) || {};
+  const assetRow = (asset.rows[0] as MetricRow | undefined) || {};
+  const discoveryRow = (discovery.rows[0] as MetricRow | undefined) || {};
+  const governanceRow = (governance.rows[0] as MetricRow | undefined) || {};
 
   const domains = [
     {
@@ -267,9 +274,9 @@ export function registerAdminOperationalIntelligenceRoutes(fastify: FastifyInsta
   fastify.get("/api/admin/operational-intelligence", { onRequest: [fastify.authenticate, requirePermission("system-properties", "read")] }, async (_request, reply) => {
     try {
       return await buildOperationalIntelligence(fastify);
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to build operational intelligence" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to build operational intelligence") });
     }
   });
 }
