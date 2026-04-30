@@ -5,6 +5,40 @@ import type React from "react";
 import type { ShellAPI } from "@/sdk/types";
 import { ReferenceTypeahead, type ReferenceOption } from "@/components/ReferenceTypeahead";
 import {
+  IMPORT_LIMIT,
+  INLINE_SELECT_CLASS,
+  OPERATORS,
+  PAGE_SIZE,
+  REFERENCE_OPTIONS_LIMIT,
+  RELATIONSHIP_FILTER_KEYS,
+  RELATIONSHIP_FILTERS,
+  RELATIONSHIP_TYPES,
+  SELECT_CLASS,
+  TABLES_LAUNCH_KEY,
+} from "./constants";
+import type {
+  AttributeDef,
+  AuditEntry,
+  CleanupReview,
+  CleanupSuggestion,
+  ColumnDef,
+  DiffRow,
+  EditorMode,
+  FilterOperator,
+  ImportDecision,
+  ImportField,
+  ImportMode,
+  ImportPayloadRow,
+  ImportRow,
+  InlineEdit,
+  PendingTableAction,
+  SavedTableView,
+  TableDef,
+  TableFilter,
+  TableRecord,
+  ValidationIssue,
+} from "./types";
+import {
   AlertTriangle,
   ArrowUpRight,
   Check,
@@ -24,181 +58,6 @@ import {
   Upload,
   X,
 } from "lucide-react";
-
-type AttributeDef = {
-  name: string;
-  displayName: string;
-  attrType: string;
-  isMandatory: boolean;
-  isHealthRequired?: boolean;
-  isKeyAttribute: boolean;
-  enumValues?: string[];
-  referenceClass?: string;
-  canRead?: boolean;
-  canWrite?: boolean;
-  isRestricted?: boolean;
-};
-
-type TableDef = {
-  id: string;
-  label: string;
-  provider?: "cmdb-class" | "postgres-table";
-  className: string;
-  displayField?: string;
-  secondaryDisplayFields?: string[];
-  category: string;
-  hasNumber?: boolean;
-  attributes: AttributeDef[];
-};
-
-type TableRecord = {
-  id: string;
-  name: string;
-  class: string;
-  environment?: string | null;
-  attributes?: Record<string, unknown>;
-  _validation?: {
-    state: "valid" | "warning" | "invalid";
-    issueCount: number;
-    errors: number;
-    warnings: number;
-  };
-  [key: string]: unknown;
-};
-
-type ColumnDef = {
-  key: string;
-  label: string;
-  core: boolean;
-  attrType: string;
-};
-
-type FilterOperator = "contains" | "equals" | "notEquals" | "startsWith" | "endsWith" | "empty" | "notEmpty" | "gt" | "gte" | "lt" | "lte";
-
-type TableFilter = {
-  id: string;
-  field: string;
-  operator: FilterOperator;
-  value: string;
-};
-
-type EditorMode = "create" | "edit";
-type PendingTableAction = {
-  tableId: string;
-  recordId?: string;
-  mode?: "create" | "edit";
-};
-
-type SavedTableView = {
-  id: string;
-  tableId: string;
-  name: string;
-  searchQuery: string;
-  filters: Array<{ field: string; operator: FilterOperator; value?: unknown }>;
-  columns: string[];
-  density: "compact" | "comfortable" | "spacious";
-  sortField?: string;
-  sortDirection?: "asc" | "desc";
-};
-
-type AuditEntry = {
-  id: string;
-  action: string;
-  oldValues?: Record<string, unknown> | null;
-  newValues?: Record<string, unknown> | null;
-  entryHash?: string | null;
-  createdAt?: string | null;
-  created_at?: string | null;
-};
-
-type CleanupReview = {
-  id: string;
-  tableId: string;
-  tableLabel: string;
-  recordId: string;
-  recordLabel: string;
-  reason: string;
-  severity: "low" | "medium" | "high" | "critical";
-  status: "open" | "in_progress" | "resolved" | "dismissed";
-  requesterName?: string | null;
-  requesterEmail?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-};
-
-type InlineEdit = {
-  recordId: string;
-  columnKey: string;
-  value: string;
-};
-
-type DiffRow = {
-  field: string;
-  before: unknown;
-  after: unknown;
-};
-
-type ValidationIssue = {
-  field: string;
-  label: string;
-  severity: "error" | "warn";
-  message?: string;
-  reason?: string;
-};
-type CleanupSuggestion = {
-  recordId: string;
-  recordLabel: string;
-  severity: "low" | "medium" | "high" | "critical";
-  reviewReason: string;
-  recommendations: Array<{ title: string; recommendation: string; field: string; severity: string }>;
-};
-
-type ImportRow = Record<string, string>;
-type ImportPayloadRow = {
-  name?: string;
-  environment?: string;
-  attributes: Record<string, unknown>;
-};
-type ImportField = {
-  key: string;
-  label: string;
-  attr?: AttributeDef;
-};
-type ImportMode = "create" | "update" | "upsert";
-type ImportDecision = {
-  row: number;
-  action: "create" | "update" | "skip" | "conflict" | "error";
-  recordId?: string;
-  recordName?: string | null;
-  reason?: string;
-};
-const PAGE_SIZE = 100;
-const IMPORT_LIMIT = 250;
-const REFERENCE_OPTIONS_LIMIT = 500;
-const TABLES_LAUNCH_KEY = "specora_tables_launch";
-const SELECT_CLASS = "appearance-none rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-indigo-500 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500";
-const INLINE_SELECT_CLASS = "w-full min-w-32 appearance-none rounded border border-indigo-500 bg-gray-950 px-2 py-1 pr-8 text-sm text-gray-100 outline-none [color-scheme:dark] focus:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-50";
-const RELATIONSHIP_TYPES = ["PART_OF", "DEPENDS_ON", "HOSTED_ON", "MANAGED_BY", "OWNED_BY", "LOCATED_AT"];
-const RELATIONSHIP_FILTERS: ColumnDef[] = [
-  { key: "__relationshipState", label: "Relationship State", core: false, attrType: "relationship-state" },
-  { key: "__relationshipType", label: "Relationship Type", core: false, attrType: "relationship-type" },
-  { key: "__relatedCiId", label: "Related CI ID", core: false, attrType: "string" },
-];
-const RELATIONSHIP_FILTER_KEYS = new Set(RELATIONSHIP_FILTERS.map((filter) => filter.key));
-
-const OPERATORS: Array<{ value: FilterOperator; label: string; needsValue: boolean }> = [
-  { value: "contains", label: "contains", needsValue: true },
-  { value: "equals", label: "equals", needsValue: true },
-  { value: "notEquals", label: "not equals", needsValue: true },
-  { value: "startsWith", label: "starts with", needsValue: true },
-  { value: "endsWith", label: "ends with", needsValue: true },
-  { value: "empty", label: "is empty", needsValue: false },
-  { value: "notEmpty", label: "is not empty", needsValue: false },
-  { value: "gt", label: "greater than", needsValue: true },
-  { value: "gte", label: "greater/equal", needsValue: true },
-  { value: "lt", label: "less than", needsValue: true },
-  { value: "lte", label: "less/equal", needsValue: true },
-];
 
 function isValueOperator(operator: FilterOperator) {
   return OPERATORS.find((item) => item.value === operator)?.needsValue ?? true;
