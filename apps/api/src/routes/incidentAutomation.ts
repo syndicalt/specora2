@@ -1,9 +1,32 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { executeTool } from "@specora/sdk";
 import { hasPermission } from "../services/rbac";
 import { recordAuditEvent } from "../services/auditLog";
 
-async function requireIncidentPermission(fastify: FastifyInstance, user: any, action: "read" | "write" | "remediate" | "command") {
+type IncidentAutomationAction = "read" | "write" | "remediate" | "command";
+
+type RouteUser = {
+  id?: string;
+  role?: string;
+};
+
+type IncidentToolResult = Record<string, unknown> & {
+  id?: string;
+};
+
+type IncidentRequest = FastifyRequest & {
+  user?: RouteUser;
+};
+
+function routeUser(request: FastifyRequest): RouteUser {
+  return (request as IncidentRequest).user || {};
+}
+
+function incidentResult(value: unknown): IncidentToolResult {
+  return value && typeof value === "object" ? value as IncidentToolResult : {};
+}
+
+async function requireIncidentPermission(fastify: FastifyInstance, user: RouteUser, action: IncidentAutomationAction) {
   if (!user?.role) return true;
   if (user.role === "admin" || user.role === "security_admin") return true;
   return hasPermission(fastify.pg, { role: user.role, resource: "incident-manager", action });
@@ -11,17 +34,17 @@ async function requireIncidentPermission(fastify: FastifyInstance, user: any, ac
 
 export async function incidentAutomationRoutes(fastify: FastifyInstance) {
   fastify.post("/api/incident-automation/signals", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = routeUser(request);
     if (!(await requireIncidentPermission(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
     const body = request.body as Record<string, unknown>;
-    const incident = await executeTool("incident-manager_create_incident", {
+    const incident = incidentResult(await executeTool("incident-manager_create_incident", {
       ...body,
       source: body.source || "external",
       _userId: user?.id,
       _userRole: user?.role,
-    }, fastify) as any;
+    }, fastify));
     const triage = incident?.id
       ? await executeTool("incident-manager_triage_incident", { incidentId: incident.id, _userId: user?.id, _userRole: user?.role }, fastify)
       : null;
@@ -37,12 +60,12 @@ export async function incidentAutomationRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/incident-automation/incidents", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = routeUser(request);
     if (!(await requireIncidentPermission(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
     const body = request.body as Record<string, unknown>;
-    const incident = await executeTool("incident-manager_create_incident", { ...body, _userId: user?.id, _userRole: user?.role }, fastify) as any;
+    const incident = incidentResult(await executeTool("incident-manager_create_incident", { ...body, _userId: user?.id, _userRole: user?.role }, fastify));
     await recordAuditEvent(fastify, {
       actorId: user?.id,
       action: "incident_automation.incident_created",
@@ -55,7 +78,7 @@ export async function incidentAutomationRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/incident-automation/incidents/:id/actions", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = routeUser(request);
     if (!(await requireIncidentPermission(fastify, user, "remediate"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -68,7 +91,7 @@ export async function incidentAutomationRoutes(fastify: FastifyInstance) {
         action: "incident_automation.remediation_recommended",
         entityType: "Incident",
         entityId: id,
-        newValues: recommendation as any,
+        newValues: incidentResult(recommendation),
         metadata: { source: "api.incident-automation", surface: "external-workflow" },
       });
       return recommendation;
@@ -88,14 +111,14 @@ export async function incidentAutomationRoutes(fastify: FastifyInstance) {
       action: "incident_automation.remediation_executed",
       entityType: "Incident",
       entityId: id,
-      newValues: result as any,
+      newValues: incidentResult(result),
       metadata: { source: "api.incident-automation", surface: "external-workflow", actionId: body.actionId, approved: !!body.approve },
     });
     return result;
   });
 
   fastify.post("/api/incident-automation/incidents/:id/resolve", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = routeUser(request);
     if (!(await requireIncidentPermission(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
