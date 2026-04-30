@@ -1,4 +1,5 @@
 import { getRedis, isRedisAvailable } from "./redis";
+import type { FastifyReply, FastifyRequest } from "fastify";
 
 interface PermissionCheck {
   role: string;
@@ -61,7 +62,7 @@ export function clearPermissionCache(): void {
 }
 
 interface PgClient {
-  query: (sql: string, params?: any[]) => Promise<{ rows: any[] }>;
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
 }
 
 export async function hasPermission(
@@ -121,12 +122,12 @@ export async function resolveUserRole(
   if (user?.role) return user.role;
   if (!user?.id) return null;
   const result = await pg.query("SELECT role FROM users WHERE id = $1", [user.id]);
-  return result.rows[0]?.role || null;
+  return (result.rows[0] as { role?: string } | undefined)?.role || null;
 }
 
 export function requirePermission(resource: string, action: string) {
-  return async (request: any, reply: any) => {
-    const user = request.user as { id?: string; role?: string } | null;
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user;
     const role = await resolveUserRole(request.server.pg, user);
     if (!role) {
       return reply.status(403).send({ error: "Forbidden: no role assigned" });
@@ -138,8 +139,8 @@ export function requirePermission(resource: string, action: string) {
   };
 }
 
-export function requireAdmin(request: any, reply: any) {
-  const user = request.user as { role?: string } | null;
+export function requireAdmin(request: FastifyRequest, reply: FastifyReply) {
+  const user = request.user;
   if (user?.role !== "admin" && user?.role !== "security_admin") {
     return reply.status(403).send({ error: "Forbidden: admin required" });
   }

@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 
 export interface Job {
   id: string;
@@ -18,6 +18,39 @@ export interface Job {
 
 const JOB_STATUSES = new Set(["pending", "running", "completed", "failed"]);
 
+type JobRow = {
+  id: string;
+  type: string;
+  payload: Record<string, unknown> | string | null;
+  status: string;
+  priority: number | string;
+  retries: number | string;
+  max_retries: number | string;
+  error_message?: string | null;
+  worker_id?: string | null;
+  started_at?: string | Date | null;
+  completed_at?: string | Date | null;
+  created_at: string | Date;
+  updated_at: string | Date;
+};
+
+type JobStatusRow = {
+  status: string;
+  count: string | number;
+};
+
+function objectPayload(value: JobRow["payload"]): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 export async function enqueueJob(
   fastify: FastifyInstance,
   type: string,
@@ -30,7 +63,7 @@ export async function enqueueJob(
      RETURNING id, type, payload, status, priority, retries, max_retries, error_message, worker_id, started_at, completed_at, created_at, updated_at`,
     [type, JSON.stringify(payload), priority]
   );
-  return rowToJob(result.rows[0]);
+  return rowToJob(result.rows[0] as JobRow);
 }
 
 export async function claimJob(fastify: FastifyInstance, workerId: string): Promise<Job | null> {
@@ -49,7 +82,7 @@ export async function claimJob(fastify: FastifyInstance, workerId: string): Prom
       await client.query("COMMIT");
       return null;
     }
-    const job = result.rows[0];
+    const job = result.rows[0] as JobRow;
     await client.query(
       `UPDATE jobs SET status = 'running', worker_id = $1, started_at = NOW(), updated_at = NOW() WHERE id = $2`,
       [workerId, job.id]
@@ -77,7 +110,7 @@ export async function failJob(fastify: FastifyInstance, jobId: string, errorMess
     [jobId]
   );
   if (!result.rows.length) return;
-  const { retries, max_retries } = result.rows[0];
+  const { retries, max_retries } = result.rows[0] as { retries: number; max_retries: number };
   const newRetries = retries + 1;
   const shouldRetry = newRetries < max_retries;
   await fastify.pg.query(
@@ -109,9 +142,9 @@ export async function getJobQueueSummary(fastify: FastifyInstance, staleAfterMin
   return {
     generatedAt: new Date().toISOString(),
     staleAfterMinutes,
-    byStatus: Object.fromEntries(result.rows.map((row: any) => [row.status, row.count])),
-    staleRunning: stale.rows[0]?.count || 0,
-    deadLetter: dead.rows[0]?.count || 0,
+    byStatus: Object.fromEntries((result.rows as JobStatusRow[]).map((row) => [row.status, row.count])),
+    staleRunning: (stale.rows[0] as { count?: string | number } | undefined)?.count || 0,
+    deadLetter: (dead.rows[0] as { count?: string | number } | undefined)?.count || 0,
   };
 }
 
@@ -125,7 +158,7 @@ export async function listDeadLetterJobs(fastify: FastifyInstance, limit = 100):
      LIMIT $1`,
     [safeLimit]
   );
-  return result.rows.map(rowToJob);
+  return (result.rows as JobRow[]).map(rowToJob);
 }
 
 export async function requeueStaleRunningJobs(fastify: FastifyInstance, staleAfterMinutes = 30, limit = 100) {
@@ -153,7 +186,7 @@ export async function requeueStaleRunningJobs(fastify: FastifyInstance, staleAft
   );
   return {
     staleAfterMinutes: safeMinutes,
-    jobs: result.rows.map(rowToJob),
+    jobs: (result.rows as JobRow[]).map(rowToJob),
   };
 }
 
@@ -163,7 +196,7 @@ export async function getJobStatus(fastify: FastifyInstance, jobId: string): Pro
      FROM jobs WHERE id = $1`,
     [jobId]
   );
-  return result.rows.length ? rowToJob(result.rows[0]) : null;
+  return result.rows.length ? rowToJob(result.rows[0] as JobRow) : null;
 }
 
 export async function listJobs(
@@ -171,7 +204,7 @@ export async function listJobs(
   filters: { status?: string; type?: string; limit?: number } = {}
 ): Promise<Job[]> {
   let query = `SELECT id, type, payload, status, priority, retries, max_retries, error_message, worker_id, started_at, completed_at, created_at, updated_at FROM jobs WHERE 1=1`;
-  const params: any[] = [];
+  const params: unknown[] = [];
   let idx = 1;
   if (filters.status && JOB_STATUSES.has(filters.status)) {
     query += ` AND status = $${idx++}`;
@@ -184,23 +217,23 @@ export async function listJobs(
   query += ` ORDER BY created_at DESC LIMIT $${idx++}`;
   params.push(Math.min(Math.max(Number(filters.limit) || 100, 1), 500));
   const result = await fastify.pg.query(query, params);
-  return result.rows.map(rowToJob);
+  return (result.rows as JobRow[]).map(rowToJob);
 }
 
-function rowToJob(row: any): Job {
+function rowToJob(row: JobRow): Job {
   return {
     id: row.id,
     type: row.type,
-    payload: row.payload,
+    payload: objectPayload(row.payload),
     status: row.status,
-    priority: row.priority,
-    retries: row.retries,
-    maxRetries: row.max_retries,
-    errorMessage: row.error_message,
-    workerId: row.worker_id,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    priority: Number(row.priority),
+    retries: Number(row.retries),
+    maxRetries: Number(row.max_retries),
+    errorMessage: row.error_message || undefined,
+    workerId: row.worker_id || undefined,
+    startedAt: row.started_at ? String(row.started_at) : undefined,
+    completedAt: row.completed_at ? String(row.completed_at) : undefined,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
   };
 }

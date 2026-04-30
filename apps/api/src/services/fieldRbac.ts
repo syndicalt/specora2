@@ -1,7 +1,7 @@
 import { hasPermission } from "./rbac";
 
 type PgClient = {
-  query: (sql: string, params?: any[]) => Promise<{ rows: any[] }>;
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
 };
 
 type FieldAccessInput = {
@@ -51,17 +51,18 @@ async function getConfiguredRestrictions(pg: PgClient): Promise<{ resources: Set
   const fields = new Set<string>();
   try {
     const result = await pg.query("SELECT value FROM system_properties WHERE key = 'security.field_restrictions'");
-    const raw = result.rows[0]?.value;
-    const parsed = raw ? JSON.parse(raw) : [];
+    const raw = (result.rows[0] as { value?: unknown } | undefined)?.value;
+    const parsed = raw ? JSON.parse(String(raw)) : [];
     if (Array.isArray(parsed)) {
       for (const item of parsed) {
         if (typeof item === "string") {
           if (item.startsWith("field:")) resources.add(item);
           else fields.add(item);
         } else if (item && typeof item === "object") {
-          const resource = typeof item.resource === "string" ? item.resource : null;
-          const tableId = typeof item.tableId === "string" ? item.tableId : null;
-          const field = typeof item.field === "string" ? item.field : null;
+          const restriction = item as Record<string, unknown>;
+          const resource = typeof restriction.resource === "string" ? restriction.resource : null;
+          const tableId = typeof restriction.tableId === "string" ? restriction.tableId : null;
+          const field = typeof restriction.field === "string" ? restriction.field : null;
           if (resource) resources.add(resource);
           if (tableId && field) resources.add(fieldResource(tableId, field));
           else if (field) fields.add(field);
