@@ -1,6 +1,62 @@
 import { GraphQLError } from "graphql";
 import { hasPermission } from "../services/rbac";
 
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type EnvironmentChoiceRow = {
+  id: string;
+  code: string;
+  name: string;
+  active: boolean;
+  sort_order: number;
+  is_production_like: boolean;
+  created_at?: string | Date;
+  updated_at?: string | Date;
+};
+
+type CiClassRow = {
+  id: string;
+  name: string;
+  display_name?: string | null;
+  parent_class?: string | null;
+  is_system?: boolean;
+  created_by_app_id?: string | null;
+  created_at?: string | Date;
+  updated_at?: string | Date;
+  display_field?: string | null;
+  secondary_display_fields?: string[] | null;
+};
+
+export type CiClassAttributeRow = {
+  id: string;
+  name: string;
+  display_name?: string | null;
+  attr_type?: string | null;
+  is_mandatory?: boolean;
+  is_health_required?: boolean;
+  is_key_attribute?: boolean;
+  default_value?: unknown;
+  validation_regex?: string | null;
+  enum_values?: string[] | null;
+  depth?: number;
+};
+
+export type CiClassDefinition = CiClassRow & {
+  displayName?: string | null;
+  parentClass?: string | null;
+  isSystem?: boolean;
+  createdByAppId?: string | null;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+  displayField?: string | null;
+  secondaryDisplayFields: string[];
+  attributes: CiClassAttributeRow[];
+  inheritedAttributes: CiClassAttributeRow[];
+  allAttributes: CiClassAttributeRow[];
+};
+
 export function boundedHopCount(value: number | undefined, fallback: number) {
   const hops = value ?? fallback;
   if (!Number.isInteger(hops) || hops < 1 || hops > 10) {
@@ -9,7 +65,7 @@ export function boundedHopCount(value: number | undefined, fallback: number) {
   return hops;
 }
 
-export function mapEnvironmentChoice(row: any) {
+export function mapEnvironmentChoice(row: EnvironmentChoiceRow) {
   return {
     id: row.id,
     code: row.code,
@@ -49,10 +105,10 @@ export function mapUserRow(row: UserRow) {
   };
 }
 
-export async function getClassDefinition(pg: any, className: string) {
+export async function getClassDefinition(pg: QueryablePg, className: string): Promise<CiClassDefinition | null> {
   const classResult = await pg.query("SELECT * FROM ci_classes WHERE name = $1", [className]);
   if (!classResult.rows.length) return null;
-  const cls = classResult.rows[0];
+  const cls = classResult.rows[0] as CiClassRow;
 
   const attrsResult = await pg.query(
     `WITH RECURSIVE class_tree AS (
@@ -69,18 +125,19 @@ export async function getClassDefinition(pg: any, className: string) {
     [className]
   );
 
-  const attrMap = new Map();
-  for (const row of attrsResult.rows) {
+  const attrRows = attrsResult.rows as CiClassAttributeRow[];
+  const attrMap = new Map<string, CiClassAttributeRow>();
+  for (const row of attrRows) {
     attrMap.set(row.name, row);
   }
   const attributes = Array.from(attrMap.values());
 
-  const ownAttrs = attributes.filter((a: any) => {
-    const own = attrsResult.rows.find((r: any) => r.name === a.name && r.depth === 0);
+  const ownAttrs = attributes.filter((attr) => {
+    const own = attrRows.find((row) => row.name === attr.name && row.depth === 0);
     return !!own;
   });
-  const inheritedAttrs = attributes.filter((a: any) => {
-    const own = attrsResult.rows.find((r: any) => r.name === a.name && r.depth === 0);
+  const inheritedAttrs = attributes.filter((attr) => {
+    const own = attrRows.find((row) => row.name === attr.name && row.depth === 0);
     return !own;
   });
 
@@ -100,13 +157,13 @@ export async function getClassDefinition(pg: any, className: string) {
   };
 }
 
-export async function validateCIAgainstClass(pg: any, className: string, ciData: any, mode: "create" | "update") {
+export async function validateCIAgainstClass(pg: QueryablePg, className: string, ciData: Record<string, unknown>, mode: "create" | "update") {
   const def = await getClassDefinition(pg, className);
   if (!def) {
     throw new GraphQLError(`Unknown CI class: ${className}`, { extensions: { code: "BAD_USER_INPUT" } });
   }
 
-  const attrs = ciData.attributes || {};
+  const attrs = (ciData.attributes || {}) as Record<string, unknown>;
   const allData = { ...ciData, ...attrs };
 
   for (const attr of def.allAttributes) {
@@ -144,7 +201,7 @@ export async function validateCIAgainstClass(pg: any, className: string, ciData:
     }
   }
 
-  const defaults: Record<string, any> = {};
+  const defaults: Record<string, unknown> = {};
   for (const attr of def.allAttributes) {
     if (allData[attr.name] === undefined && attr.default_value !== null && attr.default_value !== undefined) {
       defaults[attr.name] = attr.default_value;
@@ -154,7 +211,7 @@ export async function validateCIAgainstClass(pg: any, className: string, ciData:
   return { def, defaults };
 }
 
-export async function checkPermission(context: any, resource: string, action: string) {
+export async function checkPermission(context: { pg: QueryablePg; user?: unknown }, resource: string, action: string) {
   const user = context.user as { role?: string } | null;
   if (!user?.role) {
     throw new GraphQLError("Forbidden: not authenticated", { extensions: { code: "FORBIDDEN" } });
