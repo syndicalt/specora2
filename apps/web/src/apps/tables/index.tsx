@@ -55,6 +55,7 @@ import {
   validationIssuesForForm,
 } from "./helpers";
 import { parseImportFile } from "./importParsing";
+import { ExportMenu } from "./ExportMenu";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -1745,21 +1746,6 @@ function ImportWorkbench({
         </div>
       </div>
     </section>
-  );
-}
-
-function ExportMenu({ onCsv, onJson, align = "right" }: { onCsv: () => void; onJson: () => void; align?: "left" | "right" }) {
-  return (
-    <div className={`absolute z-30 mt-2 w-44 rounded-lg border border-gray-700 bg-gray-900 p-1 shadow-2xl ${align === "right" ? "right-0" : "left-0"}`}>
-      <button onClick={onCsv} className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-800">
-        <span>CSV</span>
-        <span className="text-xs text-gray-500">Spreadsheet</span>
-      </button>
-      <button onClick={onJson} className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-800">
-        <span>JSON</span>
-        <span className="text-xs text-gray-500">API</span>
-      </button>
-    </div>
   );
 }
 
