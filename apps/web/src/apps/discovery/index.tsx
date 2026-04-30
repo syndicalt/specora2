@@ -27,7 +27,6 @@ import {
   discoveryJobPreview,
   discoveryJobSource,
   discoveryJobTimestamp,
-  edgeCollectorSample,
   edgeJobAge,
   entityCountsLabel,
   formatDiscoveryJobDate,
@@ -37,7 +36,6 @@ import {
   pct,
   previewReconciliationTrace,
   previewRecordDecision,
-  profileToCsv,
   relationshipStatusClass,
   relationshipStatusLabel,
   rowsToCsv,
@@ -47,6 +45,13 @@ import {
   stagedReconciliationTrace,
   stagedRecordDecision,
 } from "./helpers";
+import {
+  collectorSchemaSelectionPatch,
+  datasetProfileSelectionPatch,
+  edgeProfileSelectionPatch,
+  sourceSelectionPatch,
+  type SourceSelectionPatch,
+} from "./sourceSelection";
 import type {
   DiscoveryCollector,
   DiscoveryCredentialReference,
@@ -225,6 +230,16 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   const readyStep = proposal ? preview ? currentPipelineId ? isPublished ? staged ? "Commit" : "Run" : "Publish" : "Preview" : "Map" : "Source";
   const undoStackRef = useRef<FlowSnapshot[]>([]);
   const skipGeneratedFlowSyncRef = useRef(false);
+
+  function applySourceSelectionPatch(patch: SourceSelectionPatch) {
+    if (patch.selectedSourceId !== undefined) setSelectedSourceId(patch.selectedSourceId);
+    if (patch.edgeProfiles) setEdgeProfiles(patch.edgeProfiles);
+    if (patch.edgeDatasets) setEdgeDatasets(patch.edgeDatasets);
+    if (patch.selectedDatasetId !== undefined) setSelectedDatasetId(patch.selectedDatasetId);
+    if (patch.selectedEdgeEntityType !== undefined) setSelectedEdgeEntityType(patch.selectedEdgeEntityType);
+    setSourceName(patch.sourceName);
+    setSample(patch.sample);
+  }
 
   const rememberFlow = useCallback(() => {
     undoStackRef.current = [...undoStackRef.current.slice(-24), { nodes, edges }];
@@ -643,41 +658,21 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   }
 
   function applySource(source: DiscoverySource) {
-    setSelectedSourceId(source.id);
-    setEdgeProfiles([]);
-    setEdgeDatasets([]);
-    setSelectedDatasetId("");
-    setSelectedEdgeEntityType("");
-    setSourceName(source.name);
-    const config = source.config || {};
-    if (typeof config.sample === "string") {
-      setSample(config.sample);
-    } else if (Array.isArray(config.rows)) {
-      const columns = Array.isArray(config.columns) ? config.columns.map(String) : Object.keys(config.rows[0] || {});
-      setSample(rowsToCsv(columns, config.rows as Record<string, unknown>[]));
-    } else if (source.type === "edge") {
-      setSample(edgeCollectorSample(collectors.find((collector) => collector.id === config.collectorId) || null));
-    }
+    applySourceSelectionPatch(sourceSelectionPatch(source, collectors));
     setProposal(null);
     setPreview(null);
     setStaged(null);
   }
 
   function applyEdgeProfile(collector: DiscoveryCollector, profile: EdgeObservationProfile) {
-    setSelectedEdgeEntityType(profile.entityType);
-    setSourceName(`${collector.name} · ${profile.entityType}`);
-    setSample(profileToCsv(profile));
+    applySourceSelectionPatch(edgeProfileSelectionPatch(collector, profile));
     setProposal(null);
     setPreview(null);
     setStaged(null);
   }
 
   function applyDatasetProfile(collector: DiscoveryCollector, dataset: DiscoveryDataset, profile: EdgeObservationProfile) {
-    setSelectedDatasetId(dataset.id);
-    setEdgeProfiles(dataset.profiles || []);
-    setSelectedEdgeEntityType(profile.entityType);
-    setSourceName(`${collector.name} · ${profile.entityType}`);
-    setSample(profileToCsv(profile));
+    applySourceSelectionPatch(datasetProfileSelectionPatch(collector, dataset, profile));
     setProposal(null);
     setPreview(null);
     setStaged(null);
@@ -709,12 +704,12 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
           applyEdgeProfile(collector, profiles[0]);
           shell.notify(`Profiled ${data.totalObservations || 0} edge observations across ${profiles.length} entity types`, "success");
         } else {
-          setSample(edgeCollectorSample(collector));
+          applySourceSelectionPatch(collectorSchemaSelectionPatch(collector));
           shell.notify("No edge observations staged yet; using collector schema sample", "info");
         }
       }
     } catch {
-      setSample(edgeCollectorSample(collector));
+      applySourceSelectionPatch(collectorSchemaSelectionPatch(collector));
       shell.notify("Edge datasets could not be loaded; using collector schema sample", "error");
     }
     setProposal(null);
