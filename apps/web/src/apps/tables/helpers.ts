@@ -47,6 +47,12 @@ export function formatDateTime(value?: string | null) {
   return Number.isNaN(date.getTime()) ? "Unknown date" : date.toLocaleString();
 }
 
+export function primitiveCellValue(value: unknown) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 export function canReadAttr(attr?: AttributeDef) {
   return attr?.canRead !== false;
 }
@@ -202,4 +208,3 @@ export function referenceClassesForTables(tables: TableDef[]) {
       .map((attr) => attr.referenceClass!)
   )))).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
-
