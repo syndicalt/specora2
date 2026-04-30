@@ -35,6 +35,24 @@ type ChatMessage = {
   tool_call_id?: string;
 };
 
+type ChatInputMessage = {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: ChatToolCall[];
+  tool_call_id?: string;
+};
+
+type ToolResultMessage = {
+  tool_call_id: string;
+  role: "tool";
+  content: string;
+};
+
+type ToolCallMeta = {
+  call: ChatToolCall;
+  result: unknown;
+};
+
 type ToolArguments = Record<string, unknown>;
 
 type CiSummary = {
@@ -94,6 +112,10 @@ function nodeSummary(entity: Neo4jEntity): CiSummary {
 
 function recordNode(record: Neo4jRecord, key: string): Neo4jEntity {
   return record.get(key) as Neo4jEntity;
+}
+
+function openAiMessages(messages: ChatMessage[]): OpenAI.Chat.ChatCompletionMessageParam[] {
+  return messages as unknown as OpenAI.Chat.ChatCompletionMessageParam[];
 }
 
 async function callProvara(messages: ChatMessage[], tools: OpenAI.Chat.ChatCompletionTool[]): Promise<OpenAI.Chat.ChatCompletion> {
@@ -688,7 +710,7 @@ async function getAllTools(fastify: FastifyInstance, user?: { id?: string; role?
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.parameters as any,
+      parameters: tool.parameters as Record<string, unknown>,
     },
   }));
   const coreTools = await canUseCmdbTools(fastify, user) ? CORE_TOOLS : [];
@@ -908,10 +930,10 @@ async function executeCoreTool(
 
 async function executeTool(
   name: string,
-  args: any,
+  args: ToolArguments,
   fastify: FastifyInstance,
   user?: { id?: string; role?: string }
-): Promise<any> {
+): Promise<unknown> {
   // Check if it's a core tool
   const isCoreTool = CORE_TOOLS.some((t) => t.function?.name === name);
   if (isCoreTool) {
@@ -979,13 +1001,13 @@ function parseXmlToolCalls(text: string): { id: string; type: "function"; functi
 
 export interface ChatResult {
   content: string;
-  toolCalls?: { call: OpenAI.Chat.ChatCompletionMessageToolCall; result: any }[];
+  toolCalls?: ToolCallMeta[];
 }
 
 const MAX_HISTORY_MESSAGES = 20;
 
 export async function chat(
-  messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[],
+  messages: ChatInputMessage[],
   fastify: FastifyInstance,
   trace?: Trace | SessionTrace,
   uiContext?: string,
@@ -1004,16 +1026,16 @@ export async function chat(
   const usedProvara = !!provara;
 
   const MAX_TOOL_ROUNDS = 3;
-  let currentMessages: any[] = [
+  let currentMessages: ChatMessage[] = [
     { role: "system" as const, content: buildSystemPrompt(uiContext, await getAccessProfile(fastify, user)) },
     ...recentMessages.map((m) => ({
-      role: m.role as any,
+      role: m.role,
       content: m.content,
       ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
       ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
     })),
   ];
-  const allCallMetas: { call: OpenAI.Chat.ChatCompletionMessageToolCall; result: any }[] = [];
+  const allCallMetas: ToolCallMeta[] = [];
   let lastServiceMapRootId: string | null = null;
   let lastCiDetailsId: string | null = null;
 
@@ -1104,9 +1126,9 @@ export async function chat(
     }
 
     // Execute tools
-    const toolResults: any[] = [];
+    const toolResults: ToolResultMessage[] = [];
     for (const toolCall of message.tool_calls) {
-      const args = JSON.parse(toolCall.function.arguments);
+      const args = parseJsonContent(toolCall.function.arguments) as ToolArguments || {};
       // Enrich with user context for permission-aware tools
       if (user?.id) args._userId = user.id;
       if (user?.role) args._userRole = user.role;
@@ -1117,21 +1139,24 @@ export async function chat(
         toolArgs: args,
       });
 
-      let result: any;
+      let result: unknown;
       try {
         result = await executeTool(toolCall.function.name, args, fastify, user);
         await toolSpan?.end({ status: "completed", toolResult: result });
-      } catch (err: any) {
-        await toolSpan?.end({ status: "failed", error: err.message });
-        result = { error: err.message };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Tool execution failed";
+        await toolSpan?.end({ status: "failed", error: message });
+        result = { error: message };
       }
 
       // Track which CIs were queried so we can auto-append action directives
-      if (toolCall.function.name === "get_service_map" && args.rootId) {
-        lastServiceMapRootId = args.rootId;
+      const rootId = stringArg(args, "rootId");
+      const ciId = stringArg(args, "id");
+      if (toolCall.function.name === "get_service_map" && rootId) {
+        lastServiceMapRootId = rootId;
       }
-      if (toolCall.function.name === "get_ci_details" && args.id) {
-        lastCiDetailsId = args.id;
+      if (toolCall.function.name === "get_ci_details" && ciId) {
+        lastCiDetailsId = ciId;
       }
 
       toolResults.push({
@@ -1157,7 +1182,7 @@ export async function chat(
   // If we hit the max rounds, force a final response without tools
   const finalMessages = [
     ...currentMessages,
-    { role: "user", content: "Please provide a final answer based on the tool results above." },
+    { role: "user" as const, content: "Please provide a final answer based on the tool results above." },
   ];
   const finalCompletion = await callLlm(finalMessages, fastify, usedProvara, openai, provara, trace, MAX_TOOL_ROUNDS, false, user);
   let finalContent = finalContentOrDeterministic(currentMessages, finalCompletion.choices[0].message.content || "");
@@ -1179,11 +1204,11 @@ export async function chat(
 const LLM_REQUEST_TIMEOUT_MS = 120_000;
 
 async function callLlm(
-  messages: any[],
+  messages: ChatMessage[],
   _fastify: FastifyInstance,
   usedProvara: boolean,
   openai: OpenAI | null,
-  _provara: any,
+  _provara: unknown,
   trace?: Trace | SessionTrace,
   round?: number,
   includeTools = true,
@@ -1201,7 +1226,7 @@ async function callLlm(
       messages: messages.map((m) => ({
         role: m.role,
         content: m.content?.slice?.(0, 2000) ?? m.content,
-        ...(m.tool_calls ? { tool_calls: m.tool_calls.map((t: any) => ({ id: t.id, name: t.function?.name })) } : {}),
+        ...(m.tool_calls ? { tool_calls: m.tool_calls.map((t) => ({ id: t.id, name: t.function?.name })) } : {}),
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
       })),
       temperature: 0.3,
@@ -1224,10 +1249,10 @@ async function callLlm(
       completion = await Promise.race([
         openai!.chat.completions.create({
           model,
-          messages,
+          messages: openAiMessages(messages),
           ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
           temperature: 0.3,
-        }),
+        }) as Promise<OpenAI.Chat.ChatCompletion>,
         new Promise<OpenAI.Chat.ChatCompletion>((_, reject) =>
           setTimeout(() => reject(new Error(`OpenAI request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`)), LLM_REQUEST_TIMEOUT_MS)
         ),
@@ -1239,14 +1264,14 @@ async function callLlm(
       output: {
         role: msg.role,
         content: msg.content?.slice?.(0, 2000) ?? msg.content,
-        toolCalls: msg.tool_calls?.map((t: any) => ({ id: t.id, name: t.function?.name })) ?? [],
+        toolCalls: msg.tool_calls?.map((t) => ({ id: t.id, name: t.function?.name })) ?? [],
       },
       inputTokens: completion.usage?.prompt_tokens,
       outputTokens: completion.usage?.completion_tokens,
     });
     return completion;
-  } catch (err: any) {
-    await span?.end({ status: "failed", error: err.message });
+  } catch (err: unknown) {
+    await span?.end({ status: "failed", error: err instanceof Error ? err.message : "LLM request failed" });
     throw err;
   }
 }
@@ -1254,25 +1279,25 @@ async function callLlm(
 export type ChatStreamEvent =
   | { type: "token"; content: string }
   | { type: "tool_call"; name: string; arguments: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: any }
+  | { type: "tool_result"; name: string; result: unknown }
   | { type: "approval_required"; name: string; arguments: Record<string, unknown>; risk: "high"; reason: string }
-  | { type: "done"; content: string; sessionId: string; toolCalls?: any[] }
+  | { type: "done"; content: string; sessionId: string; toolCalls?: ToolCallMeta[] }
   | { type: "error"; message: string };
 
 const LLM_STREAM_TIMEOUT_MS = 120_000;
 
 async function callLlmStream(
-  messages: any[],
+  messages: ChatMessage[],
   _fastify: FastifyInstance,
   usedProvara: boolean,
   openai: OpenAI | null,
-  _provara: any,
+  _provara: unknown,
   onEvent: (event: ChatStreamEvent) => void,
   trace?: Trace | SessionTrace,
   round = 0,
   includeTools = true,
   user?: { role?: string }
-): Promise<{ content: string; toolCalls?: any[] }> {
+): Promise<{ content: string; toolCalls?: ChatToolCall[] }> {
   const tools = includeTools ? await getAllTools(_fastify, user) : [];
   const model = usedProvara ? "provara-router" : "gpt-4o-mini";
   const provider = usedProvara ? "provara" : "openai";
@@ -1285,7 +1310,7 @@ async function callLlmStream(
       messages: messages.map((m) => ({
         role: m.role,
         content: m.content?.slice?.(0, 2000) ?? m.content,
-        ...(m.tool_calls ? { tool_calls: m.tool_calls.map((t: any) => ({ id: t.id, name: t.function?.name })) } : {}),
+        ...(m.tool_calls ? { tool_calls: m.tool_calls.map((t) => ({ id: t.id, name: t.function?.name })) } : {}),
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
       })),
       temperature: 0.3,
@@ -1296,7 +1321,7 @@ async function callLlmStream(
 
   try {
     let accumulatedContent = "";
-    let toolCalls: any[] | undefined;
+    let toolCalls: ChatToolCall[] | undefined;
 
     const timeoutRace = <T>(promise: Promise<T>, label: string): Promise<T> => {
       return Promise.race([
@@ -1393,7 +1418,7 @@ async function callLlmStream(
       // OpenAI streaming via SDK
       const stream = await openai!.chat.completions.create({
         model: "gpt-4o-mini",
-        messages,
+        messages: openAiMessages(messages),
         ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
         temperature: 0.3,
         stream: true,
@@ -1438,25 +1463,25 @@ async function callLlmStream(
       status: "completed",
       output: {
         content: accumulatedContent.slice(0, 2000),
-        toolCalls: toolCalls?.map((t: any) => ({ id: t.id, name: t.function?.name })) ?? [],
+        toolCalls: toolCalls?.map((t) => ({ id: t.id, name: t.function?.name })) ?? [],
       },
     });
     return { content: accumulatedContent, toolCalls };
-  } catch (err: any) {
-    await span?.end({ status: "failed", error: err.message });
+  } catch (err: unknown) {
+    await span?.end({ status: "failed", error: err instanceof Error ? err.message : "LLM stream failed" });
     throw err;
   }
 }
 
 export async function chatStream(
-  messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[],
+  messages: ChatInputMessage[],
   fastify: FastifyInstance,
   onEvent: (event: ChatStreamEvent) => void,
   trace?: Trace | SessionTrace,
   uiContext?: string,
   user?: { id: string; role?: string },
   approvedToolNames: string[] = []
-): Promise<{ content: string; toolCalls?: any[] }> {
+): Promise<{ content: string; toolCalls?: ToolCallMeta[] }> {
   const openai = getOpenAI();
   const provara = getProvaraConfig();
 
@@ -1471,16 +1496,16 @@ export async function chatStream(
   const recentMessages = messages.slice(-MAX_HISTORY_MESSAGES);
 
   const MAX_TOOL_ROUNDS = 3;
-  let currentMessages: any[] = [
+  let currentMessages: ChatMessage[] = [
     { role: "system" as const, content: buildSystemPrompt(uiContext, await getAccessProfile(fastify, user)) },
     ...recentMessages.map((m) => ({
-      role: m.role as any,
+      role: m.role,
       content: m.content,
       ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
       ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
     })),
   ];
-  const allCallMetas: { call: any; result: any }[] = [];
+  const allCallMetas: ToolCallMeta[] = [];
   let lastServiceMapRootId: string | null = null;
   let lastCiDetailsId: string | null = null;
 
@@ -1496,17 +1521,17 @@ export async function chatStream(
       if (rawContent) {
         const xmlToolCalls = parseXmlToolCalls(rawContent);
         if (xmlToolCalls) {
-          fastify.log.warn({ round, tools: xmlToolCalls.map((t: any) => t.function.name) }, "Detected XML tool calls in stream text — using fallback parser");
+          fastify.log.warn({ round, tools: xmlToolCalls.map((t) => t.function.name) }, "Detected XML tool calls in stream text — using fallback parser");
           toolCalls = xmlToolCalls;
         } else {
           const actionToolCalls = parseActionToolCalls(rawContent);
           if (actionToolCalls) {
-            fastify.log.warn({ round, tools: actionToolCalls.map((t: any) => t.function.name) }, "Detected action-directive tool calls in stream text — using fallback parser");
+            fastify.log.warn({ round, tools: actionToolCalls.map((t) => t.function.name) }, "Detected action-directive tool calls in stream text — using fallback parser");
             toolCalls = actionToolCalls;
           } else {
             const promissoryToolCalls = parsePromissorySearchToolCall(currentMessages, rawContent);
             if (promissoryToolCalls) {
-              fastify.log.warn({ round, tools: promissoryToolCalls.map((t: any) => t.function.name) }, "Detected promissory search text in stream — repairing into tool call");
+              fastify.log.warn({ round, tools: promissoryToolCalls.map((t) => t.function.name) }, "Detected promissory search text in stream — repairing into tool call");
               toolCalls = promissoryToolCalls;
             }
           }
@@ -1546,8 +1571,8 @@ export async function chatStream(
         if (shouldForceFinalFromPromissory(currentMessages, content || "")) {
           const finalMessages = [
             ...currentMessages,
-            { role: "assistant", content: content || "" },
-            { role: "user", content: PROMISSORY_FINAL_INSTRUCTION },
+            { role: "assistant" as const, content: content || "" },
+            { role: "user" as const, content: PROMISSORY_FINAL_INSTRUCTION },
           ];
           const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, round, false, user);
           return {
@@ -1560,11 +1585,11 @@ export async function chatStream(
     }
 
     // Execute tools
-    const toolResults: any[] = [];
+    const toolResults: ToolResultMessage[] = [];
     for (const toolCall of toolCalls) {
-      let args: any;
+      let args: ToolArguments;
       try {
-        args = JSON.parse(toolCall.function.arguments);
+        args = parseJsonContent(toolCall.function.arguments) as ToolArguments || {};
       } catch {
         args = {};
       }
@@ -1597,21 +1622,24 @@ export async function chatStream(
         toolArgs: args,
       });
 
-      let result: any;
+      let result: unknown;
       try {
         result = await executeTool(toolCall.function.name, args, fastify, user);
         await toolSpan?.end({ status: "completed", toolResult: result });
-      } catch (err: any) {
-        await toolSpan?.end({ status: "failed", error: err.message });
-        result = { error: err.message };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Tool execution failed";
+        await toolSpan?.end({ status: "failed", error: message });
+        result = { error: message };
       }
 
       // Track which CIs were queried so we can auto-append action directives
-      if (toolCall.function.name === "get_service_map" && args.rootId) {
-        lastServiceMapRootId = args.rootId;
+      const rootId = stringArg(args, "rootId");
+      const ciId = stringArg(args, "id");
+      if (toolCall.function.name === "get_service_map" && rootId) {
+        lastServiceMapRootId = rootId;
       }
-      if (toolCall.function.name === "get_ci_details" && args.id) {
-        lastCiDetailsId = args.id;
+      if (toolCall.function.name === "get_ci_details" && ciId) {
+        lastCiDetailsId = ciId;
       }
 
       onEvent({ type: "tool_result", name: toolCall.function.name, result });
@@ -1639,7 +1667,7 @@ export async function chatStream(
   // If we hit the max rounds, force a final response without tools
   const finalMessages = [
     ...currentMessages,
-    { role: "user", content: "Please provide a final answer based on the tool results above." },
+    { role: "user" as const, content: "Please provide a final answer based on the tool results above." },
   ];
   const { content: finalContent } = await callLlmStream(finalMessages, fastify, usedProvara, openai, provara, onEvent, trace, MAX_TOOL_ROUNDS, false, user);
   let sanitizedFinal = finalContentOrDeterministic(currentMessages, finalContent || "");
