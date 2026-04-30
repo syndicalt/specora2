@@ -430,6 +430,93 @@ describe("appTools", () => {
     }), { pg });
   });
 
+  it("engage agent workspace tools queue, brief, workbench, and update requests", async () => {
+    await register();
+    const home = tool("engage-agent-workspace_workspace_home");
+    const workbench = tool("engage-agent-workspace_get_request_workbench");
+    const update = tool("engage-agent-workspace_update_request");
+    const brief = tool("engage-agent-workspace_draft_agent_brief");
+    const requestRow = {
+      id: "req-1",
+      number: "REQ0001",
+      title: "Access to billing app",
+      description: "Need role access",
+      status: "submitted",
+      priority: 1,
+      intent_summary: "Access request for billing app",
+      answers: "{\"businessJustification\":\"Month end\"}",
+      ai_resolution: "{}",
+      fulfillment_plan: "[{\"step\":\"manager approval\"}]",
+      requester_name: "Riley Requester",
+      requester_email: "riley@example.com",
+      catalog_title: "Access request",
+      catalog_category: "Access",
+    };
+    const pg = {
+      query: vi.fn(async (sql: string, params?: any[]) => {
+        if (sql.includes("FROM catalog_requests r") && sql.includes("WHERE 1=1")) {
+          return { rows: [requestRow] };
+        }
+        if (sql.includes("GROUP BY status")) {
+          return { rows: [{ status: "submitted", count: 3 }, { status: "blocked", count: 1 }] };
+        }
+        if (sql.includes("WHERE r.id = $1")) {
+          return { rows: [requestRow] };
+        }
+        if (sql.includes("FROM catalog_request_events e")) {
+          return { rows: [{ id: "event-1", type: "submitted", message: "Submitted", actor_name: "Riley Requester" }] };
+        }
+        if (sql.includes("FROM support_handoffs h")) {
+          return { rows: [{ id: "handoff-1", channel_name: "Service Desk", channel_type: "chat" }] };
+        }
+        if (sql.includes("FROM knowledge_items")) {
+          return { rows: [{ id: "kb-1", title: "Access troubleshooting", trust_score: 0.9 }] };
+        }
+        if (sql === "SELECT * FROM catalog_requests WHERE id = $1") {
+          return { rows: [requestRow] };
+        }
+        if (sql.includes("UPDATE catalog_requests")) {
+          return { rows: [{ ...requestRow, status: params?.[0], priority: params?.[1], answers: params?.[2] }] };
+        }
+        if (sql.includes("INSERT INTO catalog_request_events")) {
+          return { rows: [] };
+        }
+        return { rows: [] };
+      }),
+    };
+
+    const homeModel = await home({ status: "submitted", search: "billing", limit: 500 }, { pg });
+    expect(homeModel).toMatchObject({
+      queues: expect.arrayContaining([{ status: "submitted", count: 3 }]),
+      requests: [expect.objectContaining({ id: "req-1", answers: { businessJustification: "Month end" } })],
+    });
+    expect(pg.query.mock.calls.find((call: any[]) => String(call[0]).includes("WHERE 1=1"))?.[1]).toEqual(["submitted", "%billing%", 100]);
+
+    await expect(workbench({ requestId: "missing" }, { pg: { query: vi.fn(async () => ({ rows: [] })) } })).resolves.toEqual({ error: "Request not found" });
+    await expect(workbench({ requestId: "req-1" }, { pg })).resolves.toMatchObject({
+      request: { id: "req-1" },
+      events: [{ id: "event-1" }],
+      handoffs: [{ id: "handoff-1" }],
+      knowledge: [{ id: "kb-1" }],
+      agentLinks: [expect.objectContaining({ title: "Microsoft Entra access troubleshooting" })],
+      nextBestAction: "Triage the request, verify requester intent, and assign an owner.",
+    });
+
+    await expect(update({ requestId: "req-1", status: "in_progress", priority: 2, assignmentGroup: "Identity Team", workNote: "Validated requester", _userId: "agent-1" }, { pg })).resolves.toMatchObject({
+      id: "req-1",
+      status: "in_progress",
+      priority: 2,
+      answers: { businessJustification: "Month end", assignmentGroup: "Identity Team" },
+    });
+    expect(pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO catalog_request_events"), expect.arrayContaining(["req-1", "Validated requester"]));
+
+    await expect(brief({ requestId: "req-1" }, { pg })).resolves.toMatchObject({
+      summary: "Access request for billing app",
+      risks: ["High priority request: verify impact and communicate frequently."],
+      knowledge: [{ id: "kb-1" }],
+    });
+  });
+
   it("list_rfcs applies optional filters", async () => {
     await register();
     const handler = tool("change-manager_list_rfcs");
