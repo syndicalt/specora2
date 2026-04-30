@@ -10,6 +10,7 @@ import {
 } from "@specora/core";
 import { hasPermission } from "../services/rbac";
 import { getPasswordPolicy, passwordPolicyMessage, validatePasswordAgainstPolicy } from "../services/passwordPolicy";
+import { neo4jPropertyProps, parseNode } from "./ciNode";
 import { assertRelationshipType, mapRelationshipType, relationshipPattern, RELATIONSHIP_TYPE_PATTERN } from "./relationshipTypes";
 
 function boundedHopCount(value: number | undefined, fallback: number) {
@@ -18,25 +19,6 @@ function boundedHopCount(value: number | undefined, fallback: number) {
     throw new GraphQLError("maxHops must be an integer between 1 and 10", { extensions: { code: "BAD_USER_INPUT" } });
   }
   return hops;
-}
-
-function parseNode(node: any) {
-  const attrs = typeof node.attributes === "string" ? JSON.parse(node.attributes) : (node.attributes || {});
-  const reserved = new Set(["id", "name", "class", "environment", "attributes", "dataQualityScore", "lastDiscoveredAt"]);
-  const projectedAttrs = Object.fromEntries(
-    Object.entries(node).filter(([key, value]) => !reserved.has(key) && value !== undefined && value !== null)
-  );
-  return { ...node, attributes: { ...attrs, ...projectedAttrs } };
-}
-
-function isNeo4jPropertyValue(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (["string", "number", "boolean"].includes(typeof value)) return true;
-  return Array.isArray(value) && value.every((item) => item !== null && ["string", "number", "boolean"].includes(typeof item));
-}
-
-function neo4jPropertyProps(attrs: Record<string, unknown>) {
-  return Object.fromEntries(Object.entries(attrs).filter(([, value]) => isNeo4jPropertyValue(value)));
 }
 
 function mapEnvironmentChoice(row: any) {
