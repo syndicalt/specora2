@@ -25,6 +25,14 @@ export type RelationshipTypeRow = {
   updated_at: string;
 };
 
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type RelationshipNameRow = {
+  name: string;
+};
+
 export function mapRelationshipType(row: RelationshipTypeRow) {
   return {
     id: row.id,
@@ -41,17 +49,19 @@ export function mapRelationshipType(row: RelationshipTypeRow) {
   };
 }
 
-export async function activeRelationshipTypeNames(pg: any): Promise<string[]> {
+export async function activeRelationshipTypeNames(pg: QueryablePg): Promise<string[]> {
   try {
     const result = await pg.query("SELECT name FROM relationship_types WHERE active = true ORDER BY sort_order, display_name");
-    const names = result.rows.map((row: any) => String(row.name)).filter((name: string) => RELATIONSHIP_TYPE_PATTERN.test(name));
+    const names = (result.rows as RelationshipNameRow[])
+      .map((row) => String(row.name))
+      .filter((name) => RELATIONSHIP_TYPE_PATTERN.test(name));
     return names.length > 0 ? names : [...FALLBACK_RELATIONSHIP_TYPES];
   } catch {
     return [...FALLBACK_RELATIONSHIP_TYPES];
   }
 }
 
-export async function relationshipPattern(pg: any, types?: string[]) {
+export async function relationshipPattern(pg: QueryablePg, types?: string[]) {
   const allowed = await activeRelationshipTypeNames(pg);
   const relTypes = types?.length ? types : allowed;
   const invalid = relTypes.filter((type) => !RELATIONSHIP_TYPE_PATTERN.test(type) || !allowed.includes(type));
@@ -61,7 +71,7 @@ export async function relationshipPattern(pg: any, types?: string[]) {
   return relTypes.join("|");
 }
 
-export async function assertRelationshipType(pg: any, type: string) {
+export async function assertRelationshipType(pg: QueryablePg, type: string) {
   if (!RELATIONSHIP_TYPE_PATTERN.test(type)) {
     throw new GraphQLError(`Invalid relationship type: ${type}`, { extensions: { code: "BAD_USER_INPUT" } });
   }
