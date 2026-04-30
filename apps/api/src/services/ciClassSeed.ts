@@ -1,6 +1,31 @@
 import type { Pool } from "pg";
 
-const BUILT_IN_CLASSES = [
+type BuiltInClassAttribute = {
+  name: string;
+  displayName: string;
+  description?: string | null;
+  attrType: string;
+  isMandatory: boolean;
+  isHealthRequired: boolean;
+  isKeyAttribute: boolean;
+  defaultValue?: string | null;
+  validationRegex?: string | null;
+  enumValues?: string[];
+  referenceClass?: string;
+  sortOrder: number;
+};
+
+type BuiltInClass = {
+  name: string;
+  displayName: string;
+  description: string;
+  parentClass: string | null;
+  icon: string;
+  color: string;
+  attributes: BuiltInClassAttribute[];
+};
+
+const BUILT_IN_CLASSES: BuiltInClass[] = [
   {
     name: "Server",
     displayName: "Server / VM",
@@ -218,10 +243,10 @@ export async function seedCIClasses(pg: Pool) {
            (class_id, name, display_name, description, attr_type, is_mandatory, is_health_required, is_key_attribute, default_value, validation_regex, enum_values, reference_class, sort_order)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
           [
-            classId, attr.name, attr.displayName, (attr as any).description || null,
+            classId, attr.name, attr.displayName, attr.description || null,
             attr.attrType, attr.isMandatory, attr.isHealthRequired,
-            attr.isKeyAttribute, (attr as any).defaultValue || null,
-            (attr as any).validationRegex || null, attr.enumValues || null,
+            attr.isKeyAttribute, attr.defaultValue || null,
+            attr.validationRegex || null, attr.enumValues || null,
             attr.referenceClass || null, attr.sortOrder,
           ]
         );
