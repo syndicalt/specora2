@@ -3,6 +3,8 @@ import { hasPermission, resolveUserRole } from "./rbac";
 
 type AppMode = "canvas" | "window";
 type AppSource = "built-in" | "external";
+type InstallStatus = NonNullable<ServerAppRegistryEntry["installStatus"]>;
+type EntitlementMode = NonNullable<ServerAppRegistryEntry["entitlementMode"]>;
 
 export type ServerAppRegistryEntry = {
   id: string;
@@ -232,14 +234,15 @@ export async function getAllRegisteredApps(fastify: FastifyInstance): Promise<Se
 }
 
 async function getInstallationRows(fastify: FastifyInstance) {
+  type InstallationRow = { app_id: string; status?: string; last_job_id?: string | null };
   try {
     const result = await fastify.pg.query(
       `SELECT app_id, status, last_job_id
        FROM app_installations`
     );
-    return new Map(result.rows.map((row: any) => [row.app_id, row]));
+    return new Map((result.rows as InstallationRow[]).map((row) => [row.app_id, row]));
   } catch {
-    return new Map<string, any>();
+    return new Map<string, InstallationRow>();
   }
 }
 
@@ -255,7 +258,7 @@ export async function getAppCatalog(
     if (!(await canAccessApp(fastify, role, app))) continue;
     const installation = installations.get(app.id);
     const coreInstalled = app.source === "built-in" && app.bundledWithPlatform !== false;
-    const status = coreInstalled ? "installed" : (installation?.status || "available");
+    const status = (coreInstalled ? "installed" : (installation?.status || "available")) as InstallStatus;
     catalog.push({
       ...app,
       installStatus: status,
@@ -286,22 +289,39 @@ async function canAccessApp(fastify: FastifyInstance, role: string | null, app: 
 }
 
 async function getApprovedMarketplaceApps(fastify: FastifyInstance): Promise<ServerAppRegistryEntry[]> {
+  type MarketplaceAppRow = {
+    id: string;
+    name: string;
+    description?: string;
+    url?: string;
+    icon?: string | null;
+    version?: string | null;
+    permissions?: unknown;
+    react_version?: string | null;
+    author?: string | null;
+    created_at?: string | Date | null;
+    package_id?: string | null;
+    package_name?: string | null;
+    premium?: boolean | null;
+    entitlement_mode?: string | null;
+    bundled_with_platform?: boolean | null;
+  };
   const result = await fastify.pg.query(
     `SELECT id, name, description, url, icon, version, permissions, react_version, author, created_at,
             package_id, package_name, premium, entitlement_mode, bundled_with_platform
      FROM marketplace_apps WHERE status = 'approved' ORDER BY name`
   );
-  return result.rows.map((row: any) => ({
+  return (result.rows as MarketplaceAppRow[]).map((row) => ({
     id: row.id,
     name: row.name,
     description: row.description,
     icon: row.icon || "Compass",
     version: row.version || "1.0.0",
-    permissions: Array.isArray(row.permissions) ? row.permissions : JSON.parse(row.permissions || "[]"),
+    permissions: Array.isArray(row.permissions) ? row.permissions.map(String) : JSON.parse(String(row.permissions || "[]")),
     defaultMode: "window" as const,
     installKey: `server_${row.id}`,
     source: "external" as const,
-    publisher: row.author,
+    publisher: row.author || "Unknown",
     installedAt: row.created_at ? new Date(row.created_at).getTime() : 0,
     url: row.url,
     reactVersion: row.react_version || "^18.0.0",
@@ -309,7 +329,7 @@ async function getApprovedMarketplaceApps(fastify: FastifyInstance): Promise<Ser
     packageId: row.package_id || undefined,
     packageName: row.package_name || undefined,
     premium: Boolean(row.premium),
-    entitlementMode: row.entitlement_mode || "included",
+    entitlementMode: (row.entitlement_mode || "included") as EntitlementMode,
     bundledWithPlatform: row.bundled_with_platform !== false,
   }));
 }

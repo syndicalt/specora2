@@ -7,7 +7,7 @@ export interface ChatMessageRow {
   session_id: string;
   role: ChatRole;
   content: string;
-  tool_calls: any | null;
+  tool_calls: unknown;
   tool_call_id: string | null;
   created_at: Date;
 }
@@ -77,7 +77,7 @@ export async function getMessages(
   return result.rows;
 }
 
-function serializeToolCalls(toolCalls: any): string | null {
+function serializeToolCalls(toolCalls: unknown): string | null {
   if (toolCalls == null) return null;
   if (typeof toolCalls === "string") return toolCalls;
   try {
@@ -92,7 +92,7 @@ export async function appendMessage(
   sessionId: string,
   role: ChatRole,
   content: string,
-  toolCalls?: any,
+  toolCalls?: unknown,
   toolCallId?: string
 ): Promise<ChatMessageRow> {
   const safeContent = content ?? "";

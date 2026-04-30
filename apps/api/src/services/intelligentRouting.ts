@@ -90,7 +90,14 @@ function resolveRouteId(rawRoute: unknown, rationale?: unknown): IntakeRouteId |
   return null;
 }
 
-function normalizeScores(scores: any[]): RouteScore[] {
+type RawRouteScore = {
+  route?: unknown;
+  probability?: unknown;
+  rationale?: unknown;
+  missingFields?: unknown;
+};
+
+function normalizeScores(scores: RawRouteScore[]): RouteScore[] {
   const byRoute = new Map<IntakeRouteId, RouteScore>();
   for (const route of INTAKE_ROUTES) {
     byRoute.set(route.id, { route: route.id, probability: 0.02, rationale: "Not selected by classifier." });
@@ -146,7 +153,7 @@ function heuristicScores(message: string, urgency?: string): RouteScore[] {
   ]);
 }
 
-function parseJsonObject(text: string): any {
+function parseJsonObject(text: string): { scores?: RawRouteScore[] } {
   try {
     return JSON.parse(text);
   } catch {
@@ -176,9 +183,9 @@ async function scoreWithProvara(message: string, urgency?: string): Promise<Rout
     }),
   });
   if (!response.ok) throw new Error(`Provara routing error ${response.status}`);
-  const data = await response.json() as any;
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   const content = data.choices?.[0]?.message?.content || "{}";
-  return parseJsonObject(content).scores;
+  return normalizeScores(parseJsonObject(content).scores || []);
 }
 
 async function scoreWithOpenAI(message: string, urgency?: string): Promise<RouteScore[] | null> {
@@ -187,13 +194,13 @@ async function scoreWithOpenAI(message: string, urgency?: string): Promise<Route
   const completion = await openai.chat.completions.create({
     model: process.env.PORTAL_ROUTING_OPENAI_MODEL || process.env.OPENAI_MODEL || "gpt-4o",
     temperature: 0.05,
-    messages: buildRoutingMessages(message, urgency) as any,
+    messages: buildRoutingMessages(message, urgency),
   });
   const content = completion.choices[0]?.message?.content || "{}";
-  return parseJsonObject(content).scores;
+  return normalizeScores(parseJsonObject(content).scores || []);
 }
 
-function buildRoutingMessages(message: string, urgency?: string) {
+function buildRoutingMessages(message: string, urgency?: string): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   return [
     {
       role: "system",
