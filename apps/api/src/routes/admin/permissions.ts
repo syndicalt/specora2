@@ -2,6 +2,18 @@ import { FastifyInstance } from "fastify";
 import { requirePermission, clearPermissionCache } from "../../services/rbac";
 import { recordAuditEvent } from "../../services/auditLog";
 
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : fallback;
+}
+
+function errorCode(err: unknown) {
+  return typeof err === "object" && err !== null && "code" in err ? String(err.code) : null;
+}
+
+function actorId(user: unknown) {
+  return typeof user === "object" && user !== null && "id" in user ? String(user.id) : undefined;
+}
+
 export function registerAdminPermissionRoutes(fastify: FastifyInstance) {
   fastify.get("/api/admin/permissions", { onRequest: [fastify.authenticate, requirePermission("rbac", "read")] }, async (_request, reply) => {
     try {
@@ -9,9 +21,9 @@ export function registerAdminPermissionRoutes(fastify: FastifyInstance) {
         "SELECT id, role, resource, action FROM app_permissions ORDER BY role, resource, action"
       );
       return { permissions: result.rows };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch permissions" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch permissions") });
     }
   });
 
@@ -27,7 +39,7 @@ export function registerAdminPermissionRoutes(fastify: FastifyInstance) {
       );
       clearPermissionCache();
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: actorId(request.user),
         action: "rbac.permission.created",
         entityType: "AppPermission",
         entityId: result.rows[0].id,
@@ -35,12 +47,12 @@ export function registerAdminPermissionRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console" },
       });
       return { permission: result.rows[0] };
-    } catch (err: any) {
-      if (err.code === "23505") {
+    } catch (err: unknown) {
+      if (errorCode(err) === "23505") {
         return reply.status(409).send({ error: "Permission already exists" });
       }
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to create permission" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to create permission") });
     }
   });
 
@@ -51,7 +63,7 @@ export function registerAdminPermissionRoutes(fastify: FastifyInstance) {
       await fastify.pg.query("DELETE FROM app_permissions WHERE id = $1", [id]);
       clearPermissionCache();
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: actorId(request.user),
         action: "rbac.permission.deleted",
         entityType: "AppPermission",
         entityId: id,
@@ -59,9 +71,9 @@ export function registerAdminPermissionRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console" },
       });
       return { success: true };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to delete permission" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to delete permission") });
     }
   });
 }
