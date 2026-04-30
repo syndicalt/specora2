@@ -1,5 +1,21 @@
 import type { FastifyInstance } from "fastify";
 
+type PgPoolLike = {
+  connect?: () => Promise<{
+    query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+    release: () => void;
+  }>;
+};
+
+type NumberSequenceRow = {
+  id: string;
+  prefix: string;
+  next_value: string | number;
+  padding: string | number;
+};
+
+type DbError = Error & { code?: string };
+
 function quoteIdentifier(value: string): string {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) throw new Error("Invalid SQL identifier");
   return `"${value.replace(/"/g, "\"\"")}"`;
@@ -34,7 +50,7 @@ export async function assignRecordNumber(fastify: FastifyInstance, tableName: st
       return null;
     }
 
-    const row = sequence.rows[0];
+    const row = sequence.rows[0] as NumberSequenceRow;
     const current = Number(row.next_value);
     const number = formatNumber(row.prefix, current, Number(row.padding));
     await client.query("UPDATE number_sequences SET next_value = next_value + 1, updated_at = NOW() WHERE id = $1", [row.id]);
@@ -44,8 +60,9 @@ export async function assignRecordNumber(fastify: FastifyInstance, tableName: st
     );
     try {
       await client.query(`UPDATE ${quoteIdentifier(tableName)} SET number = $1 WHERE id = $2`, [number, recordId]);
-    } catch (err: any) {
-      if (err?.code !== "42703") throw err;
+    } catch (err) {
+      const error = err as DbError;
+      if (error.code !== "42703") throw err;
     }
     await client.query("COMMIT");
     return number;
@@ -57,9 +74,9 @@ export async function assignRecordNumber(fastify: FastifyInstance, tableName: st
   }
 }
 
-export async function assignRecordNumberToRow<T extends Record<string, any>>(fastify: FastifyInstance, tableName: string, row: T): Promise<T> {
+export async function assignRecordNumberToRow<T extends Record<string, unknown>>(fastify: FastifyInstance, tableName: string, row: T): Promise<T> {
   if (!row?.id || row.number) return row;
-  if (typeof (fastify.pg as any).connect !== "function") return row;
+  if (typeof (fastify.pg as PgPoolLike).connect !== "function") return row;
   const number = await assignRecordNumber(fastify, tableName, String(row.id));
   return number ? { ...row, number } : row;
 }
