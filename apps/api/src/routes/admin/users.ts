@@ -5,11 +5,101 @@ import { clearPermissionCache, requirePermission } from "../../services/rbac";
 import { recordAuditEvent } from "../../services/auditLog";
 import { getPasswordPolicy, passwordPolicyMessage, validatePasswordAgainstPolicy } from "../../services/passwordPolicy";
 
-function timestampString(value: any) {
+type PgLike = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type TimestampValue = string | Date | number | null | undefined;
+
+type UserManagementDbRow = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  password_change_required?: boolean | null;
+  created_at?: TimestampValue;
+  updated_at?: TimestampValue;
+  last_login_at?: TimestampValue;
+  active_sessions?: number | string | null;
+  failed_logins_24h?: number | string | null;
+  group_count?: number | string | null;
+  high_risk_grants?: number | string | null;
+  owned_records?: number | string | null;
+  oauth_accounts?: number | string | null;
+};
+
+type PermissionGrantRow = {
+  id?: string;
+  role?: string;
+  group_id?: string;
+  group_name?: string;
+  group_slug?: string;
+  resource: string;
+  action: string;
+};
+
+type IdentityGroupRow = {
+  id: string;
+  name: string;
+  slug?: string | null;
+  description?: string | null;
+  source?: string | null;
+  external_id?: string | null;
+  cmdb_ci_id?: string | null;
+};
+
+type UserImpactSummary = {
+  changeRequests: number;
+  approvals: number;
+  incidents: number;
+  assets: number;
+  knowledgeItems: number;
+  auditEvents: number;
+};
+
+type SessionRow = {
+  id: string;
+  user_agent?: string | null;
+  ip_address?: string | null;
+  expires_at?: TimestampValue;
+  last_used_at?: TimestampValue;
+  revoked_at?: TimestampValue;
+  revoked_reason?: string | null;
+  created_at?: TimestampValue;
+};
+
+type AuditEventRow = {
+  id: string;
+  action: string;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  metadata?: unknown;
+  created_at?: TimestampValue;
+};
+
+type DbError = Error & { code?: string };
+
+function timestampString(value: TimestampValue) {
   if (!value) return null;
   if (typeof value === "string") return value;
   if (value instanceof Date) return value.toISOString();
   return String(value);
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+function dbError(err: unknown): DbError {
+  return err instanceof Error ? err as DbError : new Error(String(err)) as DbError;
+}
+
+function countValue(rows: unknown[]) {
+  return Number((rows[0] as { count?: string | number } | undefined)?.count || 0);
+}
+
+function isFutureTimestamp(value: TimestampValue) {
+  return Boolean(value && new Date(value).getTime() > Date.now());
 }
 
 function permissionRisk(resource: string, action: string) {
@@ -21,7 +111,7 @@ function permissionRisk(resource: string, action: string) {
   return "low";
 }
 
-async function userGroupGrants(pg: any, userId?: string | null) {
+async function userGroupGrants(pg: PgLike, userId?: string | null): Promise<{ groups: IdentityGroupRow[]; grants: PermissionGrantRow[] }> {
   if (!userId) return { groups: [], grants: [] };
   const groups = await pg.query(
     `SELECT g.id, g.name, g.slug, g.description, g.source, g.external_id, g.cmdb_ci_id
@@ -40,10 +130,10 @@ async function userGroupGrants(pg: any, userId?: string | null) {
      ORDER BY g.name, gp.resource, gp.action`,
     [userId]
   );
-  return { groups: groups.rows, grants: grants.rows };
+  return { groups: groups.rows as IdentityGroupRow[], grants: grants.rows as PermissionGrantRow[] };
 }
 
-function userManagementRow(row: any) {
+function userManagementRow(row: UserManagementDbRow) {
   const activeSessions = Number(row.active_sessions || 0);
   const lastLoginAt = timestampString(row.last_login_at);
   return {
@@ -65,7 +155,7 @@ function userManagementRow(row: any) {
   };
 }
 
-async function userImpactSummary(pg: any, userId: string) {
+async function userImpactSummary(pg: PgLike, userId: string): Promise<UserImpactSummary> {
   const [changes, approvals, incidents, assets, knowledge, auditEvents] = await Promise.all([
     pg.query("SELECT COUNT(*)::int AS count FROM change_requests WHERE requester_id = $1 OR approver_id = $1", [userId]),
     pg.query("SELECT COUNT(*)::int AS count FROM change_request_approvers WHERE user_id = $1", [userId]),
@@ -75,19 +165,26 @@ async function userImpactSummary(pg: any, userId: string) {
     pg.query("SELECT COUNT(*)::int AS count FROM audit_log WHERE actor_id = $1", [userId]),
   ]);
   return {
-    changeRequests: Number(changes.rows[0]?.count || 0),
-    approvals: Number(approvals.rows[0]?.count || 0),
-    incidents: Number(incidents.rows[0]?.count || 0),
-    assets: Number(assets.rows[0]?.count || 0),
-    knowledgeItems: Number(knowledge.rows[0]?.count || 0),
-    auditEvents: Number(auditEvents.rows[0]?.count || 0),
+    changeRequests: countValue(changes.rows),
+    approvals: countValue(approvals.rows),
+    incidents: countValue(incidents.rows),
+    assets: countValue(assets.rows),
+    knowledgeItems: countValue(knowledge.rows),
+    auditEvents: countValue(auditEvents.rows),
   };
 }
 
-function userAccessRecommendations(user: any, directGrants: any[], inheritedGrants: any[], impact: any, sessions: any[], auditEvents: any[]) {
+function userAccessRecommendations(
+  user: UserManagementDbRow,
+  directGrants: PermissionGrantRow[],
+  inheritedGrants: PermissionGrantRow[],
+  impact: UserImpactSummary,
+  sessions: SessionRow[],
+  auditEvents: AuditEventRow[]
+) {
   const recommendations: Array<{ severity: string; title: string; rationale: string; action: string }> = [];
-  const risky = [...directGrants, ...inheritedGrants].filter((grant: any) => permissionRisk(grant.resource, grant.action) === "critical");
-  if ((user.role === "security_admin" || user.role === "admin") && sessions.filter((session: any) => !session.revoked_at).length === 0) {
+  const risky = [...directGrants, ...inheritedGrants].filter((grant) => permissionRisk(grant.resource, grant.action) === "critical");
+  if ((user.role === "security_admin" || user.role === "admin") && sessions.filter((session) => !session.revoked_at).length === 0) {
     recommendations.push({
       severity: "warning",
       title: "Privileged account has no active session",
@@ -112,7 +209,7 @@ function userAccessRecommendations(user: any, directGrants: any[], inheritedGran
       action: "Reassign ownership before disabling access or revoking sessions.",
     });
   }
-  if (auditEvents.some((event: any) => String(event.action || "").includes("login.failed"))) {
+  if (auditEvents.some((event) => String(event.action || "").includes("login.failed"))) {
     recommendations.push({
       severity: "warning",
       title: "Recent failed login activity",
@@ -152,10 +249,10 @@ export function registerAdminUserRoutes(fastify: FastifyInstance) {
          GROUP BY u.id
          ORDER BY u.name, u.email`
       );
-      return { users: result.rows.map(userManagementRow) };
-    } catch (err: any) {
+      return { users: (result.rows as UserManagementDbRow[]).map(userManagementRow) };
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch users" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch users") });
     }
   });
 
@@ -181,7 +278,7 @@ export function registerAdminUserRoutes(fastify: FastifyInstance) {
          GROUP BY u.id`,
         [id]
       );
-      const user = userResult.rows[0];
+      const user = userResult.rows[0] as UserManagementDbRow | undefined;
       if (!user) return reply.status(404).send({ error: "User not found" });
       const [directGrants, inherited, sessions, audit, impact] = await Promise.all([
         fastify.pg.query("SELECT id, role, resource, action FROM app_permissions WHERE role = $1 ORDER BY resource, action", [user.role]),
@@ -198,13 +295,16 @@ export function registerAdminUserRoutes(fastify: FastifyInstance) {
         ),
         userImpactSummary(fastify.pg, id),
       ]);
-      const ownedRecords = Object.values(impact).reduce((sum: number, value: any) => sum + Number(value || 0), 0);
+      const directGrantRows = directGrants.rows as PermissionGrantRow[];
+      const sessionRows = sessions.rows as SessionRow[];
+      const auditRows = audit.rows as AuditEventRow[];
+      const ownedRecords = Object.values(impact).reduce((sum, value) => sum + Number(value || 0), 0);
       return {
         user: userManagementRow({ ...user, owned_records: ownedRecords }),
-        directGrants: directGrants.rows.map((grant: any) => ({ ...grant, risk: permissionRisk(grant.resource, grant.action), source: "role" })),
+        directGrants: directGrantRows.map((grant) => ({ ...grant, risk: permissionRisk(grant.resource, grant.action), source: "role" })),
         inheritedGroups: inherited.groups,
-        inheritedGrants: inherited.grants.map((grant: any) => ({ ...grant, risk: permissionRisk(grant.resource, grant.action), source: "group" })),
-        sessions: sessions.rows.map((row: any) => ({
+        inheritedGrants: inherited.grants.map((grant) => ({ ...grant, risk: permissionRisk(grant.resource, grant.action), source: "group" })),
+        sessions: sessionRows.map((row) => ({
           id: row.id,
           userAgent: row.user_agent,
           ipAddress: row.ip_address,
@@ -213,9 +313,9 @@ export function registerAdminUserRoutes(fastify: FastifyInstance) {
           revokedAt: timestampString(row.revoked_at),
           revokedReason: row.revoked_reason,
           createdAt: timestampString(row.created_at),
-          active: !row.revoked_at && new Date(row.expires_at).getTime() > Date.now(),
+          active: !row.revoked_at && isFutureTimestamp(row.expires_at),
         })),
-        auditEvents: audit.rows.map((row: any) => ({
+        auditEvents: auditRows.map((row) => ({
           id: row.id,
           action: row.action,
           entityType: row.entity_type,
@@ -224,17 +324,17 @@ export function registerAdminUserRoutes(fastify: FastifyInstance) {
           createdAt: timestampString(row.created_at),
         })),
         impact,
-        recommendations: userAccessRecommendations(user, directGrants.rows, inherited.grants, impact, sessions.rows, audit.rows),
+        recommendations: userAccessRecommendations(user, directGrantRows, inherited.grants, impact, sessionRows, auditRows),
       };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch user" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch user") });
     }
   });
 
   fastify.post("/api/admin/users", { onRequest: [fastify.authenticate, requirePermission("users", "write")] }, async (request, reply) => {
     try {
-      const actor = (request as any).user as { id?: string } | null;
+      const actor = request.user;
       const body = request.body as { email?: string; name?: string; role?: string; password?: string };
       const email = body.email?.trim().toLowerCase();
       const name = body.name?.trim();
@@ -263,22 +363,24 @@ export function registerAdminUserRoutes(fastify: FastifyInstance) {
         newValues: { email, name, role },
       });
       return { user: result.rows[0] };
-    } catch (err: any) {
-      if (err.code === "23505") return reply.status(409).send({ error: "User email already exists" });
+    } catch (err) {
+      const error = dbError(err);
+      if (error.code === "23505") return reply.status(409).send({ error: "User email already exists" });
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to create user" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to create user") });
     }
   });
 
   fastify.patch("/api/admin/users/:id", { onRequest: [fastify.authenticate, requirePermission("users", "write")] }, async (request, reply) => {
     try {
-      const actor = (request as any).user as { id?: string } | null;
+      const actor = request.user;
       const { id } = request.params as { id: string };
       const body = request.body as { name?: string; role?: string };
       const existing = await fastify.pg.query("SELECT id, name, email, role FROM users WHERE id = $1", [id]);
       if (!existing.rows.length) return reply.status(404).send({ error: "User not found" });
-      const nextName = body.name?.trim() || existing.rows[0].name;
-      const nextRole = body.role?.trim() || existing.rows[0].role;
+      const existingUser = existing.rows[0] as UserManagementDbRow;
+      const nextName = body.name?.trim() || existingUser.name;
+      const nextRole = body.role?.trim() || existingUser.role;
       const result = await fastify.pg.query(
         `UPDATE users SET name = $1, role = $2, updated_at = NOW()
          WHERE id = $3 RETURNING id, name, email, role, created_at, updated_at`,
@@ -290,19 +392,19 @@ export function registerAdminUserRoutes(fastify: FastifyInstance) {
         action: "admin.user.updated",
         entityType: "user",
         entityId: id,
-        oldValues: existing.rows[0],
+        oldValues: existingUser,
         newValues: { name: nextName, role: nextRole },
       });
       return { user: result.rows[0] };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to update user" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to update user") });
     }
   });
 
   fastify.post("/api/admin/users/:id/revoke-sessions", { onRequest: [fastify.authenticate, requirePermission("users", "write")] }, async (request, reply) => {
     try {
-      const actor = (request as any).user as { id?: string } | null;
+      const actor = request.user;
       const { id } = request.params as { id: string };
       const result = await fastify.pg.query(
         `UPDATE auth_sessions
@@ -319,9 +421,9 @@ export function registerAdminUserRoutes(fastify: FastifyInstance) {
         metadata: { revoked: result.rows.length },
       });
       return { revoked: result.rows.length };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to revoke user sessions" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to revoke user sessions") });
     }
   });
 }
