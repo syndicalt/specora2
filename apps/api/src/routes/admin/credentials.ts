@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { requirePermission } from "../../services/rbac";
 import { recordAuditEvent } from "../../services/auditLog";
 import {
@@ -8,6 +8,17 @@ import {
   normalizeCredentialReferenceBody,
   testCredentialReference,
 } from "../../services/credentials";
+
+type DbError = Error & { code?: string };
+type CredentialRefRowInput = Parameters<typeof credentialReferenceRow>[0];
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+function dbError(err: unknown): DbError {
+  return err instanceof Error ? err as DbError : new Error(String(err)) as DbError;
+}
 
 export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
   fastify.get("/api/admin/credentials", { onRequest: [fastify.authenticate, requirePermission("credentials", "read")] }, async (_request, reply) => {
@@ -20,12 +31,12 @@ export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
          ORDER BY scope, name`
       );
       return {
-        credentials: result.rows.map(credentialReferenceRow),
+        credentials: (result.rows as CredentialRefRowInput[]).map(credentialReferenceRow),
         providers: CREDENTIAL_PROVIDER_MODES.map((provider) => ({ id: provider, name: provider })),
       };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch credential references" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch credential references") });
     }
   });
 
@@ -52,12 +63,12 @@ export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
           config.externalRef || null,
           config.secretValue ? JSON.stringify(encryptCredentialSecret(config.secretValue)) : null,
           JSON.stringify(config.metadata || {}),
-          (request.user as any)?.id || null,
+          request.user?.id || null,
         ]
       );
-      const row = credentialReferenceRow(result.rows[0]);
+      const row = credentialReferenceRow(result.rows[0] as CredentialRefRowInput);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "credential.reference.created",
         entityType: "CredentialReference",
         entityId: row.id,
@@ -65,10 +76,11 @@ export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console", provider: row.provider, scope: row.scope },
       });
       return { credential: row };
-    } catch (err: any) {
+    } catch (err) {
+      const error = dbError(err);
       fastify.log.error(err);
-      if (err.code === "23505") return reply.status(409).send({ error: "Credential reference already exists" });
-      return reply.status(500).send({ error: err.message || "Failed to create credential reference" });
+      if (error.code === "23505") return reply.status(409).send({ error: "Credential reference already exists" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to create credential reference") });
     }
   });
 
@@ -112,25 +124,26 @@ export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
           config.externalRef ?? null,
           config.secretValue ? JSON.stringify(encryptCredentialSecret(config.secretValue)) : null,
           config.metadata ? JSON.stringify(config.metadata) : null,
-          (request.user as any)?.id || null,
+          request.user?.id || null,
         ]
       );
       if (!result.rows.length) return reply.status(404).send({ error: "Credential reference not found" });
-      const row = credentialReferenceRow(result.rows[0]);
+      const row = credentialReferenceRow(result.rows[0] as CredentialRefRowInput);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "credential.reference.updated",
         entityType: "CredentialReference",
         entityId: row.id,
-        oldValues: existing.rows[0] ? credentialReferenceRow(existing.rows[0]) : undefined,
+        oldValues: existing.rows[0] ? credentialReferenceRow(existing.rows[0] as CredentialRefRowInput) : undefined,
         newValues: row,
         metadata: { source: "api.admin", surface: "admin-console", provider: row.provider, scope: row.scope },
       });
       return { credential: row };
-    } catch (err: any) {
+    } catch (err) {
+      const error = dbError(err);
       fastify.log.error(err);
-      if (err.code === "23505") return reply.status(409).send({ error: "Credential reference already exists" });
-      return reply.status(500).send({ error: err.message || "Failed to update credential reference" });
+      if (error.code === "23505") return reply.status(409).send({ error: "Credential reference already exists" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to update credential reference") });
     }
   });
 
@@ -142,7 +155,7 @@ export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
         [id]
       );
       if (!existing.rows.length) return reply.status(404).send({ error: "Credential reference not found" });
-      const test = await testCredentialReference(fastify, existing.rows[0].ref);
+      const test = await testCredentialReference(fastify, (existing.rows[0] as { ref: string }).ref);
       const result = await fastify.pg.query(
         `UPDATE credential_references
          SET last_tested_at = NOW(), last_status = $2, last_error = $3, updated_by = $4, updated_at = NOW()
@@ -150,11 +163,11 @@ export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
          RETURNING id, ref, name, provider, status, description, scope, secret_env_key, external_ref,
                    encrypted_secret IS NOT NULL AS secret_present, metadata,
                    last_tested_at, last_status, last_error, created_by, updated_by, created_at, updated_at`,
-        [id, test.status, test.message, (request.user as any)?.id || null]
+        [id, test.status, test.message, request.user?.id || null]
       );
-      const row = credentialReferenceRow(result.rows[0]);
+      const row = credentialReferenceRow(result.rows[0] as CredentialRefRowInput);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "credential.reference.tested",
         entityType: "CredentialReference",
         entityId: row.id,
@@ -162,9 +175,9 @@ export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console", status: test.status },
       });
       return { ok: test.ok, status: test.status, message: test.message, credential: row };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to test credential reference" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to test credential reference") });
     }
   });
 
@@ -181,17 +194,17 @@ export function registerAdminCredentialRoutes(fastify: FastifyInstance) {
       const result = await fastify.pg.query("DELETE FROM credential_references WHERE id = $1 RETURNING id", [id]);
       if (!result.rows.length) return reply.status(404).send({ error: "Credential reference not found" });
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "credential.reference.deleted",
         entityType: "CredentialReference",
         entityId: id,
-        oldValues: existing.rows[0] ? credentialReferenceRow(existing.rows[0]) : { id },
+        oldValues: existing.rows[0] ? credentialReferenceRow(existing.rows[0] as CredentialRefRowInput) : { id },
         metadata: { source: "api.admin", surface: "admin-console" },
       });
       return { success: true };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to delete credential reference" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to delete credential reference") });
     }
   });
 }
