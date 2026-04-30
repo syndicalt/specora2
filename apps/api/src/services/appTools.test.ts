@@ -1049,6 +1049,80 @@ describe("appTools", () => {
     expect(await exceptions({}, { pg })).toHaveLength(1);
   });
 
+  it("asset tools list details, ingest procurement, record software usage, and build dashboards", async () => {
+    await register();
+    const list = tool("asset-command_list_assets");
+    const details = tool("asset-command_get_asset_details");
+    const procurement = tool("asset-command_ingest_procurement");
+    const usage = tool("asset-command_record_software_usage");
+    const dashboard = tool("asset-command_dashboard");
+    vi.mocked(executeTool).mockReset();
+    vi.mocked(executeTool).mockResolvedValueOnce({ id: "asset-from-po", name: "Docking station" });
+    const pg = {
+      query: vi.fn(async (sql: string, params?: any[]) => {
+        if (sql.includes("SELECT * FROM asset_records WHERE 1=1")) {
+          return { rows: [{ id: "asset-1", name: "Laptop", category: "hardware", status: "verified", location: "HQ" }] };
+        }
+        if (sql === "SELECT * FROM asset_records WHERE id = $1") {
+          return { rows: [{ id: params?.[0], name: "Laptop", serial_number: "S1" }] };
+        }
+        if (sql.includes("FROM asset_evidence")) return { rows: [{ id: "ev-1", evidence_type: "asset.create" }] };
+        if (sql.includes("FROM asset_scan_events")) return { rows: [{ id: "scan-1", value: "S1" }] };
+        if (sql.includes("FROM software_usage WHERE asset_id")) return { rows: [{ id: "usage-asset-1", product: "M365" }] };
+        if (sql.includes("FROM asset_exceptions WHERE asset_id")) return { rows: [{ id: "ex-1", severity: "high" }] };
+        if (sql.includes("INSERT INTO asset_contracts")) return { rows: [{ id: "contract-1", name: "Adobe procurement" }] };
+        if (sql.includes("INSERT INTO software_entitlements")) return { rows: [{ id: "ent-1", publisher: "Adobe", product: "Acrobat" }] };
+        if (sql.includes("INSERT INTO software_usage")) return { rows: [{ id: "usage-1", publisher: params?.[0], product: params?.[1], normalized_product: params?.[2] }] };
+        if (sql.includes("COUNT(*)::int as count FROM asset_records")) return { rows: [{ count: 7 }] };
+        if (sql.includes("COUNT(*)::int as count FROM asset_contracts")) return { rows: [{ count: 2 }] };
+        if (sql.includes("COUNT(*)::int as count, COALESCE(SUM(quantity), 0)::numeric as quantity FROM software_entitlements")) return { rows: [{ count: 5, quantity: 100 }] };
+        if (sql.includes("COUNT(*)::int as count, COALESCE(SUM(quantity), 0)::numeric as quantity FROM software_usage")) return { rows: [{ count: 4, quantity: 80 }] };
+        if (sql.includes("COUNT(*)::int as count, COALESCE(SUM(financial_impact), 0)::numeric as impact")) return { rows: [{ count: 1, impact: 1200 }] };
+        if (sql.includes("SELECT * FROM asset_reconciliation_runs")) return { rows: [{ id: "run-1", risk_score: 25 }] };
+        return { rows: [] };
+      }),
+    };
+
+    const listed = await list({ category: "hardware", status: "verified", lifecycleState: "in_use", ciId: "ci-1", location: "HQ", limit: 999 }, { pg });
+    expect(listed).toEqual([{ id: "asset-1", name: "Laptop", category: "hardware", status: "verified", location: "HQ" }]);
+    expect(pg.query.mock.calls.find((call: any[]) => String(call[0]).includes("SELECT * FROM asset_records WHERE 1=1"))?.[1]).toEqual(["hardware", "verified", "in_use", "ci-1", "HQ", 250]);
+
+    await expect(details({ assetId: "missing" }, { pg: { query: vi.fn(async () => ({ rows: [] })) } })).resolves.toEqual({ error: "Asset not found" });
+    await expect(details({ assetId: "asset-1" }, { pg })).resolves.toMatchObject({
+      id: "asset-1",
+      evidence: [{ id: "ev-1" }],
+      scans: [{ id: "scan-1" }],
+      usage: [{ id: "usage-asset-1" }],
+      exceptions: [{ id: "ex-1" }],
+    });
+
+    const procured = await procurement({
+      source: "erp",
+      externalRef: "PO-1",
+      vendor: "Adobe",
+      purchaseOrder: "PO-1",
+      items: [
+        { category: "software", product: "Acrobat", quantity: 50, metric: "user" },
+        { name: "Docking station", serialNumber: "D1" },
+      ],
+    }, { pg });
+    expect(procured).toMatchObject({ count: 2, created: [{ type: "entitlement", item: { id: "ent-1" } }, { type: "asset", item: { id: "asset-from-po" } }] });
+    expect(executeTool).toHaveBeenCalledWith("asset-command_create_asset", expect.objectContaining({ name: "Docking station", purchaseOrder: "PO-1" }), { pg });
+
+    await expect(usage({ publisher: "Microsoft Corporation", product: "M365 Software", version: "1.0", assetId: "asset-1" }, { pg })).resolves.toMatchObject({
+      id: "usage-1",
+      normalized_product: "m365",
+    });
+    await expect(dashboard({}, { pg })).resolves.toMatchObject({
+      assets: { count: 7 },
+      contracts: { count: 2 },
+      entitlements: { quantity: 100 },
+      usage: { quantity: 80 },
+      exceptions: { impact: 1200 },
+      recentRuns: [{ id: "run-1" }],
+    });
+  });
+
   it("asset SAM reconciliation creates no-entitlement, under-license, and over-license exceptions", async () => {
     await register();
     const reconcile = tool("asset-command_reconcile_sam");
