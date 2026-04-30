@@ -1,4 +1,5 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
+import type { Session } from "neo4j-driver";
 
 // ─────────────────────────────────────────────────────────────
 // Configuration: class weights and environment multipliers
@@ -113,7 +114,7 @@ function computeBaseCriticality(primaryClass?: string, primaryEnv?: string): num
 // ─────────────────────────────────────────────────────────────
 
 async function determineDirection(
-  session: any,
+  session: Session,
   primaryId: string,
   ciId: string
 ): Promise<"upstream" | "downstream"> {
@@ -146,7 +147,7 @@ async function determineDirection(
 // ─────────────────────────────────────────────────────────────
 
 async function fetchHealthScores(
-  session: any,
+  session: Session,
   ciIds: string[]
 ): Promise<Record<string, number>> {
   if (ciIds.length === 0) return {};
@@ -173,7 +174,7 @@ async function fetchHealthScores(
 // ─────────────────────────────────────────────────────────────
 
 async function countOverlappingRfcs(
-  pg: any,
+  pg: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
   rfcId: string,
   ciIds: string[]
 ): Promise<number> {
@@ -186,7 +187,7 @@ async function countOverlappingRfcs(
        AND cr.status IN ('pending_approval', 'approved', 'implemented')`,
     [rfcId, ciIds]
   );
-  return parseInt(result.rows[0]?.count || "0", 10);
+  return parseInt(String((result.rows[0] as { count?: string | number } | undefined)?.count || "0"), 10);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -326,7 +327,7 @@ export async function getRiskScoreHistory(
      LIMIT $2`,
     [rfcId, limit]
   );
-  return result.rows.map((r: any) => ({
+  return (result.rows as Array<{ risk_score: number; blast_radius: number; priority: string; computed_at: string; computed_by: string }>).map((r) => ({
     riskScore: r.risk_score,
     blastRadius: r.blast_radius,
     priority: r.priority,

@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 
 interface ClientConnection {
@@ -12,6 +12,12 @@ interface SseConnection {
   send: (message: string) => void;
   subscriptions: Set<string>;
 }
+
+type WebSocketRequest = FastifyRequest & { raw?: { url?: string }; url?: string };
+type WebSocketFastifyInstance = FastifyInstance & {
+  get: (path: string, options: { websocket: true }, handler: (socket: WebSocket, req: WebSocketRequest) => void) => void;
+};
+type ClientMessage = { action?: string; types?: unknown };
 
 const connections = new Set<ClientConnection>();
 const sseConnections = new Set<SseConnection>();
@@ -77,13 +83,17 @@ export async function websocketRoutes(fastify: FastifyInstance) {
     return decoded.id;
   }
 
-  fastify.get("/api/events/stream", async (request: any, reply: any) => {
+  function errorMessage(err: unknown) {
+    return err instanceof Error && err.message ? err.message : String(err);
+  }
+
+  fastify.get("/api/events/stream", async (request: FastifyRequest, reply: FastifyReply) => {
     const { ticket, types } = request.query as { ticket?: string; types?: string };
     let userId: string;
     try {
       userId = verifyTicket(ticket);
-    } catch (err: any) {
-      fastify.log.warn({ err: err.message }, "SSE auth failed");
+    } catch (err) {
+      fastify.log.warn({ err: errorMessage(err) }, "SSE auth failed");
       return reply.status(401).send({ error: "Invalid ticket" });
     }
 
@@ -129,10 +139,10 @@ export async function websocketRoutes(fastify: FastifyInstance) {
     return;
   });
 
-  (fastify as any).get("/api/events/live", { websocket: true }, (socket: WebSocket, req: any) => {
+  (fastify as WebSocketFastifyInstance).get("/api/events/live", { websocket: true }, (socket: WebSocket, req: WebSocketRequest) => {
     // Auth via short-lived ticket exchanged over HTTP POST /api/ws-ticket.
     // Parse from raw URL because @fastify/websocket may not populate req.query.
-    const rawUrl = (req as any).raw?.url || req.url || "";
+    const rawUrl = req.raw?.url || req.url || "";
     const qsIndex = rawUrl.indexOf("?");
     const queryString = qsIndex >= 0 ? rawUrl.slice(qsIndex + 1) : "";
     const params = new URLSearchParams(queryString);
@@ -141,8 +151,8 @@ export async function websocketRoutes(fastify: FastifyInstance) {
     let userId: string | null = null;
     try {
       userId = verifyTicket(ticket);
-    } catch (err: any) {
-      fastify.log.warn({ err: err.message }, "WebSocket auth failed");
+    } catch (err) {
+      fastify.log.warn({ err: errorMessage(err) }, "WebSocket auth failed");
       socket.close(1008, "Invalid ticket");
       return;
     }
@@ -177,12 +187,12 @@ export async function websocketRoutes(fastify: FastifyInstance) {
 
     socket.on("message", (raw: Buffer) => {
       try {
-        const msg = JSON.parse(raw.toString());
+        const msg = JSON.parse(raw.toString()) as ClientMessage;
         if (msg.action === "subscribe" && Array.isArray(msg.types)) {
-          for (const t of msg.types) client.subscriptions.add(t);
+          for (const t of msg.types) client.subscriptions.add(String(t));
           socket.send(JSON.stringify({ type: "subscribed", types: msg.types }));
         } else if (msg.action === "unsubscribe" && Array.isArray(msg.types)) {
-          for (const t of msg.types) client.subscriptions.delete(t);
+          for (const t of msg.types) client.subscriptions.delete(String(t));
           socket.send(JSON.stringify({ type: "unsubscribed", types: msg.types }));
         }
       } catch {
@@ -196,7 +206,7 @@ export async function websocketRoutes(fastify: FastifyInstance) {
       fastify.log.info({ userId, connections: connections.size }, "WebSocket client disconnected");
     });
 
-    socket.on("error", (err: any) => {
+    socket.on("error", (err: Error) => {
       fastify.log.warn({ err: err.message, userId }, "WebSocket error");
     });
   });
