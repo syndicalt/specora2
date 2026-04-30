@@ -12,6 +12,49 @@ type AuditEntry = {
   metadata?: Record<string, unknown>;
 };
 
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+  connect?: () => Promise<QueryablePg & { release: () => void }>;
+  totalCount?: number;
+};
+
+type AuditLogRow = {
+  id: string;
+  actor_id?: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  old_values?: unknown;
+  new_values?: unknown;
+  metadata?: unknown;
+  previous_hash?: string | null;
+  entry_hash?: string | null;
+  created_at?: string | Date;
+};
+
+type AuditPayload = Record<string, unknown> & {
+  actorId?: unknown;
+  ciId?: unknown;
+  sourceId?: unknown;
+  targetId?: unknown;
+  type?: unknown;
+  oldValues?: unknown;
+  newValues?: unknown;
+  jobId?: unknown;
+};
+
+function auditPayload(payload: unknown): AuditPayload {
+  return payload && typeof payload === "object" ? payload as AuditPayload : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function normalizeActorId(actorId?: string | null) {
@@ -57,8 +100,9 @@ function hashAuditPayload(payload: {
 }
 
 export async function persistAuditLog(fastify: FastifyInstance, entry: AuditEntry) {
-  if (typeof (fastify.pg as any).connect === "function" && typeof (fastify.pg as any).totalCount === "number") {
-    const client = await (fastify.pg as any).connect();
+  const pg = fastify.pg as QueryablePg;
+  if (typeof pg.connect === "function" && typeof pg.totalCount === "number") {
+    const client = await pg.connect();
     try {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtext('specora.audit_log'))");
@@ -72,16 +116,16 @@ export async function persistAuditLog(fastify: FastifyInstance, entry: AuditEntr
     }
     return;
   }
-  await insertAuditLog(fastify.pg, entry);
+  await insertAuditLog(pg, entry);
 }
 
-async function insertAuditLog(pg: any, entry: AuditEntry) {
+async function insertAuditLog(pg: QueryablePg, entry: AuditEntry) {
   const actorId = normalizeActorId(entry.actor_id);
   const oldValues = entry.old_values || null;
   const newValues = entry.new_values || null;
   const metadata = entry.metadata || null;
   const previous = await pg.query("SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1");
-  const previousHash = previous.rows[0]?.entry_hash || null;
+  const previousHash = (previous.rows[0] as { entry_hash?: string | null } | undefined)?.entry_hash || null;
   const createdAt = new Date().toISOString();
   const entryHash = hashAuditPayload({
     previousHash,
@@ -137,7 +181,7 @@ export async function recordAuditEvent(fastify: FastifyInstance, input: AuditEve
   });
 }
 
-export function expectedAuditHash(row: any) {
+export function expectedAuditHash(row: AuditLogRow) {
   return hashAuditPayload({
     previousHash: row.previous_hash,
     actorId: row.actor_id,
@@ -151,7 +195,7 @@ export function expectedAuditHash(row: any) {
   });
 }
 
-export async function verifyAuditIntegrity(pg: any, limit = 10000) {
+export async function verifyAuditIntegrity(pg: QueryablePg, limit = 10000) {
   const result = await pg.query(
     `SELECT id, actor_id, action, entity_type, entity_id, old_values, new_values, metadata, previous_hash, entry_hash, created_at
      FROM audit_log
@@ -162,7 +206,7 @@ export async function verifyAuditIntegrity(pg: any, limit = 10000) {
   let previousHash: string | null = null;
   let legacyRows = 0;
   const failures: Array<{ id: string; reason: string; expected?: string; actual?: string }> = [];
-  for (const row of result.rows) {
+  for (const row of result.rows as AuditLogRow[]) {
     if (!row.entry_hash) {
       legacyRows += 1;
       continue;
@@ -187,72 +231,88 @@ export async function verifyAuditIntegrity(pg: any, limit = 10000) {
 
 export function initializeAuditLog(fastify: FastifyInstance) {
   subscribe("ci.created", async (payload) => {
+    const event = auditPayload(payload);
     await persistAuditLog(fastify, {
-      actor_id: (payload as any).actorId,
+      actor_id: stringValue(event.actorId),
       action: "ci.created",
       entity_type: "ConfigurationItem",
-      entity_id: (payload as any).ciId,
+      entity_id: stringValue(event.ciId) || "unknown",
       new_values: payload as Record<string, unknown>,
     });
   });
 
   subscribe("ci.updated", async (payload) => {
+    const event = auditPayload(payload);
     await persistAuditLog(fastify, {
-      actor_id: (payload as any).actorId,
+      actor_id: stringValue(event.actorId),
       action: "ci.updated",
       entity_type: "ConfigurationItem",
-      entity_id: (payload as any).ciId,
-      old_values: (payload as any).oldValues,
-      new_values: (payload as any).newValues,
+      entity_id: stringValue(event.ciId) || "unknown",
+      old_values: objectValue(event.oldValues),
+      new_values: objectValue(event.newValues),
     });
   });
 
   subscribe("ci.deleted", async (payload) => {
+    const event = auditPayload(payload);
     await persistAuditLog(fastify, {
-      actor_id: (payload as any).actorId,
+      actor_id: stringValue(event.actorId),
       action: "ci.deleted",
       entity_type: "ConfigurationItem",
-      entity_id: (payload as any).ciId,
-      old_values: (payload as any).oldValues,
+      entity_id: stringValue(event.ciId) || "unknown",
+      old_values: objectValue(event.oldValues),
     });
   });
 
   subscribe("relationship.created", async (payload) => {
+    const event = auditPayload(payload);
+    const sourceId = stringValue(event.sourceId) || "unknown-source";
+    const targetId = stringValue(event.targetId) || "unknown-target";
+    const relationshipType = stringValue(event.type) || "unknown-type";
     await persistAuditLog(fastify, {
-      actor_id: (payload as any).actorId,
+      actor_id: stringValue(event.actorId),
       action: "relationship.created",
       entity_type: "Relationship",
-      entity_id: `${(payload as any).sourceId}-${(payload as any).targetId}-${(payload as any).type}`,
+      entity_id: `${sourceId}-${targetId}-${relationshipType}`,
       new_values: payload as Record<string, unknown>,
     });
   });
 
   subscribe("relationship.updated", async (payload) => {
+    const event = auditPayload(payload);
+    const sourceId = stringValue(event.sourceId) || "unknown-source";
+    const targetId = stringValue(event.targetId) || "unknown-target";
+    const relationshipType = stringValue(event.type) || "unknown-type";
     await persistAuditLog(fastify, {
-      actor_id: (payload as any).actorId,
+      actor_id: stringValue(event.actorId),
       action: "relationship.updated",
       entity_type: "Relationship",
-      entity_id: `${(payload as any).sourceId}-${(payload as any).targetId}-${(payload as any).type}`,
-      old_values: (payload as any).oldValues,
-      new_values: (payload as any).newValues,
+      entity_id: `${sourceId}-${targetId}-${relationshipType}`,
+      old_values: objectValue(event.oldValues),
+      new_values: objectValue(event.newValues),
     });
   });
 
   subscribe("relationship.deleted", async (payload) => {
+    const event = auditPayload(payload);
+    const sourceId = stringValue(event.sourceId) || "unknown-source";
+    const targetId = stringValue(event.targetId) || "unknown-target";
+    const relationshipType = stringValue(event.type) || "unknown-type";
     await persistAuditLog(fastify, {
-      actor_id: (payload as any).actorId,
+      actor_id: stringValue(event.actorId),
       action: "relationship.deleted",
       entity_type: "Relationship",
-      entity_id: `${(payload as any).sourceId}-${(payload as any).targetId}-${(payload as any).type}`,
-      old_values: (payload as any).oldValues,
+      entity_id: `${sourceId}-${targetId}-${relationshipType}`,
+      old_values: objectValue(event.oldValues),
     });
   });
 
   subscribe("discovery.completed", async (payload) => {
+    const event = auditPayload(payload);
     await persistAuditLog(fastify, {
       action: "discovery.completed",
       entity_type: "DiscoveryJob",
-      entity_id: (payload as any).jobId,
+      entity_id: stringValue(event.jobId) || "unknown",
       new_values: payload as Record<string, unknown>,
     });
   });
