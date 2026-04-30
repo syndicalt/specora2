@@ -270,17 +270,14 @@ export async function getAppCatalog(
 
 async function canAccessApp(fastify: FastifyInstance, role: string | null, app: ServerAppRegistryEntry): Promise<boolean> {
   if (app.id === "customer-portal") return true;
+  if (app.id === "settings") return true;
   if (app.id === "arc") return role === "admin" || role === "security_admin";
-  for (const permission of app.permissions) {
-    const check = permissionToResourceAction(permission);
-    if (check && (check.resource === "profile" || check.resource === "chat")) return true;
-  }
   if (!role) return false;
   if (role === "admin" || role === "security_admin") return true;
   for (const permission of app.permissions) {
     const check = permissionToResourceAction(permission);
     if (!check) continue;
-    if (check.resource === "profile" || check.resource === "chat") return true;
+    if (check.resource === "profile" || check.resource === "chat") continue;
     if (await hasPermission(fastify.pg, { role, resource: check.resource, action: check.action })) {
       return true;
     }

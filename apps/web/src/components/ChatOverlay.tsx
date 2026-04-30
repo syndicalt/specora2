@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
-import { authFetch } from "@/lib/auth";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { authFetch, getUserRole } from "@/lib/auth";
 import { getApiBase } from "@/lib/runtimeApi";
 import { useShell } from "@/shell/AppContext";
+import { filterRegistryByRole } from "@/shell/AppAccess";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, Calendar, Check, ChevronDown, ChevronRight, Clipboard, Compass, Plus, RotateCcw, Search, Send, Sparkles, Square, Trash2, X } from "lucide-react";
@@ -84,6 +85,7 @@ export function ChatOverlay() {
   const chips = contextChips(uiContext, activeApp);
   const followUps = followUpPrompts(uiContext, activeApp);
   const filteredSessions = sessions.filter((session) => session.title.toLowerCase().includes(sessionQuery.trim().toLowerCase()));
+  const visibleRegistry = useMemo(() => filterRegistryByRole(shell.registry, getUserRole()), [shell.registry]);
 
   // Auto-focus input on mount (panel opened) and when session changes
   useEffect(() => {
@@ -471,11 +473,35 @@ export function ChatOverlay() {
     }
   };
 
+  const openAppFromChat = (appId: string, launchPayload?: unknown) => {
+    const entry = visibleRegistry.find((candidate) => candidate.id === appId);
+    if (!entry) {
+      shell.dispatch({
+        type: "NOTIFY",
+        notification: {
+          id: `chat-access-${appId}-${Date.now()}`,
+          type: "error",
+          message: "Your account does not have access to that workspace.",
+        },
+      });
+      return false;
+    }
+    shell.dispatch({
+      type: "OPEN_APP",
+      id: entry.id,
+      installKey: entry.installKey,
+      mode: entry.defaultMode,
+      permissions: entry.permissions,
+      launchPayload,
+    });
+    return true;
+  };
+
   const handleAction = (type: string, payload: string) => {
     if (type === "open-service-map") {
       const params = new URLSearchParams(payload);
       const rootId = params.get("rootId");
-      shell.dispatch({ type: "OPEN_APP", id: "service-map", installKey: "service-map", mode: "canvas", permissions: ["read:cmdb", "read:relationships"] });
+      if (!openAppFromChat("service-map")) return;
       if (rootId) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "SET_ROOT_CI", from: "chat", to: "service-map", payload: { rootId } });
@@ -484,7 +510,7 @@ export function ChatOverlay() {
     } else if (type === "open-ci-details") {
       const params = new URLSearchParams(payload);
       const id = params.get("id");
-      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "builtin_cmdb-explorer", mode: "canvas", permissions: ["read:cmdb", "read:relationships"] });
+      if (!openAppFromChat("cmdb-explorer")) return;
       if (id) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "SET_CMDB_VIEW", from: "chat", to: "cmdb-explorer", payload: { focusCiId: id } });
@@ -497,21 +523,21 @@ export function ChatOverlay() {
       const classFilter = params.get("class") || undefined;
       const envFilter = params.get("environment") || undefined;
       const focusCiId = params.get("id") || undefined;
-      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "builtin_cmdb-explorer", mode: "canvas", permissions: ["read:cmdb", "read:relationships"] });
+      if (!openAppFromChat("cmdb-explorer")) return;
       setTimeout(() => {
         shell.messageBus.publish({ type: "SET_CMDB_VIEW", from: "chat", to: "cmdb-explorer", payload: { queue, query, classFilter, envFilter, focusCiId } });
       }, 300);
     } else if (type === "select-ci") {
       const params = new URLSearchParams(payload);
       const context = params.get("context") || "default";
-      shell.dispatch({ type: "OPEN_APP", id: "cmdb-explorer", installKey: "builtin_cmdb-explorer", mode: "canvas", permissions: ["read:cmdb", "read:relationships"] });
+      if (!openAppFromChat("cmdb-explorer")) return;
       setTimeout(() => {
         shell.messageBus.publish({ type: "START_CI_SELECTION", from: "chat", to: "cmdb-explorer", payload: { context, callbackChannel: "chat" } });
       }, 300);
     } else if (type === "open-change-manager") {
       const params = new URLSearchParams(payload);
       const rfcId = params.get("rfcId");
-      shell.dispatch({ type: "OPEN_APP", id: "change-manager", installKey: "change-manager", mode: "canvas", permissions: ["itsm:change:read", "itsm:change:write"] });
+      if (!openAppFromChat("change-manager")) return;
       if (rfcId) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "FOCUS_RFC", from: "chat", to: "change-manager", payload: { rfcId } });
@@ -520,7 +546,7 @@ export function ChatOverlay() {
     } else if (type === "open-incident-manager") {
       const params = new URLSearchParams(payload);
       const incidentId = params.get("incidentId");
-      shell.dispatch({ type: "OPEN_APP", id: "incident-manager", installKey: "builtin_incident-manager", mode: "canvas", permissions: ["itsm:incident:read", "itsm:incident:write"] });
+      if (!openAppFromChat("incident-manager")) return;
       if (incidentId) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "FOCUS_INCIDENT", from: "chat", to: "incident-manager", payload: { incidentId } });
@@ -529,7 +555,7 @@ export function ChatOverlay() {
     } else if (type === "open-knowledge-core") {
       const params = new URLSearchParams(payload);
       const knowledgeId = params.get("knowledgeId");
-      shell.dispatch({ type: "OPEN_APP", id: "knowledge-core", installKey: "builtin_knowledge-core", mode: "canvas", permissions: ["itsm:knowledge:read", "itsm:knowledge:write"] });
+      if (!openAppFromChat("knowledge-core")) return;
       if (knowledgeId) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "FOCUS_KNOWLEDGE", from: "chat", to: "knowledge-core", payload: { knowledgeId } });
@@ -538,7 +564,7 @@ export function ChatOverlay() {
     } else if (type === "open-prevention-center") {
       const params = new URLSearchParams(payload);
       const preventionId = params.get("preventionId");
-      shell.dispatch({ type: "OPEN_APP", id: "prevention-center", installKey: "builtin_prevention-center", mode: "canvas", permissions: ["itsm:prevention:read", "itsm:prevention:write"] });
+      if (!openAppFromChat("prevention-center")) return;
       if (preventionId) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "FOCUS_PREVENTION", from: "chat", to: "prevention-center", payload: { preventionId } });
@@ -547,7 +573,7 @@ export function ChatOverlay() {
     } else if (type === "open-asset-command") {
       const params = new URLSearchParams(payload);
       const assetId = params.get("assetId");
-      shell.dispatch({ type: "OPEN_APP", id: "asset-command", installKey: "builtin_asset-command", mode: "canvas", permissions: ["itsm:asset:read", "itsm:asset:write"] });
+      if (!openAppFromChat("asset-command")) return;
       if (assetId) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "FOCUS_ASSET", from: "chat", to: "asset-command", payload: { assetId } });
@@ -556,7 +582,7 @@ export function ChatOverlay() {
     } else if (type === "open-customer-portal") {
       const params = new URLSearchParams(payload);
       const requestId = params.get("requestId");
-      shell.dispatch({ type: "OPEN_APP", id: "customer-portal", installKey: "builtin_customer-portal", mode: "canvas", permissions: ["customer-portal:read", "customer-portal:write"], launchPayload: requestId ? { requestId } : undefined });
+      if (!openAppFromChat("customer-portal", requestId ? { requestId } : undefined)) return;
       if (requestId) {
         setTimeout(() => {
           shell.messageBus.publish({ type: "FOCUS_PORTAL_REQUEST", from: "chat", to: "customer-portal", payload: { requestId } });

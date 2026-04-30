@@ -20,6 +20,7 @@ describe("filterRegistryByRole", () => {
   const registry = [
     baseApp("settings", ["read:profile", "write:profile"]),
     baseApp("customer-portal", ["customer-portal:read", "customer-portal:write"]),
+    baseApp("profile-helper", ["read:profile"]),
     baseApp("arc", ["app:install", "app:uninstall"]),
     baseApp("service-map", ["read:cmdb", "read:relationships"]),
     baseApp("admin-console", ["rbac:read", "system-properties:read"]),
@@ -27,6 +28,11 @@ describe("filterRegistryByRole", () => {
 
   it("shows only authenticated-baseline apps when the user has no platform role", () => {
     expect(filterRegistryByRole(registry, null).map((app) => app.id)).toEqual(["settings", "customer-portal"]);
+  });
+
+  it("does not treat profile-only permissions as baseline access for arbitrary apps", () => {
+    expect(filterRegistryByRole(registry, null).map((app) => app.id)).not.toContain("profile-helper");
+    expect(filterRegistryByRole(registry, "viewer").map((app) => app.id)).not.toContain("profile-helper");
   });
 
   it("does not treat unknown roles as unrestricted access", () => {
@@ -45,8 +51,8 @@ describe("filterRegistryByRole", () => {
       ["user", ["settings", "customer-portal"]],
       ["viewer", ["settings", "customer-portal", "service-map"]],
       ["operator", ["settings", "customer-portal", "service-map"]],
-      ["admin", ["settings", "customer-portal", "arc", "service-map", "admin-console"]],
-      ["security_admin", ["settings", "customer-portal", "arc", "service-map", "admin-console"]],
+      ["admin", ["settings", "customer-portal", "profile-helper", "arc", "service-map", "admin-console"]],
+      ["security_admin", ["settings", "customer-portal", "profile-helper", "arc", "service-map", "admin-console"]],
     ];
 
     for (const [role, expectedIds] of expectedByRole) {

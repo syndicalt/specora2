@@ -53,16 +53,14 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
   ],
 };
 
-const AUTHENTICATED_APP_PERMISSIONS = [
-  "read:profile",
-  "write:profile",
-  "read:chat",
-  "customer-portal:read",
-  "customer-portal:write",
-];
+const BASELINE_APP_IDS = new Set(["settings", "customer-portal"]);
+const BASELINE_ONLY_PERMISSIONS = new Set(["read:profile", "write:profile", "read:chat"]);
 
 export function filterRegistryByRole(registry: RegistryEntry[], role: string | null): RegistryEntry[] {
   if (role === "admin" || role === "security_admin") return registry;
-  const allowed = new Set(role ? (ROLE_PERMISSIONS[role] || AUTHENTICATED_APP_PERMISSIONS) : AUTHENTICATED_APP_PERMISSIONS);
-  return registry.filter((entry) => entry.permissions.some((permission) => allowed.has(permission)));
+  const allowed = new Set(role ? (ROLE_PERMISSIONS[role] || []) : []);
+  return registry.filter((entry) => {
+    if (BASELINE_APP_IDS.has(entry.id)) return true;
+    return entry.permissions.some((permission) => allowed.has(permission) && !BASELINE_ONLY_PERMISSIONS.has(permission));
+  });
 }

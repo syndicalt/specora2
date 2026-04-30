@@ -23,11 +23,28 @@ function mockPg(role: string | null, permissions: Array<{ resource: string; acti
               author: "Vendor",
               created_at: "2026-01-01T00:00:00Z",
             },
+            {
+              id: "profile-helper",
+              name: "Profile Helper",
+              description: "Profile-only external app",
+              url: "https://example.com/profile.js",
+              icon: "Compass",
+              version: "1.0.0",
+              permissions: ["read:profile"],
+              react_version: "^18.0.0",
+              author: "Vendor",
+              created_at: "2026-01-01T00:00:00Z",
+            },
           ],
         };
       }
       if (sql.includes("FROM app_installations")) {
-        return { rows: [{ app_id: "external-app", status: "installed", last_job_id: null }] };
+        return {
+          rows: [
+            { app_id: "external-app", status: "installed", last_job_id: null },
+            { app_id: "profile-helper", status: "installed", last_job_id: null },
+          ],
+        };
       }
       if (sql.includes("INSERT INTO app_provisioning_jobs")) {
         return { rows: [{ id: "job-1", app_id: params?.[0], action: params?.[1], status: "completed" }] };
@@ -70,6 +87,7 @@ describe("appsRoutes", () => {
     expect(ids).toContain("service-map");
     expect(ids).toContain("cmdb-explorer");
     expect(ids).toContain("external-app");
+    expect(ids).not.toContain("profile-helper");
     expect(ids).not.toContain("ci-class-manager");
   });
 
@@ -84,6 +102,7 @@ describe("appsRoutes", () => {
     expect(ids).toContain("customer-portal");
     expect(ids).toContain("settings");
     expect(ids).not.toContain("arc");
+    expect(ids).not.toContain("profile-helper");
     expect(ids).not.toContain("cmdb-explorer");
     expect(ids).not.toContain("service-map");
   });
