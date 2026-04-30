@@ -3,6 +3,10 @@ import { runHardcodedRules, HARDCODED_RULES } from "../services/healthRules";
 import { generateRules, executeGeneratedRule } from "../services/aiRuleGenerator";
 import { buildConfigAudit, buildReadiness, buildWorkerHealth } from "../services/operability";
 
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : "Unexpected error";
+}
+
 export async function healthRoutes(fastify: FastifyInstance) {
   fastify.get("/api/health/ready", async (_request, reply) => {
     const readiness = await buildReadiness(fastify);
@@ -49,14 +53,14 @@ export async function healthRoutes(fastify: FastifyInstance) {
     const session = fastify.neo4j.session();
     try {
       const result = await session.run(rule.cypher);
-      const violations = result.records.map((r: any) => ({
+      const violations = result.records.map((record) => ({
         ruleId: rule.id,
         ruleName: rule.name,
         severity: rule.severity,
         message: rule.description,
-        ciId: r.get("ciId"),
-        ciName: r.get("ciName"),
-        ciClass: r.get("ciClass"),
+        ciId: record.get("ciId"),
+        ciName: record.get("ciName"),
+        ciClass: record.get("ciClass"),
       }));
       return { violations };
     } finally {
@@ -69,9 +73,9 @@ export async function healthRoutes(fastify: FastifyInstance) {
     try {
       const rules = await generateRules(fastify);
       return { rules };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error({ err }, "AI rule generation failed");
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: errorMessage(err) });
     }
   });
 
@@ -85,9 +89,9 @@ export async function healthRoutes(fastify: FastifyInstance) {
     try {
       const violations = await executeGeneratedRule(fastify, cypher);
       return { violations };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error({ err, cypher }, "Generated rule execution failed");
-      return reply.status(400).send({ error: err.message });
+      return reply.status(400).send({ error: errorMessage(err) });
     }
   });
 }
