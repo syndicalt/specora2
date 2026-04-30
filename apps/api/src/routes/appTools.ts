@@ -3,6 +3,10 @@ import { executeTool, getToolsForSession } from "@specora/sdk";
 import { completeJob, enqueueJob, failJob } from "../services/jobQueue";
 import { auditAppToolOutcome, authorizeAppTool, resolveAppToolPolicy } from "./appToolPolicy";
 
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : "App tool execution failed";
+}
+
 export async function appToolRoutes(fastify: FastifyInstance) {
   fastify.get("/api/apps/:appId/tools", { onRequest: [fastify.authenticate] }, async (request, _reply) => {
     const { appId } = request.params as { appId: string };
@@ -41,10 +45,11 @@ export async function appToolRoutes(fastify: FastifyInstance) {
       const result = await executeTool(policy.fullName, enrichedBody, fastify);
       await auditAppToolOutcome(fastify, { user, policy, outcome: "executed", transport: "post", result });
       return result;
-    } catch (err: any) {
-      await auditAppToolOutcome(fastify, { user, policy, outcome: "failed", transport: "post", error: err.message });
+    } catch (err: unknown) {
+      const message = errorMessage(err);
+      await auditAppToolOutcome(fastify, { user, policy, outcome: "failed", transport: "post", error: message });
       fastify.log.error({ err, appId, toolName }, "App tool execution failed");
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: message });
     }
   });
 
@@ -71,9 +76,10 @@ export async function appToolRoutes(fastify: FastifyInstance) {
       try {
         await executeTool(policy.fullName, { ...(args as Record<string, unknown>), _userId: user?.id, _userRole: user?.role }, fastify);
         await completeJob(fastify, job.id);
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const message = errorMessage(err);
         fastify.log.error({ err, appId, toolName, jobId: job.id }, "Queued app tool execution failed");
-        await failJob(fastify, job.id, err.message || "Queued app tool execution failed");
+        await failJob(fastify, job.id, message);
       }
     });
     return reply.status(202).send({ job });
@@ -97,10 +103,11 @@ export async function appToolRoutes(fastify: FastifyInstance) {
       const result = await executeTool(policy.fullName, enrichedQuery, fastify);
       await auditAppToolOutcome(fastify, { user, policy, outcome: "executed", transport: "get", result });
       return result;
-    } catch (err: any) {
-      await auditAppToolOutcome(fastify, { user, policy, outcome: "failed", transport: "get", error: err.message });
+    } catch (err: unknown) {
+      const message = errorMessage(err);
+      await auditAppToolOutcome(fastify, { user, policy, outcome: "failed", transport: "get", error: message });
       fastify.log.error({ err, appId, toolName }, "App tool execution failed");
-      return reply.status(500).send({ error: err.message });
+      return reply.status(500).send({ error: message });
     }
   });
 }
