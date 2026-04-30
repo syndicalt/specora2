@@ -152,6 +152,28 @@ describe("tableRoutes", () => {
     expect(params.relationship_filter_2).toBe("ci-1");
   });
 
+  it("rejects relationship filters on operational Postgres tables", async () => {
+    const pgHandler = (sql: string) => {
+      if (sql.includes("information_schema.columns")) {
+        return {
+          rows: [
+            { table_name: "incidents", column_name: "id", data_type: "uuid", is_nullable: "NO", column_default: "gen_random_uuid()" },
+            { table_name: "incidents", column_name: "title", data_type: "character varying", is_nullable: "NO", column_default: null },
+            { table_name: "incidents", column_name: "status", data_type: "character varying", is_nullable: "NO", column_default: "'new'::character varying" },
+          ],
+        };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "admin" }, makeNeo4j(), pgHandler);
+    const filters = encodeURIComponent(JSON.stringify([{ field: "__relationshipState", operator: "equals", value: "orphaned" }]));
+
+    const res = await app.inject({ method: "GET", url: `/api/tables/pg.incidents/records?filters=${filters}` });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe("Relationship filters only apply to CMDB tables");
+  });
+
   it("returns authoritative table validation issues", async () => {
     const neo4j = makeNeo4j([
       [makeRecord({
@@ -320,6 +342,30 @@ describe("tableRoutes", () => {
     expect(JSON.parse(res.body).records[0]).toEqual({ name: "HQ", city: "Austin" });
   });
 
+  it("rejects exports when field restrictions leave no readable columns", async () => {
+    const pgHandler = (sql: string, params?: any[]) => {
+      if (sql.includes("FROM app_permissions")) {
+        const resource = params?.[1];
+        const action = params?.[2];
+        return { rows: resource === "tables" && action === "read" ? [{ ok: 1 }] : [] };
+      }
+      if (sql.includes("security.field_restrictions")) {
+        return { rows: [{ value: JSON.stringify(["field:cmdb.Location.id", "field:cmdb.Location.name", "field:cmdb.Location.environment", "field:cmdb.Location.city"]) }] };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "analyst" }, makeNeo4j(), pgHandler);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/export",
+      payload: { recordIds: ["loc-1"], columns: ["name", "city"] },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).error).toBe("Forbidden: no readable export columns");
+  });
+
   it("updates selected records through the server-side bulk endpoint", async () => {
     const neo4j = makeNeo4j([
       [makeRecord({ n: makeNode({ id: "loc-1", name: "HQ", class: "Location", environment: "Production", attributes: "{\"city\":\"Austin\"}" }) })],
@@ -428,6 +474,37 @@ describe("tableRoutes", () => {
     expect(body.decisions.map((decision: any) => decision.action)).toEqual(["update", "create"]);
     expect(body.summary).toMatchObject({ requested: 2, update: 1, create: 1 });
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.records.import_previewed", "cmdb.Location", "cmdb.Location"]));
+  });
+
+  it("previews update imports with conflict and skip decisions", async () => {
+    const neo4j = makeNeo4j([
+      [
+        makeRecord({ n: makeNode({ id: "loc-a", name: "Dallas DC", class: "Location", city: "Dallas", attributes: "{\"city\":\"Dallas\"}" }) }),
+        makeRecord({ n: makeNode({ id: "loc-b", name: "Dallas DC", class: "Location", city: "Dallas", attributes: "{\"city\":\"Dallas\"}" }) }),
+      ],
+      [],
+    ]);
+    const { app } = await buildApp({ id: "u1", role: "admin" }, neo4j);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tables/cmdb.Location/import",
+      payload: {
+        dryRun: true,
+        mode: "update",
+        matchKeys: ["name"],
+        rows: [
+          { name: "Dallas DC", environment: "Production", attributes: { city: "Dallas" } },
+          { name: "Austin Office", environment: "Production", attributes: { city: "Austin" } },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.decisions.map((decision: any) => decision.action)).toEqual(["conflict", "skip"]);
+    expect(body.decisions[0].reason).toBe("Matched 2 records");
+    expect(body.summary).toMatchObject({ requested: 2, conflict: 1, skip: 1 });
   });
 
   it("queues selected records for cleanup review", async () => {
@@ -697,5 +774,44 @@ describe("tableRoutes", () => {
     const deleted = await app.inject({ method: "DELETE", url: "/api/tables/pg.incidents/records/inc-1" });
     expect(deleted.statusCode).toBe(200);
     expect((app as any).pg.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.arrayContaining(["table.record.created", "pg.incidents", "inc-2"]));
+  });
+
+  it("applies typed filters and safe sort fields to Postgres operational tables", async () => {
+    const pgHandler = (sql: string) => {
+      if (sql.includes("information_schema.columns")) {
+        return {
+          rows: [
+            { table_name: "incidents", column_name: "id", data_type: "uuid", is_nullable: "NO", column_default: "gen_random_uuid()" },
+            { table_name: "incidents", column_name: "title", data_type: "character varying", is_nullable: "NO", column_default: null },
+            { table_name: "incidents", column_name: "status", data_type: "character varying", is_nullable: "NO", column_default: "'new'::character varying" },
+            { table_name: "incidents", column_name: "priority", data_type: "integer", is_nullable: "NO", column_default: "3" },
+          ],
+        };
+      }
+      if (sql.startsWith("SELECT * FROM \"incidents\"")) {
+        return { rows: [{ id: "inc-1", title: "Checkout latency", status: "triaging", priority: 1 }] };
+      }
+      if (sql.startsWith("SELECT COUNT(*)::int AS total FROM \"incidents\"")) {
+        return { rows: [{ total: 1 }] };
+      }
+      return null;
+    };
+    const { app } = await buildApp({ id: "u1", role: "admin" }, makeNeo4j(), pgHandler);
+    const filters = encodeURIComponent(JSON.stringify([
+      { field: "priority", operator: "gte", value: "1" },
+      { field: "status", operator: "notEquals", value: "closed" },
+    ]));
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/tables/pg.incidents/records?filters=${filters}&sortField=priority&sortDirection=desc`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const selectCall = (app as any).pg.query.mock.calls.find((call: any[]) => String(call[0]).startsWith("SELECT * FROM \"incidents\""));
+    expect(selectCall[0]).toContain("\"priority\" >= $1");
+    expect(selectCall[0]).toContain("(\"status\" IS NULL OR \"status\" <> $2)");
+    expect(selectCall[0]).toContain("ORDER BY \"priority\" DESC NULLS LAST");
+    expect(selectCall[1]).toEqual([1, "closed", 50, 0]);
   });
 });
