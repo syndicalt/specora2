@@ -1,14 +1,45 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { executeTool } from "@specora/sdk";
 import { hasPermission } from "../services/rbac";
 import { recordRouteAudit, resultId } from "./auditHelpers";
 
-async function requireChangePermission(fastify: FastifyInstance, user: any, action: "read" | "write") {
+type ChangeAutomationAction = "read" | "write";
+
+type RouteUser = {
+  id?: string;
+  role?: string;
+};
+
+type ChangeRequest = FastifyRequest & {
+  user?: RouteUser;
+};
+
+type ToolObjectResult = Record<string, unknown>;
+
+type GateSignal = {
+  riskScore?: number;
+  conflictCount?: number;
+  healthy?: boolean;
+};
+
+function routeUser(request: FastifyRequest): RouteUser {
+  return (request as ChangeRequest).user || {};
+}
+
+function toolObjectResult(value: unknown): ToolObjectResult {
+  return value && typeof value === "object" ? value as ToolObjectResult : {};
+}
+
+function gateSignal(value: unknown): GateSignal {
+  return value && typeof value === "object" ? value as GateSignal : {};
+}
+
+async function requireChangePermission(fastify: FastifyInstance, user: RouteUser, action: ChangeAutomationAction) {
   if (!user?.role) return true;
   return hasPermission(fastify.pg, { role: user.role, resource: "change-manager", action });
 }
 
-function gateDecision(inputs: { grade?: any; conflicts?: any; health?: any; preview?: any }) {
+function gateDecision(inputs: { grade?: GateSignal; conflicts?: GateSignal; health?: GateSignal; preview?: GateSignal }) {
   const risk = inputs.grade?.riskScore ?? inputs.preview?.riskScore ?? 0;
   const conflictCount = inputs.conflicts?.conflictCount ?? 0;
   const unhealthy = inputs.health?.healthy === false;
@@ -23,7 +54,7 @@ function gateDecision(inputs: { grade?: any; conflicts?: any; health?: any; prev
 
 export async function changeAutomationRoutes(fastify: FastifyInstance) {
   fastify.post("/api/change-automation/requests", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = routeUser(request);
     if (!(await requireChangePermission(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -33,14 +64,14 @@ export async function changeAutomationRoutes(fastify: FastifyInstance) {
       action: "change_automation.request_created",
       entityType: "ChangeRequest",
       entityId: resultId(result, "unknown"),
-      newValues: result as Record<string, unknown>,
+      newValues: toolObjectResult(result),
       metadata: { source: "api.change-automation", surface: "automation" },
     });
     return result;
   });
 
   fastify.post("/api/change-automation/gate", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = routeUser(request);
     if (!(await requireChangePermission(fastify, user, "read"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -56,7 +87,7 @@ export async function changeAutomationRoutes(fastify: FastifyInstance) {
         executeTool("change-manager_check_ci_health_before_change", { rfcId: body.rfcId, _userId: user?.id, _userRole: user?.role }, fastify),
         executeTool("change-manager_find_critical_path", { rfcId: body.rfcId, _userId: user?.id, _userRole: user?.role }, fastify),
       ]);
-      const result = { rfcId: body.rfcId, ...gateDecision({ grade, conflicts, health }), grade, conflicts, health, criticalPath };
+      const result = { rfcId: body.rfcId, ...gateDecision({ grade: gateSignal(grade), conflicts: gateSignal(conflicts), health: gateSignal(health) }), grade, conflicts, health, criticalPath };
       await recordRouteAudit(fastify, request, {
         action: "change_automation.gate_evaluated",
         entityType: "ChangeRequest",
@@ -73,7 +104,7 @@ export async function changeAutomationRoutes(fastify: FastifyInstance) {
       _userId: user?.id,
       _userRole: user?.role,
     }, fastify);
-    const result = { preview: true, ...gateDecision({ preview }), impact: preview };
+    const result = { preview: true, ...gateDecision({ preview: gateSignal(preview) }), impact: preview };
     await recordRouteAudit(fastify, request, {
       action: "change_automation.gate_previewed",
       entityType: "ConfigurationItem",
@@ -85,7 +116,7 @@ export async function changeAutomationRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post("/api/change-automation/requests/:id/transition", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as any;
+    const user = routeUser(request);
     if (!(await requireChangePermission(fastify, user, "write"))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -111,7 +142,7 @@ export async function changeAutomationRoutes(fastify: FastifyInstance) {
       action: "change_automation.request_transitioned",
       entityType: "ChangeRequest",
       entityId: id,
-      newValues: result as Record<string, unknown>,
+      newValues: toolObjectResult(result),
       metadata: { source: "api.change-automation", surface: "automation", status: body.status, commented: !!body.comment },
     });
     return result;
