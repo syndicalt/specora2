@@ -74,7 +74,16 @@ import type {
   TargetClass,
   TransformProposal,
 } from "./types";
-import { CLASSES_QUERY, CREATE_SOURCE, DELETE_SOURCE, DISCOVERY_QUERY, UPDATE_SOURCE } from "./queries";
+import { CREATE_SOURCE, DELETE_SOURCE, UPDATE_SOURCE } from "./queries";
+import {
+  loadCollectorLifecycle as loadCollectorLifecycleData,
+  loadCollectors,
+  loadCredentialReferences,
+  loadDiscoveryClasses,
+  loadDiscoveryPipelines,
+  loadDiscoveryRecords,
+  loadMappingProfiles,
+} from "./api";
 import {
   AlertTriangle,
   Bot,
@@ -251,9 +260,7 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
   }
 
   async function loadCollectorLifecycle(collectorId: string) {
-    const res = await shellRef.current.fetch(`/discovery/collectors/${collectorId}/jobs`);
-    if (!res.ok) throw new Error(`Collector lifecycle request failed: ${res.status}`);
-    const data = await res.json();
+    const data = await loadCollectorLifecycleData(shellRef.current, collectorId);
     setCollectorLifecycles((current) => ({ ...current, [collectorId]: data }));
     return data as EdgeCollectorLifecycle;
   }
@@ -382,16 +389,15 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
     try {
       const api = shellRef.current;
       try {
-        const data = await api.query(DISCOVERY_QUERY);
-        setSources((data.discoverySources || []) as DiscoverySource[]);
-        setJobs((data.discoveryJobs || []) as DiscoveryJob[]);
+        const data = await loadDiscoveryRecords(api);
+        setSources(data.sources);
+        setJobs(data.jobs);
       } catch {
         errorKey += "graphql";
       }
 
       try {
-        const classData = await api.query(CLASSES_QUERY);
-        setClasses((classData.ciClasses || []) as TargetClass[]);
+        setClasses(await loadDiscoveryClasses(api));
         classLoadErrorRef.current = false;
       } catch {
         if (!classLoadErrorRef.current) {
@@ -401,36 +407,25 @@ export default function DiscoveryDashboardApp({ shell }: { shell: ShellAPI }) {
       }
 
       try {
-        const pipelineRes = await api.fetch("/discovery/pipelines");
-        if (!pipelineRes.ok) throw new Error(`Pipeline request failed: ${pipelineRes.status}`);
-        setPipelines(await pipelineRes.json());
+        setPipelines(await loadDiscoveryPipelines(api));
       } catch {
         errorKey += "pipelines";
       }
 
       try {
-        const profileRes = await api.fetch("/discovery/mapping-profiles");
-        if (!profileRes.ok) throw new Error(`Mapping profile request failed: ${profileRes.status}`);
-        const profileData = await profileRes.json();
-        setMappingProfiles(profileData.profiles || []);
+        setMappingProfiles(await loadMappingProfiles(api));
       } catch {
         errorKey += "profiles";
       }
 
       try {
-        const credentialRes = await api.fetch("/discovery/credential-references");
-        if (!credentialRes.ok) throw new Error(`Credential request failed: ${credentialRes.status}`);
-        const credentialData = await credentialRes.json();
-        setCredentialRefs(credentialData.credentials || []);
+        setCredentialRefs(await loadCredentialReferences(api));
       } catch {
         errorKey += "credentials";
       }
 
       try {
-        const collectorRes = await api.fetch("/discovery/collectors");
-        if (!collectorRes.ok) throw new Error(`Collector request failed: ${collectorRes.status}`);
-        const collectorData = await collectorRes.json();
-        const nextCollectors = (collectorData.collectors || []) as DiscoveryCollector[];
+        const nextCollectors = await loadCollectors(api);
         setCollectors(nextCollectors);
         await refreshCollectorLifecycles(nextCollectors);
       } catch {
