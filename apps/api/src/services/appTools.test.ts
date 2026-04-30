@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { executeTool } from "@specora/sdk";
 
 const mockTools: any[] = [];
 
@@ -261,6 +262,160 @@ describe("appTools", () => {
 
     expect(client.query).toHaveBeenCalledWith("ROLLBACK");
     expect(client.release).toHaveBeenCalled();
+  });
+
+  it("customer portal tools model the home page and request lifecycle", async () => {
+    await register();
+    const home = tool("customer-portal_portal_home");
+    const submit = tool("customer-portal_submit_request");
+    const list = tool("customer-portal_list_my_requests");
+    const details = tool("customer-portal_get_request_details");
+    const handoff = tool("customer-portal_request_support_handoff");
+    const pg = {
+      query: vi.fn(async (sql: string, params?: any[]) => {
+        if (sql.includes("FROM catalog_items WHERE status = 'published' ORDER BY category")) {
+          return { rows: [{ id: "item-1", title: "Request software", item_type: "software_request", questions: "[{\"key\":\"app\",\"required\":true}]", fulfillment: "[{\"step\":\"approve\"}]", audience: "[\"employee\"]", related_knowledge_ids: "[\"kb-1\"]" }] };
+        }
+        if (sql.includes("FROM catalog_requests WHERE requester_id = $1")) {
+          return { rows: [{ id: "req-1", number: "REQ0001", requester_id: params?.[0], title: "Existing request", answers: "{\"app\":\"IDE\"}", ai_resolution: "{}", fulfillment_plan: "[]" }] };
+        }
+        if (sql.includes("FROM support_channels WHERE enabled = TRUE ORDER BY priority, name LIMIT 8")) {
+          return { rows: [{ id: "channel-1", name: "Service Desk", channel_type: "chat", priority: 1 }] };
+        }
+        if (sql === "SELECT * FROM catalog_items WHERE id = $1") {
+          return { rows: [{ id: params?.[0], title: "Request software", item_type: "software_request", fulfillment: "[{\"step\":\"approve\"}]" }] };
+        }
+        if (sql.includes("INSERT INTO catalog_requests")) {
+          return {
+            rows: [{
+              id: "req-2",
+              number: "REQ0002",
+              requester_id: params?.[0],
+              catalog_item_id: params?.[1],
+              title: params?.[2],
+              description: params?.[3],
+              request_type: params?.[4],
+              priority: params?.[5],
+              source: params?.[6],
+              intent_summary: params?.[7],
+              answers: params?.[8],
+              ai_resolution: params?.[9],
+              fulfillment_plan: params?.[10],
+            }],
+          };
+        }
+        if (sql.includes("INSERT INTO catalog_request_events")) {
+          return { rows: [] };
+        }
+        if (sql.includes("FROM catalog_requests r") && sql.includes("WHERE 1=1")) {
+          return { rows: [{ id: "req-2", title: "Request IDE", status: "open", answers: "{\"app\":\"IDE\"}", ai_resolution: "{}", fulfillment_plan: "[]", catalog_title: "Request software" }] };
+        }
+        if (sql.includes("FROM catalog_requests r LEFT JOIN catalog_items ci") && sql.includes("WHERE r.id = $1")) {
+          return { rows: [{ id: params?.[0], title: "Request IDE", answers: "{\"app\":\"IDE\"}", ai_resolution: "{}", fulfillment_plan: "[{\"step\":\"approve\"}]", catalog_title: "Request software" }] };
+        }
+        if (sql.includes("FROM catalog_request_events WHERE request_id = $1")) {
+          return { rows: [{ id: "event-1", type: "submitted", message: "Submitted" }] };
+        }
+        if (sql.includes("FROM support_handoffs h")) {
+          return { rows: [{ id: "handoff-old", channel_name: "Service Desk", channel_type: "chat" }] };
+        }
+        if (sql.includes("SELECT * FROM support_channels WHERE id = $1 AND enabled = TRUE")) {
+          return { rows: [{ id: params?.[0], name: "Service Desk", channel_type: "chat" }] };
+        }
+        if (sql.includes("INSERT INTO support_handoffs")) {
+          return { rows: [{ id: "handoff-1", channel_id: params?.[0], request_id: params?.[2], reason: params?.[4], context: params?.[5] }] };
+        }
+        return { rows: [] };
+      }),
+    };
+
+    const homeModel = await home({ _userId: "u1", limit: 99 }, { pg });
+    expect(homeModel.featuredItems[0]).toMatchObject({ id: "item-1", questions: [{ key: "app", required: true }] });
+    expect(homeModel.myRequests[0]).toMatchObject({ id: "req-1", answers: { app: "IDE" } });
+    expect(homeModel.supportChannels[0]).toMatchObject({ id: "channel-1" });
+
+    const created = await submit({
+      catalogItemId: "item-1",
+      title: "Request IDE",
+      description: "Install an IDE",
+      answers: { app: "IDE" },
+      urgency: "high",
+      _userId: "u1",
+    }, { pg });
+    expect(created).toMatchObject({ id: "req-2", request_type: "software_request", priority: 2, answers: { app: "IDE" } });
+
+    const myRequests = await list({ _userId: "u1", status: "open", limit: 500 }, { pg });
+    expect(myRequests[0]).toMatchObject({ id: "req-2", catalog_title: "Request software" });
+    expect(pg.query.mock.calls.find((call: any[]) => String(call[0]).includes("WHERE 1=1"))?.[1]).toEqual(["u1", "open", 100]);
+
+    const requestDetails = await details({ requestId: "req-2" }, { pg });
+    expect(requestDetails).toMatchObject({ id: "req-2", events: [{ id: "event-1", type: "submitted" }], handoffs: [{ id: "handoff-old" }] });
+
+    const supportHandoff = await handoff({ channelId: "channel-1", requestId: "req-2", reason: "Need a callback", context: { severity: "high" }, _userId: "u1" }, { pg });
+    expect(supportHandoff).toMatchObject({ id: "handoff-1", channel: { id: "channel-1", name: "Service Desk" } });
+  });
+
+  it("customer portal resolves intents with catalog, knowledge, and support context", async () => {
+    await register();
+    const resolveIntent = tool("customer-portal_resolve_intent");
+    const pg = {
+      query: vi.fn(async (sql: string, params?: any[]) => {
+        if (sql.includes("FROM catalog_items")) {
+          return { rows: [{ id: "item-1", title: "Hardware request", item_type: params?.[0], questions: "[{\"key\":\"device\",\"required\":true}]", fulfillment: "[]", audience: "[]", related_knowledge_ids: "[]" }] };
+        }
+        if (sql.includes("FROM knowledge_items")) {
+          return { rows: [{ id: "kb-1", title: "Laptop policy", type: "article", status: "published", trust_score: 0.91 }] };
+        }
+        if (sql.includes("FROM support_channels")) {
+          return { rows: [{ id: "channel-1", name: "Service Desk", channel_type: "chat" }] };
+        }
+        return { rows: [] };
+      }),
+    };
+
+    const result = await resolveIntent({ message: "I need a replacement laptop", urgency: "low", service: "Workplace" }, { pg });
+
+    expect(result).toMatchObject({
+      intent: "hardware_request",
+      recommendedAction: "submit_or_deflect",
+      priority: 4,
+      catalogItem: { id: "item-1", title: "Hardware request" },
+      knowledgeCandidates: [{ id: "kb-1", title: "Laptop policy" }],
+      supportChannels: [{ id: "channel-1" }],
+      missingFields: ["device"],
+    });
+  });
+
+  it("customer portal intake routes clear winners and respects incident access boundaries", async () => {
+    await register();
+    const routeIntake = tool("customer-portal_route_intake");
+    vi.mocked(executeTool)
+      .mockResolvedValueOnce({ answer: "Use the published policy article." })
+      .mockResolvedValueOnce({ id: "handoff-1", reason: "Database is down" });
+    const pg = { query: vi.fn(async () => ({ rows: [] })) };
+
+    const knowledge = await routeIntake({
+      message: "How do I find the vacation policy?",
+      urgency: "medium",
+      _userId: "u1",
+      _userRole: "employee",
+    }, { pg });
+    expect(knowledge).toMatchObject({ action: "deflected", routed: true, record: { answer: "Use the published policy article." } });
+    expect(executeTool).toHaveBeenCalledWith("knowledge-core_answer", expect.objectContaining({
+      query: "How do I find the vacation policy?",
+      audience: "self_service",
+    }), { pg });
+
+    const incidentWithoutAccess = await routeIntake({
+      message: "Database is down",
+      urgency: "critical",
+      _userId: "u1",
+    }, { pg });
+    expect(incidentWithoutAccess).toMatchObject({ action: "created_support_handoff", routed: true, record: { id: "handoff-1" } });
+    expect(executeTool).toHaveBeenCalledWith("customer-portal_request_support_handoff", expect.objectContaining({
+      reason: "Database is down",
+      context: expect.objectContaining({ accessBoundary: "incident-manager:write not granted" }),
+    }), { pg });
   });
 
   it("list_rfcs applies optional filters", async () => {
