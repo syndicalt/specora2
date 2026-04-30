@@ -34,6 +34,18 @@ vi.mock("./impactScoring", () => ({
     breakdown: {},
     affectedCis: [],
   })),
+  previewImpactScore: vi.fn(() => Promise.resolve({
+    riskScore: 42,
+    blastRadius: 3,
+    priority: "medium",
+    breakdown: { relationships: 12 },
+    affectedCis: [{ ciId: "ci-2", contribution: 10 }],
+  })),
+  recordRiskScoreHistory: vi.fn(() => Promise.resolve()),
+  getRiskScoreHistory: vi.fn(() => Promise.resolve([
+    { riskScore: 42, createdAt: "2026-04-29T00:00:00.000Z" },
+    { riskScore: 30, createdAt: "2026-04-28T00:00:00.000Z" },
+  ])),
 }));
 
 describe("appTools", () => {
@@ -429,6 +441,165 @@ describe("appTools", () => {
     expect(pg.query.mock.calls[0][0]).toContain("status = $1");
     expect(pg.query.mock.calls[0][0]).toContain("ci_id = $2");
     expect(pg.query.mock.calls[0][1]).toEqual(["draft", "ci-1"]);
+  });
+
+  it("change approval tools assign, approve, reject, comment, and list pending work", async () => {
+    await register();
+    const assign = tool("change-manager_assign_approvers");
+    const approve = tool("change-manager_approve_rfc");
+    const reject = tool("change-manager_reject_rfc");
+    const comment = tool("change-manager_add_rfc_comment");
+    const pending = tool("change-manager_list_pending_approvals");
+    const affected = tool("change-manager_get_affected_cis");
+    const client = {
+      query: vi.fn(async (sql: string, params?: any[]) => {
+        if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return { rows: [] };
+        if (sql === "SELECT requester_id FROM change_requests WHERE id = $1") {
+          return { rows: [{ requester_id: "owner" }] };
+        }
+        if (sql.includes("SELECT * FROM change_requests WHERE id = $1 FOR UPDATE")) {
+          return { rows: [{ id: params?.[0], status: "pending_approval", requester_id: "requester" }] };
+        }
+        if (sql.includes("SELECT 1 FROM change_request_approvers")) {
+          return { rows: [{ "?column?": 1 }] };
+        }
+        if (sql.includes("app_permissions")) {
+          return { rows: [] };
+        }
+        if (sql.includes("COUNT(*) as pending")) {
+          return { rows: [{ pending: "0" }] };
+        }
+        if (sql.includes("COUNT(*) as total")) {
+          return { rows: [{ total: "1" }] };
+        }
+        if (sql === "SELECT status, requester_id FROM change_requests WHERE id = $1") {
+          return { rows: [{ status: "pending_approval", requester_id: "owner" }] };
+        }
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const pg = {
+      connect: vi.fn(async () => client),
+      query: vi.fn(async (sql: string, params?: any[]) => {
+        if (sql.includes("INSERT INTO change_request_comments")) {
+          return { rows: [{ id: "comment-1", content: params?.[2], created_at: "now" }] };
+        }
+        if (sql.includes("JOIN change_request_approvers")) {
+          return { rows: [{ id: "rfc-1", status: "pending_approval" }] };
+        }
+        return { rows: [] };
+      }),
+    };
+    const neo4jClose = vi.fn();
+    const neo4j = {
+      session: () => ({
+        run: vi.fn(async () => ({
+          records: [{
+            get: (key: string) => {
+              if (key === "distance") return { toNumber: () => 2 };
+              return ({ id: "ci-2", name: "Database", class: "Database", environment: "Production" } as any)[key];
+            },
+          }],
+        })),
+        close: neo4jClose,
+      }),
+    };
+
+    await expect(assign({ rfcId: "rfc-1", userIds: ["approver-1"], _userId: "owner" }, { pg })).resolves.toEqual({ success: true });
+    await expect(approve({ rfcId: "rfc-1", _userId: "approver-1", _userRole: "change_manager" }, { pg })).resolves.toMatchObject({ success: true, status: "approved", allApproversApproved: true });
+    await expect(reject({ rfcId: "rfc-1", reason: "Window conflict", _userId: "owner", _userRole: "change_manager" }, { pg })).resolves.toEqual({ success: true, status: "rejected" });
+    await expect(comment({ rfcId: "rfc-1", content: "Ready for CAB", _userId: "owner" }, { pg })).resolves.toMatchObject({ id: "comment-1", content: "Ready for CAB" });
+    await expect(pending({ _userId: "approver-1" }, { pg })).resolves.toEqual([{ id: "rfc-1", status: "pending_approval" }]);
+    await expect(affected({ ciId: "ci-1" }, { neo4j })).resolves.toEqual([{ id: "ci-2", name: "Database", class: "Database", environment: "Production", distance: 2 }]);
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO change_request_approvers"),
+      ["rfc-1", "approver-1"]
+    );
+    expect(neo4jClose).toHaveBeenCalled();
+  });
+
+  it("change CAB analysis tools grade risk, conflicts, health, impact, previews, and history", async () => {
+    await register();
+    const grade = tool("change-manager_grade_change_rfc");
+    const conflicts = tool("change-manager_check_change_conflicts");
+    const health = tool("change-manager_check_ci_health_before_change");
+    const recent = tool("change-manager_list_recent_changes_for_ci");
+    const impact = tool("change-manager_summarize_rfc_impact");
+    const preview = tool("change-manager_preview_impact");
+    const history = tool("change-manager_get_rfc_risk_history");
+    const pg = {
+      query: vi.fn(async (sql: string, params?: any[]) => {
+        if (sql === "SELECT * FROM change_requests WHERE id = $1") {
+          return { rows: [{ id: params?.[0], ci_id: "ci-1", title: "Patch API", status: "pending_approval", risk_score: 55, blast_radius: 4, priority: "high", planned_start_at: "2026-05-01T10:00:00Z", planned_end_at: "2026-05-01T11:00:00Z" }] };
+        }
+        if (sql.includes("SELECT ci_id, role FROM change_request_cis")) {
+          return { rows: [{ ci_id: "ci-1", role: "primary" }, { ci_id: "ci-2", role: "affected" }] };
+        }
+        if (sql.includes("SELECT ci_id, planned_start_at")) {
+          return { rows: [{ ci_id: "ci-1", planned_start_at: "2026-05-01T10:00:00Z", planned_end_at: "2026-05-01T11:00:00Z" }] };
+        }
+        if (sql.includes("JOIN change_request_cis crc")) {
+          return { rows: [{ id: "rfc-2", number: "RFC0002", title: "DB patch", ci_id: "ci-1", conflicting_ci: "ci-1", status: "approved" }] };
+        }
+        if (sql.includes("cr.id <> ALL")) {
+          return { rows: [{ id: "rfc-3", number: "RFC0003", title: "App patch", primary_ci: "ci-3", status: "pending_approval" }] };
+        }
+        if (sql.includes("FROM change_requests") && sql.includes("created_at > NOW()")) {
+          return { rows: [{ id: "rfc-4", title: "Recent change", status: "closed" }] };
+        }
+        return { rows: [] };
+      }),
+    };
+    const neo4j = {
+      session: () => ({
+        run: vi.fn(async (sql: string) => {
+          if (sql.includes("RETURN n.class as class")) {
+            return { records: [{ toObject: () => ({ class: "ApplicationService", environment: "Production" }) }] };
+          }
+          if (sql.includes("RETURN count(*) as pathCount")) {
+            return { records: [{ get: () => ({ toNumber: () => 1 }) }] };
+          }
+          if (sql.includes("OPTIONAL MATCH (n)-[r]-()")) {
+            return {
+              records: [
+                { get: (key: string) => key === "relCount" ? { toNumber: () => 2 } : ({ id: "ci-1", name: "API", class: "ApplicationService" } as any)[key] },
+                { get: (key: string) => key === "relCount" ? { toNumber: () => 0 } : ({ id: "ci-2", name: "DB", class: "Database" } as any)[key] },
+              ],
+            };
+          }
+          if (sql.includes("shortestPath")) {
+            return { records: [{ get: (key: string) => ({ affectedId: "ci-2", affectedName: "DB", rootName: "API", hops: { toNumber: () => 2 } } as any)[key] }] };
+          }
+          return { records: [] };
+        }),
+        close: vi.fn(async () => {}),
+      }),
+    };
+
+    await expect(grade({ rfcId: "rfc-1" }, { pg, neo4j })).resolves.toMatchObject({
+      blastRadius: 4,
+      riskScore: 55,
+      primaryCiClass: "ApplicationService",
+      primaryCiEnvironment: "Production",
+      isCriticalClass: true,
+      hasSchedule: true,
+    });
+    await expect(conflicts({ rfcId: "rfc-1", windowHours: 24 }, { pg, neo4j })).resolves.toMatchObject({
+      primaryCi: "ci-1",
+      conflictCount: 2,
+      directConflicts: 1,
+      dependencyConflicts: 1,
+      conflicts: [
+        expect.objectContaining({ id: "rfc-2", conflictType: "direct", severity: "high" }),
+        expect.objectContaining({ id: "rfc-3", conflictType: "dependency-aware", severity: "medium" }),
+      ],
+    });
+    await expect(health({ rfcId: "rfc-1" }, { pg, neo4j })).resolves.toMatchObject({ healthy: false, ciHealth: [{ id: "ci-1", healthy: true }, { id: "ci-2", healthy: false }] });
+    await expect(recent({ ciId: "ci-1" }, { pg })).resolves.toEqual({ ciId: "ci-1", recentChanges: [{ id: "rfc-4", title: "Recent change", status: "closed" }] });
+    await expect(impact({ rfcId: "rfc-1" }, { pg, neo4j })).resolves.toEqual({ primaryCi: "ci-1", affectedCount: 1, dependencyPaths: [{ affectedId: "ci-2", affectedName: "DB", rootName: "API", hops: 2 }] });
+    await expect(preview({ ciId: "ci-1", affectedCiIds: ["ci-2"] }, { pg, neo4j })).resolves.toMatchObject({ preview: true, primaryCi: "ci-1", riskScore: 42, priority: "medium" });
+    await expect(history({ rfcId: "rfc-1", limit: 2 }, { pg })).resolves.toMatchObject({ rfcId: "rfc-1", count: 2, trend: 12 });
   });
 
   it("get_rfc_details returns not found and maps Neo4j relationship data", async () => {
