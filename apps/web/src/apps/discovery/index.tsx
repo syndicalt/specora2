@@ -69,6 +69,7 @@ import type {
   TargetClass,
   TransformProposal,
 } from "./types";
+import { CLASSES_QUERY, CREATE_SOURCE, DELETE_SOURCE, DISCOVERY_QUERY, UPDATE_SOURCE } from "./queries";
 import {
   AlertTriangle,
   Bot,
@@ -93,31 +94,6 @@ import {
   XCircle,
   X,
 } from "lucide-react";
-
-const DISCOVERY_QUERY = `query DiscoveryBuilderData {
-  discoverySources { id name type config credentialRef lastTestedAt lastStatus lastError createdAt updatedAt }
-  discoveryJobs { id sourceId filePath status stats createdAt updatedAt }
-}`;
-
-const CLASSES_QUERY = `query DiscoveryClassData {
-  ciClasses {
-    name
-    displayName
-    attributes { name isMandatory isKeyAttribute }
-  }
-}`;
-
-const CREATE_SOURCE = `mutation CreateDiscoverySource($name: String!, $type: String!, $config: JSON) {
-  createDiscoverySource(name: $name, type: $type, config: $config) { id name type config credentialRef lastTestedAt lastStatus lastError createdAt updatedAt }
-}`;
-
-const UPDATE_SOURCE = `mutation UpdateDiscoverySource($id: ID!, $name: String!, $type: String!, $config: JSON) {
-  updateDiscoverySource(id: $id, name: $name, type: $type, config: $config) { id name type config credentialRef lastTestedAt lastStatus lastError createdAt updatedAt }
-}`;
-
-const DELETE_SOURCE = `mutation DeleteDiscoverySource($id: ID!) {
-  deleteDiscoverySource(id: $id)
-}`;
 
 function statusIcon(status: string) {
   switch (status.toLowerCase()) {
