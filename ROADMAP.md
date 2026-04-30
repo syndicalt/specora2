@@ -72,6 +72,7 @@ This file is the planning-level view of Specora. Use `CHANGELOG.md` for release 
 - **Discovery mapping quality hardening** — Normalized edge entity aliases, improved flattened host IP selection, preserved typed host evidence for software/services/interfaces/ports, and covered those cases with transform regression tests.
 - **Discovery reconciliation transparency** — Added per-record reconciliation traces with configured keys, actual key values, create/update/block reasoning, and CI identifiers in preview and staged review.
 - **Password policy maturity** — Added admin-configurable local-password requirements, shared API enforcement for registration/admin creation/password change, and live requirement checks in Settings, first-login rotation, and Admin user creation.
+- **API coverage milestone** — Raised API test coverage past the 80% statement target with focused regression coverage for Tables, Admin routes, app-tool handlers, health tools, and password policy enforcement.
 
 ## Next Up
 
@@ -89,7 +90,7 @@ No open Discovery/Edge roadmap items are tracked here. Continue capturing UAT fe
 
 ### Platform Hardening
 
-- **API coverage to 80%** — Current full-suite baseline: 75.90% statements, 59.80% branches, 86.58% functions, 80.08% lines. Next targets: GraphQL resolvers, Tables, Chat edge cases, and low-coverage app-tool service branches.
+- **API coverage deepening** — Current full-suite baseline: 80.01% statements, 62.46% branches, 89.85% functions, 84.37% lines. Next targets: GraphQL resolvers, Auth edge cases, Chat edge cases, and remaining low-coverage app-tool service branches.
 - **Web coverage expansion** — Current full-suite baseline with lib plus AppLauncher shell coverage: 92.2% statements, 84.78% branches, 95.34% functions, 99.17% lines. Continue widening include scope to AppDock, Settings, ChatPanel, Service Map edit flows, and CI Class Manager as tests land.
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
@@ -101,7 +102,7 @@ No open Discovery/Edge roadmap items are tracked here. Continue capturing UAT fe
 Detailed debt planning lives in [`docs-archive/technical-debt-roadmap.md`](docs-archive/technical-debt-roadmap.md).
 
 - **Large-module split** — Break up Admin Console, Admin API routes, Discovery, Tables, GraphQL resolvers, and Service Map into smaller tested modules.
-- **API coverage to 80%** — Current API coverage is 75.90% statements and 80.08% lines; continue improving GraphQL resolvers, Tables, Auth, Chat edge cases, and low-coverage app-tool service branches.
+- **API coverage deepening** — Current API coverage is 80.01% statements and 84.37% lines; continue improving branch coverage across GraphQL resolvers, Auth, Chat edge cases, and low-coverage app-tool service branches.
 - **Web coverage scope expansion** — Current web coverage includes `src/lib/**/*.ts`, `src/shell/AppAccess.ts`, and `src/shell/AppLauncher.tsx`; continue expanding only as shell/components/app TSX tests are added.
 - **Type-safety tightening** — Reduce broad `any`/unsafe casts in API routes, GraphQL resolvers, Tables, Discovery, and app-tool payloads.
 - **Web dev stability** — `pnpm dev:stable` remains the supported workaround for local Turbo/Next instability; periodically retest and remove when stable.
