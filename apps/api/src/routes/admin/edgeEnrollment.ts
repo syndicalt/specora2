@@ -1,27 +1,81 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash, randomBytes } from "crypto";
 import { requirePermission } from "../../services/rbac";
 import { recordAuditEvent } from "../../services/auditLog";
 import { buildEdgeRuntimeConfig, edgeJobPublicKeyBase64 } from "../../services/edgeRuntimeConfig";
 
-function timestampString(value: any) {
+type TimestampValue = string | Date | number | null | undefined;
+
+type EnrollmentTokenDbRow = {
+  id: string;
+  name: string;
+  token_prefix: string;
+  site?: string | null;
+  labels?: unknown;
+  expires_at?: TimestampValue;
+  max_uses?: string | number | null;
+  uses?: string | number | null;
+  collector_id?: string | null;
+  collector_name?: string | null;
+  revoked_at?: TimestampValue;
+  created_by?: string | null;
+  created_at?: TimestampValue;
+};
+
+type CollectorDbRow = {
+  id: string;
+  name: string;
+  status: string;
+  site?: string | null;
+  version?: string | null;
+  labels?: unknown;
+  last_heartbeat_at?: TimestampValue;
+  last_seen_ip?: string | null;
+  source_count?: string | number | null;
+  created_at?: TimestampValue;
+  updated_at?: TimestampValue;
+};
+
+type EnrollmentTokenBody = { name?: string; site?: string; labels?: Record<string, unknown>; expiresInHours?: number; maxUses?: number };
+
+function timestampString(value: TimestampValue) {
   if (!value) return null;
   if (typeof value === "string") return value;
   if (value instanceof Date) return value.toISOString();
   return String(value);
 }
 
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function isExpired(value: TimestampValue) {
+  return Boolean(value && new Date(value).getTime() <= Date.now());
+}
+
 function hashEnrollmentToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function enrollmentTokenRow(row: any) {
+function enrollmentTokenRow(row: EnrollmentTokenDbRow) {
   return {
     id: row.id,
     name: row.name,
     tokenPrefix: row.token_prefix,
     site: row.site || "",
-    labels: typeof row.labels === "string" ? JSON.parse(row.labels || "{}") : row.labels || {},
+    labels: objectValue(row.labels),
     expiresAt: timestampString(row.expires_at),
     maxUses: Number(row.max_uses || 0),
     uses: Number(row.uses || 0),
@@ -32,7 +86,7 @@ function enrollmentTokenRow(row: any) {
     createdAt: timestampString(row.created_at),
     status: row.revoked_at
       ? "revoked"
-      : new Date(row.expires_at).getTime() <= Date.now()
+      : isExpired(row.expires_at)
         ? "expired"
         : Number(row.uses || 0) >= Number(row.max_uses || 0)
           ? "used"
@@ -40,7 +94,7 @@ function enrollmentTokenRow(row: any) {
   };
 }
 
-function adminCollectorRow(row: any) {
+function adminCollectorRow(row: CollectorDbRow) {
   const lastHeartbeatAt = timestampString(row.last_heartbeat_at);
   const heartbeatAgeMinutes = lastHeartbeatAt ? Math.round((Date.now() - new Date(lastHeartbeatAt).getTime()) / 60000) : null;
   return {
@@ -49,7 +103,7 @@ function adminCollectorRow(row: any) {
     status: row.status,
     site: row.site || "",
     version: row.version || "",
-    labels: typeof row.labels === "string" ? JSON.parse(row.labels || "{}") : row.labels || {},
+    labels: objectValue(row.labels),
     lastHeartbeatAt,
     heartbeatAgeMinutes,
     lastSeenIp: row.last_seen_ip || null,
@@ -59,10 +113,10 @@ function adminCollectorRow(row: any) {
   };
 }
 
-async function createEnrollmentToken(fastify: FastifyInstance, request: any, reply: any) {
+async function createEnrollmentToken(fastify: FastifyInstance, request: FastifyRequest, reply: FastifyReply) {
   try {
-    const actor = request.user as { id?: string } | null;
-    const body = request.body as { name?: string; site?: string; labels?: Record<string, unknown>; expiresInHours?: number; maxUses?: number };
+    const actor = request.user;
+    const body = request.body as EnrollmentTokenBody;
     const name = body.name?.trim();
     if (!name) return reply.status(400).send({ error: "name is required" });
     const expiresInHours = Math.min(Math.max(Number(body.expiresInHours || 24), 1), 24 * 30);
@@ -85,7 +139,7 @@ async function createEnrollmentToken(fastify: FastifyInstance, request: any, rep
         actor?.id || null,
       ]
     );
-    const row = enrollmentTokenRow(result.rows[0]);
+    const row = enrollmentTokenRow(result.rows[0] as EnrollmentTokenDbRow);
     await recordAuditEvent(fastify, {
       actorId: actor?.id,
       action: "edge.enrollment_token.created",
@@ -95,9 +149,9 @@ async function createEnrollmentToken(fastify: FastifyInstance, request: any, rep
       metadata: { source: "api.admin", surface: "edge-enrollment" },
     });
     return { token, enrollmentToken: row };
-  } catch (err: any) {
+  } catch (err) {
     fastify.log.error(err);
-    return reply.status(500).send({ error: err.message || "Failed to create edge enrollment token" });
+    return reply.status(500).send({ error: errorMessage(err, "Failed to create edge enrollment token") });
   }
 }
 
@@ -112,10 +166,10 @@ export function registerAdminEdgeEnrollmentRoutes(fastify: FastifyInstance) {
          ORDER BY t.created_at DESC
          LIMIT 100`
       );
-      return { tokens: result.rows.map(enrollmentTokenRow) };
-    } catch (err: any) {
+      return { tokens: (result.rows as EnrollmentTokenDbRow[]).map(enrollmentTokenRow) };
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch edge enrollment tokens" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch edge enrollment tokens") });
     }
   });
 
@@ -129,10 +183,10 @@ export function registerAdminEdgeEnrollmentRoutes(fastify: FastifyInstance) {
          GROUP BY c.id
          ORDER BY COALESCE(c.last_heartbeat_at, c.created_at) DESC, c.name`
       );
-      return { collectors: result.rows.map(adminCollectorRow) };
-    } catch (err: any) {
+      return { collectors: (result.rows as CollectorDbRow[]).map(adminCollectorRow) };
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch edge collectors" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch edge collectors") });
     }
   });
 
@@ -142,9 +196,9 @@ export function registerAdminEdgeEnrollmentRoutes(fastify: FastifyInstance) {
         publicSigningKey: edgeJobPublicKeyBase64(),
         runtimeConfig: buildEdgeRuntimeConfig(),
       };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to build edge runtime config" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to build edge runtime config") });
     }
   });
 
@@ -154,7 +208,7 @@ export function registerAdminEdgeEnrollmentRoutes(fastify: FastifyInstance) {
 
   fastify.post("/api/admin/edge-enrollment/tokens/:id/revoke", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => {
     try {
-      const actor = (request as any).user as { id?: string } | null;
+      const actor = request.user;
       const { id } = request.params as { id: string };
       const result = await fastify.pg.query(
         `UPDATE discovery_collector_enrollment_tokens
@@ -164,7 +218,7 @@ export function registerAdminEdgeEnrollmentRoutes(fastify: FastifyInstance) {
         [id]
       );
       if (!result.rows.length) return reply.status(404).send({ error: "Enrollment token not found" });
-      const row = enrollmentTokenRow(result.rows[0]);
+      const row = enrollmentTokenRow(result.rows[0] as EnrollmentTokenDbRow);
       await recordAuditEvent(fastify, {
         actorId: actor?.id,
         action: "edge.enrollment_token.revoked",
@@ -174,15 +228,15 @@ export function registerAdminEdgeEnrollmentRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "edge-enrollment" },
       });
       return { enrollmentToken: row };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to revoke edge enrollment token" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to revoke edge enrollment token") });
     }
   });
 
   fastify.delete("/api/admin/edge-enrollment/collectors/:id", { onRequest: [fastify.authenticate, requirePermission("edge-enrollment", "write")] }, async (request, reply) => {
     try {
-      const actor = (request as any).user as { id?: string } | null;
+      const actor = request.user;
       const { id } = request.params as { id: string };
       const result = await fastify.pg.query(
         `DELETE FROM discovery_collectors
@@ -200,9 +254,9 @@ export function registerAdminEdgeEnrollmentRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "edge-enrollment" },
       });
       return { deleted: true, collector: result.rows[0] };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to delete edge collector" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to delete edge collector") });
     }
   });
 }

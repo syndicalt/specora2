@@ -1,28 +1,76 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { createHash, createHmac } from "crypto";
 import { requirePermission } from "../../services/rbac";
 import { recordAuditEvent, verifyAuditIntegrity } from "../../services/auditLog";
 
-function parsePositiveInt(value: any, fallback: number, max: number) {
+type TimestampValue = string | Date | number | null | undefined;
+
+type AuditLogDbRow = {
+  id: string;
+  actor_id?: string | null;
+  actor_email?: string | null;
+  actor_name?: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  old_values?: unknown;
+  new_values?: unknown;
+  metadata?: unknown;
+  previous_hash?: string | null;
+  entry_hash?: string | null;
+  integrity_version?: string | number | null;
+  created_at?: TimestampValue;
+};
+
+type AuditAnchorDbRow = {
+  id: string;
+  head_hash: string;
+  checked_rows?: string | number | null;
+  legacy_rows?: string | number | null;
+  provider?: string | null;
+  external_ref?: string | null;
+  payload?: unknown;
+  payload_digest?: string | null;
+  created_by?: string | null;
+  created_at?: TimestampValue;
+};
+
+function parsePositiveInt(value: unknown, fallback: number, max: number) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) return fallback;
   return Math.min(parsed, max);
 }
 
-function csvCell(value: any) {
+function csvCell(value: unknown) {
   if (value === null || value === undefined) return "";
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function timestampString(value: any) {
+function timestampString(value: TimestampValue) {
   if (!value) return null;
   if (value instanceof Date) return value.toISOString();
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function auditRow(row: any) {
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+function parseObjectPayload(value: unknown) {
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function auditRow(row: AuditLogDbRow) {
   return {
     id: row.id,
     actorId: row.actor_id,
@@ -41,7 +89,7 @@ function auditRow(row: any) {
   };
 }
 
-function auditAnchorRow(row: any) {
+function auditAnchorRow(row: AuditAnchorDbRow) {
   return {
     id: row.id,
     headHash: row.head_hash,
@@ -49,7 +97,7 @@ function auditAnchorRow(row: any) {
     legacyRows: Number(row.legacy_rows || 0),
     provider: row.provider || "manual",
     externalRef: row.external_ref || "",
-    payload: typeof row.payload === "string" ? JSON.parse(row.payload || "{}") : row.payload || {},
+    payload: parseObjectPayload(row.payload),
     payloadDigest: row.payload_digest,
     createdBy: row.created_by || null,
     createdAt: timestampString(row.created_at),
@@ -68,8 +116,8 @@ export function registerAdminAuditLogRoutes(fastify: FastifyInstance) {
     const limit = parsePositiveInt(query.limit, query.format === "csv" ? 500 : 50, 1000);
     const offset = parsePositiveInt(query.offset, 1, 1000000) - 1;
     const where = ["1=1"];
-    const params: any[] = [];
-    const add = (clause: string, value: any) => {
+    const params: unknown[] = [];
+    const add = (clause: string, value: unknown) => {
       params.push(value);
       where.push(clause.replace("?", `$${params.length}`));
     };
@@ -99,7 +147,7 @@ export function registerAdminAuditLogRoutes(fastify: FastifyInstance) {
          WHERE ${where.join(" AND ")}`,
         params
       );
-      const rows = result.rows.map(auditRow);
+      const rows = (result.rows as AuditLogDbRow[]).map(auditRow);
       if (query.format === "csv") {
         const csv = [
           ["id", "createdAt", "actorId", "actorEmail", "action", "entityType", "entityId", "previousHash", "entryHash", "integrityVersion", "metadata"].join(","),
@@ -114,10 +162,10 @@ export function registerAdminAuditLogRoutes(fastify: FastifyInstance) {
           .header("x-specora-export-algorithm", signature.algorithm)
           .send(csv);
       }
-      return { entries: rows, total: count.rows[0]?.total || 0, limit, offset };
-    } catch (err: any) {
+      return { entries: rows, total: Number((count.rows[0] as { total?: string | number } | undefined)?.total || 0), limit, offset };
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch audit log" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch audit log") });
     }
   });
 
@@ -125,9 +173,9 @@ export function registerAdminAuditLogRoutes(fastify: FastifyInstance) {
     const query = request.query as { limit?: string };
     try {
       return await verifyAuditIntegrity(fastify.pg, parsePositiveInt(query.limit, 10000, 100000));
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to verify audit integrity" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to verify audit integrity") });
     }
   });
 
@@ -139,10 +187,10 @@ export function registerAdminAuditLogRoutes(fastify: FastifyInstance) {
          ORDER BY created_at DESC
          LIMIT 50`
       );
-      return { anchors: result.rows.map(auditAnchorRow) };
-    } catch (err: any) {
+      return { anchors: (result.rows as AuditAnchorDbRow[]).map(auditAnchorRow) };
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch audit anchors" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch audit anchors") });
     }
   });
 
@@ -175,12 +223,12 @@ export function registerAdminAuditLogRoutes(fastify: FastifyInstance) {
           body?.externalRef?.trim() || null,
           payloadText,
           payloadDigest,
-          (request.user as any)?.id || null,
+          request.user?.id || null,
         ]
       );
-      const anchor = auditAnchorRow(result.rows[0]);
+      const anchor = auditAnchorRow(result.rows[0] as AuditAnchorDbRow);
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "audit.anchor.created",
         entityType: "AuditHeadAnchor",
         entityId: anchor.id,
@@ -188,9 +236,9 @@ export function registerAdminAuditLogRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console", provider: anchor.provider },
       });
       return { anchor };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to anchor audit head" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to anchor audit head") });
     }
   });
 }
