@@ -14,11 +14,21 @@ vi.mock("../services/aiRuleGenerator", () => ({
 }));
 
 describe("healthRoutes", () => {
-  async function buildApp() {
+  async function buildApp(user: { id?: string; role?: string } | null = { id: "admin-1", role: "admin" }) {
     const app = Fastify();
-    app.decorate("authenticate", async () => {});
+    app.decorate("authenticate", async (request: { user?: typeof user }) => {
+      request.user = user;
+    });
     app.decorate("pg", {
-      query: vi.fn(async (sql: string) => {
+      query: vi.fn(async (sql: string, params?: unknown[]) => {
+        if (sql.includes("SELECT role FROM users")) return { rows: user?.role ? [{ role: user.role }] : [] };
+        if (sql.includes("FROM app_permissions")) {
+          const [, resource, action] = params || [];
+          if (user?.role === "health_operator" && resource === "health-monitor" && (action === "read" || action === "write")) return { rows: [{ ok: 1 }] };
+          if (user?.role === "health_viewer" && resource === "health-monitor" && action === "read") return { rows: [{ ok: 1 }] };
+          return { rows: [] };
+        }
+        if (sql.includes("FROM identity_group_memberships")) return { rows: [] };
         if (sql.includes("FROM jobs") && sql.includes("GROUP BY status")) return { rows: [{ status: "pending", count: 1 }] };
         if (sql.includes("status = 'running'")) return { rows: [{ count: 0 }] };
         if (sql.includes("status = 'failed'")) return { rows: [{ count: 0 }] };
@@ -147,5 +157,23 @@ describe("healthRoutes", () => {
       payload: {},
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects no-role users from health monitor reads", async () => {
+    const app = await buildApp({ id: "basic-1" });
+    const res = await app.inject({ method: "GET", url: "/api/health/rules/definitions" });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.payload).error).toContain("no role assigned");
+  });
+
+  it("rejects read-only health users from generated rule writes", async () => {
+    const app = await buildApp({ id: "viewer-1", role: "health_viewer" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/health/rules/execute",
+      payload: { cypher: "MATCH (n) RETURN n.id as ciId" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.payload).error).toContain("cannot write health-monitor");
   });
 });

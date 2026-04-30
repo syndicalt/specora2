@@ -2,28 +2,32 @@ import { FastifyInstance } from "fastify";
 import { runHardcodedRules, HARDCODED_RULES } from "../services/healthRules";
 import { generateRules, executeGeneratedRule } from "../services/aiRuleGenerator";
 import { buildConfigAudit, buildReadiness, buildWorkerHealth } from "../services/operability";
+import { requirePermission } from "../services/rbac";
 
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : "Unexpected error";
 }
 
 export async function healthRoutes(fastify: FastifyInstance) {
+  const canReadHealth = requirePermission("health-monitor", "read");
+  const canWriteHealth = requirePermission("health-monitor", "write");
+
   fastify.get("/api/health/ready", async (_request, reply) => {
     const readiness = await buildReadiness(fastify);
     if (readiness.status === "fail") return reply.status(503).send(readiness);
     return readiness;
   });
 
-  fastify.get("/api/health/config", { onRequest: [fastify.authenticate] }, async () => {
+  fastify.get("/api/health/config", { onRequest: [fastify.authenticate, canReadHealth] }, async () => {
     return buildConfigAudit();
   });
 
-  fastify.get("/api/health/worker", { onRequest: [fastify.authenticate] }, async () => {
+  fastify.get("/api/health/worker", { onRequest: [fastify.authenticate, canReadHealth] }, async () => {
     return buildWorkerHealth(fastify);
   });
 
   // Run all hardcoded synthetic completeness rules
-  fastify.get("/api/health/rules", { onRequest: [fastify.authenticate] }, async (_request, _reply) => {
+  fastify.get("/api/health/rules", { onRequest: [fastify.authenticate, canReadHealth] }, async (_request, _reply) => {
     const violations = await runHardcodedRules(fastify);
     return {
       totalRules: HARDCODED_RULES.length,
@@ -33,7 +37,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
   });
 
   // Get rule definitions (without running them)
-  fastify.get("/api/health/rules/definitions", { onRequest: [fastify.authenticate] }, async () => {
+  fastify.get("/api/health/rules/definitions", { onRequest: [fastify.authenticate, canReadHealth] }, async () => {
     return HARDCODED_RULES.map((r) => ({
       id: r.id,
       name: r.name,
@@ -43,7 +47,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
   });
 
   // Run a specific hardcoded rule by ID
-  fastify.post("/api/health/rules/:ruleId/run", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/api/health/rules/:ruleId/run", { onRequest: [fastify.authenticate, canReadHealth] }, async (request, reply) => {
     const { ruleId } = request.params as { ruleId: string };
     const rule = HARDCODED_RULES.find((r) => r.id === ruleId);
     if (!rule) {
@@ -69,7 +73,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
   });
 
   // Generate AI rules based on current graph topology
-  fastify.post("/api/health/rules/generate", { onRequest: [fastify.authenticate] }, async (_request, reply) => {
+  fastify.post("/api/health/rules/generate", { onRequest: [fastify.authenticate, canWriteHealth] }, async (_request, reply) => {
     try {
       const rules = await generateRules(fastify);
       return { rules };
@@ -80,7 +84,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
   });
 
   // Execute a generated (AI) rule
-  fastify.post("/api/health/rules/execute", { onRequest: [fastify.authenticate] }, async (request, reply) => {
+  fastify.post("/api/health/rules/execute", { onRequest: [fastify.authenticate, canWriteHealth] }, async (request, reply) => {
     const { cypher } = request.body as { cypher: string };
     if (!cypher || typeof cypher !== "string") {
       return reply.status(400).send({ error: "cypher query is required" });
