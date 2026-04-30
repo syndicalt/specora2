@@ -16,8 +16,8 @@ describe("jobQueueRoutes", () => {
     return app;
   }
 
-  function authHeader(app: Fastify.FastifyInstance) {
-    const token = app.jwt.sign({ id: "user-1", email: "test@test.com", role: "admin" });
+  function authHeader(app: Fastify.FastifyInstance, user: { id: string; email: string; role?: string } = { id: "user-1", email: "test@test.com", role: "admin" }) {
+    const token = app.jwt.sign(user);
     return { Authorization: `Bearer ${token}` };
   }
 
@@ -173,5 +173,28 @@ describe("jobQueueRoutes", () => {
       headers: authHeader(app),
     });
     expect(res.statusCode).toBe(404);
+  });
+
+  it("rejects no-role users from job queue reads", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/jobs",
+      headers: authHeader(app, { id: "basic-1", email: "basic@test.com" }),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.payload).error).toContain("no role assigned");
+  });
+
+  it("rejects users without operational write access from enqueueing jobs", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      headers: { ...authHeader(app, { id: "operator-1", email: "operator@test.com", role: "operator" }), "Content-Type": "application/json" },
+      payload: { type: "scan", payload: { target: "all" } },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.payload).error).toContain("cannot write system-properties");
   });
 });
