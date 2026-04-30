@@ -13,6 +13,51 @@ import { SessionTrace } from "../services/pathlightSession";
 import { getVisibleApps } from "../services/appRegistry";
 import { resolveUserRole } from "../services/rbac";
 
+type AuthenticatedUser = { id: string; email?: string; role?: string };
+
+type ChatToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+type ChatRouteMessage = {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: ChatToolCall[];
+  tool_call_id?: string;
+};
+
+type ChatRequestBody = {
+  messages: ChatRouteMessage[];
+  sessionId?: string;
+  uiContext?: string;
+  approvedToolNames?: string[];
+};
+
+function authUser(user: unknown): AuthenticatedUser {
+  return user as AuthenticatedUser;
+}
+
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : "Chat failed";
+}
+
+function errorStack(err: unknown) {
+  return err instanceof Error ? err.stack : undefined;
+}
+
+function parseToolCalls(value: unknown): ChatToolCall[] | undefined {
+  if (Array.isArray(value)) return value as ChatToolCall[];
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as ChatToolCall[] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const BUILTIN_CHAT_CAPABILITIES = [
   {
     appId: "customer-portal",
@@ -119,39 +164,39 @@ const BUILTIN_CHAT_CAPABILITIES = [
 export async function chatRoutes(fastify: FastifyInstance) {
   // Chat capabilities catalog
   fastify.get("/api/chat/capabilities", { onRequest: [fastify.authenticate] }, async (request, _reply) => {
-    const user = request.user as { id?: string; email?: string; role?: string } | null;
+    const user = authUser(request.user);
     const visibleAppIds = new Set((await getVisibleApps(fastify, user)).map((app) => app.id));
     return { capabilities: BUILTIN_CHAT_CAPABILITIES.filter((group) => visibleAppIds.has(group.appId)) };
   });
 
   // List sessions
   fastify.get("/api/chat/sessions", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as { id: string; email: string };
+    const user = authUser(request.user);
     try {
       const sessions = await listSessions(fastify.pg, user.id);
       return { sessions };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to list sessions" });
+      return reply.status(500).send({ error: errorMessage(err) || "Failed to list sessions" });
     }
   });
 
   // Create session
   fastify.post("/api/chat/sessions", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as { id: string; email: string };
+    const user = authUser(request.user);
     const body = request.body as { title?: string };
     try {
       const session = await createSession(fastify.pg, user.id, body.title);
       return { session };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to create session" });
+      return reply.status(500).send({ error: errorMessage(err) || "Failed to create session" });
     }
   });
 
   // Delete session
   fastify.delete("/api/chat/sessions/:id", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as { id: string; email: string };
+    const user = authUser(request.user);
     const { id } = request.params as { id: string };
     try {
       const deleted = await deleteSession(fastify.pg, user.id, id);
@@ -159,25 +204,25 @@ export async function chatRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: "Session not found" });
       }
       return { success: true };
-    } catch (err: any) {
+    } catch (err: unknown) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to delete session" });
+      return reply.status(500).send({ error: errorMessage(err) || "Failed to delete session" });
     }
   });
 
   // Get messages for a session
   fastify.get("/api/chat/sessions/:id/messages", { onRequest: [fastify.authenticate] }, async (request, reply) => {
-    const user = request.user as { id: string; email: string };
+    const user = authUser(request.user);
     const { id } = request.params as { id: string };
     try {
       const messages = await getMessages(fastify.pg, id, user.id);
       return { messages };
-    } catch (err: any) {
-      if (err.message === "Session not found or access denied") {
+    } catch (err: unknown) {
+      if (errorMessage(err) === "Session not found or access denied") {
         return reply.status(404).send({ error: "Session not found" });
       }
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to get messages" });
+      return reply.status(500).send({ error: errorMessage(err) || "Failed to get messages" });
     }
   });
 
@@ -186,15 +231,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
     onRequest: [fastify.authenticate],
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
   }, async (request, reply) => {
-    const authenticatedUser = request.user as { id: string; email: string; role?: string };
+    const authenticatedUser = authUser(request.user);
     const role = await resolveUserRole(fastify.pg, authenticatedUser);
     const user = { ...authenticatedUser, role: role ?? undefined };
-    const body = request.body as {
-      messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[];
-      sessionId?: string;
-      uiContext?: string;
-      approvedToolNames?: string[];
-    };
+    const body = request.body as ChatRequestBody;
 
     if (!body.messages || !Array.isArray(body.messages)) {
       return reply.status(400).send({ error: "messages array required" });
@@ -203,7 +243,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
     const pathlight = fastify.pathlight;
 
     let sessionId = body.sessionId;
-    let trace: any;
+    let trace: SessionTrace | undefined;
     try {
       // Reuse existing session trace or create a new one
       let traceId: string | null = null;
@@ -230,17 +270,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
         }
       }
 
-      let history: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[] = [];
+      let history: ChatRouteMessage[] = [];
 
       if (sessionId) {
         // Load existing history
         const dbMessages = await getMessages(fastify.pg, sessionId);
         history = dbMessages.map((m) => {
-          let toolCalls = m.tool_calls;
-          // tool_calls may have been stored as a JSON string inside JSONB by older code
-          if (typeof toolCalls === "string") {
-            try { toolCalls = JSON.parse(toolCalls); } catch { toolCalls = null; }
-          }
+          const toolCalls = parseToolCalls(m.tool_calls);
           return {
             role: m.role as "user" | "assistant" | "tool",
             content: m.content,
@@ -269,7 +305,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
 
       // Call AI
-      const result: ChatResult = await chat(history, fastify, trace, body.uiContext, request.user as any);
+      const result: ChatResult = await chat(history, fastify, trace, body.uiContext, user);
 
       // Save assistant message with tool calls if any
       if (result.toolCalls && result.toolCalls.length > 0) {
@@ -301,10 +337,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
       await trace?.end({ output: { contentLength: result.content?.length ?? 0 }, status: "completed" });
 
       return { role: "assistant", content: result.content ?? "", sessionId };
-    } catch (err: any) {
-      fastify.log.error({ err: err.message, stack: err.stack, sessionId }, "Chat endpoint failed");
-      await trace?.end({ status: "failed", error: err.message });
-      return reply.status(500).send({ error: err.message || "Chat failed" });
+    } catch (err: unknown) {
+      fastify.log.error({ err: errorMessage(err), stack: errorStack(err), sessionId }, "Chat endpoint failed");
+      await trace?.end({ status: "failed", error: errorMessage(err) });
+      return reply.status(500).send({ error: errorMessage(err) });
     }
   });
 
@@ -313,15 +349,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
     onRequest: [fastify.authenticate],
     config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
   }, async (request, reply) => {
-    const authenticatedUser = request.user as { id: string; email: string; role?: string };
+    const authenticatedUser = authUser(request.user);
     const role = await resolveUserRole(fastify.pg, authenticatedUser);
     const user = { ...authenticatedUser, role: role ?? undefined };
-    const body = request.body as {
-      messages: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[];
-      sessionId?: string;
-      uiContext?: string;
-      approvedToolNames?: string[];
-    };
+    const body = request.body as ChatRequestBody;
 
     if (!body.messages || !Array.isArray(body.messages)) {
       return reply.status(400).send({ error: "messages array required" });
@@ -341,11 +372,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
     });
 
     let sessionId = body.sessionId;
-    let trace: any;
+    let trace: SessionTrace | undefined;
     let chatStreamCompleted = false;
     let assistantSaved = false;
     try {
-      let history: { role: "user" | "assistant" | "tool"; content: string; tool_calls?: any; tool_call_id?: string }[] = [];
+      let history: ChatRouteMessage[] = [];
 
       // Reuse existing session trace or create a new one
       let traceId: string | null = null;
@@ -373,10 +404,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       if (sessionId) {
         const dbMessages = await getMessages(fastify.pg, sessionId);
         history = dbMessages.map((m) => {
-          let toolCalls = m.tool_calls;
-          if (typeof toolCalls === "string") {
-            try { toolCalls = JSON.parse(toolCalls); } catch { toolCalls = null; }
-          }
+          const toolCalls = parseToolCalls(m.tool_calls);
           return {
             role: m.role as "user" | "assistant" | "tool",
             content: m.content,
@@ -436,10 +464,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       await trace?.end({ output: { contentLength: result.content?.length ?? 0 }, status: "completed" });
       writeEvent({ type: "done", content: result.content ?? "", sessionId });
-    } catch (err: any) {
-      fastify.log.error({ err: err.message, stack: err.stack, sessionId }, "Chat stream failed");
+    } catch (err: unknown) {
+      fastify.log.error({ err: errorMessage(err), stack: errorStack(err), sessionId }, "Chat stream failed");
       try {
-        reply.raw.write(`event: error\ndata: ${JSON.stringify({ type: "error", message: err.message || "Chat failed" })}\n\n`);
+        reply.raw.write(`event: error\ndata: ${JSON.stringify({ type: "error", message: errorMessage(err) })}\n\n`);
       } catch {
         // client disconnected
       }
@@ -450,8 +478,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
       if (chatStreamCompleted && !assistantSaved && sessionId) {
         try {
           await appendMessage(fastify.pg, sessionId, "assistant", "[interrupted]");
-        } catch (e: any) {
-          fastify.log.warn({ err: e.message, sessionId }, "Failed to write abort finalizer");
+        } catch (err: unknown) {
+          fastify.log.warn({ err: errorMessage(err), sessionId }, "Failed to write abort finalizer");
         }
       }
       try {
