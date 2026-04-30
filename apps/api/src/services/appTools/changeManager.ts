@@ -1,4 +1,5 @@
 import { FastifyInstance } from "fastify";
+import type { Record as Neo4jRecord } from "neo4j-driver";
 import { registerTool } from "@specora/sdk";
 import { getStateMachineConfig } from "../../routes/admin";
 import { emit } from "../eventBus";
@@ -7,8 +8,90 @@ import { assignRecordNumberToRow } from "../numberSequences";
 import { recordAuditEvent } from "../auditLog";
 
 export function registerChangeManagerTools() {
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type StateTransition = {
+  from: string;
+  to: string;
+  roles?: string[];
+};
+
+type RfcCiRow = {
+  ci_id: string;
+  role?: string;
+  distance?: number;
+  direction?: string;
+  contribution?: number;
+};
+
+type DbRow = Record<string, unknown>;
+
+type ChangeConflictRow = DbRow & {
+  id: string;
+  ci_id?: string;
+  primary_ci?: string;
+  conflicting_ci?: string;
+};
+
+type DependencyConflict = ChangeConflictRow & {
+  conflictType: "dependency-aware";
+  severity: "medium";
+  reason: string;
+  suggestedAction: string;
+};
+
+type CiHealthRow = {
+  id: string;
+  name: string;
+  class: string;
+  relationshipCount: number;
+  healthy: boolean;
+};
+
+type DependencyPathRow = {
+  affectedId: string;
+  affectedName: string;
+  rootName: string;
+  hops: number;
+};
+
+type ChangeToolArgs = Record<string, unknown> & {
+  rfcId: string;
+  ciId: string;
+  title: string;
+  description?: string;
+  status: string;
+  plannedStartDate?: string;
+  plannedStartTime?: string;
+  plannedEndDate?: string;
+  plannedEndTime?: string;
+  affectedCiIds: string[];
+  userIds: string[];
+  reason: string;
+  content: string;
+  windowHours?: number;
+  limit?: number;
+  grade?: Record<string, unknown>;
+  conflicts?: Record<string, unknown>;
+  health?: Record<string, unknown>;
+  impactPath?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  _userId: string;
+  _userRole: string;
+};
+
+function toolArgs(args: unknown): ChangeToolArgs {
+  return args && typeof args === "object" ? args as ChangeToolArgs : {} as ChangeToolArgs;
+}
+
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : "Unexpected error";
+}
+
 async function validateStatusTransition(
-  pg: any,
+  pg: QueryablePg,
   currentStatus: string,
   newStatus: string,
   userRole: string
@@ -17,7 +100,7 @@ async function validateStatusTransition(
   if (!config) return { valid: true }; // No config = no enforcement
 
   const transition = config.transitions?.find(
-    (t: any) => t.from === currentStatus && t.to === newStatus
+    (t: StateTransition) => t.from === currentStatus && t.to === newStatus
   );
   if (!transition) {
     return { valid: false, error: `Invalid transition: ${currentStatus} → ${newStatus}` };
@@ -38,7 +121,7 @@ function combineDateTime(date?: string, time?: string): string | null {
   return `${date}T${t}:00Z`;
 }
 
-async function loadRfcCiContext(pg: any, rfcId: string, fallbackCiId?: string | null) {
+async function loadRfcCiContext(pg: QueryablePg, rfcId: string, fallbackCiId?: string | null) {
   const cisResult = await pg.query(
     `SELECT ci_id, role FROM change_request_cis WHERE change_request_id = $1`,
     [rfcId]
@@ -46,14 +129,15 @@ async function loadRfcCiContext(pg: any, rfcId: string, fallbackCiId?: string | 
   let fallback = fallbackCiId || null;
   if (!fallback) {
     const rfcResult = await pg.query("SELECT ci_id FROM change_requests WHERE id = $1", [rfcId]);
-    fallback = rfcResult.rows[0]?.ci_id || null;
+    fallback = (rfcResult.rows[0] as { ci_id?: string } | undefined)?.ci_id || null;
   }
-  const primaryCi = cisResult.rows.find((r: any) => r.role === "primary")?.ci_id || fallback || cisResult.rows[0]?.ci_id || null;
-  const ciIds = Array.from(new Set([primaryCi, ...cisResult.rows.map((r: any) => r.ci_id)].filter(Boolean)));
-  return { primaryCi, ciIds, rows: cisResult.rows };
+  const rows = cisResult.rows as RfcCiRow[];
+  const primaryCi = rows.find((row) => row.role === "primary")?.ci_id || fallback || rows[0]?.ci_id || null;
+  const ciIds = Array.from(new Set([primaryCi, ...rows.map((row) => row.ci_id)].filter(Boolean)));
+  return { primaryCi, ciIds, rows };
 }
 
-function normalizeCabBriefSnapshot(row: any) {
+function normalizeCabBriefSnapshot(row: DbRow | null | undefined) {
   if (!row) return null;
   return {
     id: row.id,
@@ -96,7 +180,7 @@ Only call this tool once all required information is gathered.`,
     required: ["ciId", "title"],
   },
 }, async (args, fastify) => {
-  const { ciId, title, description, plannedStartDate, plannedStartTime, plannedEndDate, plannedEndTime, affectedCiIds, _userId } = args as any;
+  const { ciId, title, description, plannedStartDate, plannedStartTime, plannedEndDate, plannedEndTime, affectedCiIds, _userId } = toolArgs(args);
   const plannedStartAt = combineDateTime(plannedStartDate, plannedStartTime);
   const plannedEndAt = combineDateTime(plannedEndDate, plannedEndTime);
   const client = await fastify.pg.connect();
@@ -145,8 +229,8 @@ Only call this tool once all required information is gathered.`,
         // Record risk score history for trend tracking
         return recordRiskScoreHistory(fastify, rfc.id, score, _userId || "system");
       });
-    }).catch((err) => {
-      fastify.log.warn({ err: err.message, rfcId: rfc.id }, "Impact scoring failed");
+    }).catch((err: unknown) => {
+      fastify.log.warn({ err: errorMessage(err), rfcId: rfc.id }, "Impact scoring failed");
     });
 
     emit("rfc.created", { rfcId: rfc.id, ciId, title, status: "draft", requesterId: _userId });
@@ -178,7 +262,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId, title, description, status, plannedStartDate, plannedStartTime, plannedEndDate, plannedEndTime, affectedCiIds, _userId, _userRole } = args as any;
+  const { rfcId, title, description, status, plannedStartDate, plannedStartTime, plannedEndDate, plannedEndTime, affectedCiIds, _userId, _userRole } = toolArgs(args);
   const client = await fastify.pg.connect();
   try {
     await client.query("BEGIN");
@@ -212,7 +296,7 @@ registerTool<FastifyInstance>("change-manager", {
     }
 
     const sets: string[] = [];
-    const params: any[] = [];
+    const params: unknown[] = [];
     let idx = 1;
     if (title !== undefined) { sets.push(`title = $${idx++}`); params.push(title); }
     if (description !== undefined) { sets.push(`description = $${idx++}`); params.push(description); }
@@ -269,8 +353,8 @@ registerTool<FastifyInstance>("change-manager", {
             `UPDATE change_requests SET risk_score = $1, blast_radius = $2, priority = $3 WHERE id = $4`,
             [score.riskScore, score.blastRadius, score.priority, rfcId]
           );
-        }).catch((err) => {
-          fastify.log.warn({ err: err.message, rfcId }, "Impact scoring recalculation failed");
+        }).catch((err: unknown) => {
+          fastify.log.warn({ err: errorMessage(err), rfcId }, "Impact scoring recalculation failed");
         });
       }
     }
@@ -299,7 +383,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId, _userId } = args as any;
+  const { rfcId, _userId } = toolArgs(args);
   const client = await fastify.pg.connect();
   try {
     await client.query("BEGIN");
@@ -348,7 +432,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId } = args as any;
+  const { rfcId } = toolArgs(args);
   const result = await fastify.pg.query(
     `SELECT cr.*,
             requester.name AS requester_name, requester.email AS requester_email,
@@ -381,7 +465,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId } = args as any;
+  const { rfcId } = toolArgs(args);
   const pg = fastify.pg;
   const rfcResult = await pg.query(
     `SELECT cr.*,
@@ -420,8 +504,9 @@ registerTool<FastifyInstance>("change-manager", {
   const session = fastify.neo4j.session();
   let ciNames: Record<string, string> = {};
   let realEdges: { sourceId: string; targetId: string; type: string }[] = [];
+  const ciRows = cisResult.rows as RfcCiRow[];
   try {
-    const ciIds = cisResult.rows.map((r: any) => r.ci_id);
+    const ciIds = ciRows.map((row) => row.ci_id);
     if (ciIds.length > 0) {
       const neoResult = await session.run(
         `MATCH (n:ConfigurationItem) WHERE n.id IN $ids RETURN n.id as id, n.name as name`,
@@ -438,10 +523,10 @@ registerTool<FastifyInstance>("change-manager", {
          RETURN a.id as sourceId, b.id as targetId, type(r) as type`,
         { ids: ciIds }
       );
-      realEdges = relResult.records.map((r: any) => ({
-        sourceId: r.get("sourceId"),
-        targetId: r.get("targetId"),
-        type: r.get("type"),
+      realEdges = relResult.records.map((record: Neo4jRecord) => ({
+        sourceId: record.get("sourceId"),
+        targetId: record.get("targetId"),
+        type: record.get("type"),
       }));
     }
   } finally {
@@ -457,13 +542,13 @@ registerTool<FastifyInstance>("change-manager", {
     riskScore: rfc.risk_score,
     blastRadius: rfc.blast_radius,
     priority: rfc.priority,
-    affectedCis: cisResult.rows.map((r: any) => ({
-      ciId: r.ci_id,
-      role: r.role,
-      name: ciNames[r.ci_id] || r.ci_id,
-      distance: r.distance,
-      direction: r.direction,
-      contribution: r.contribution,
+    affectedCis: ciRows.map((row) => ({
+      ciId: row.ci_id,
+      role: row.role,
+      name: ciNames[row.ci_id] || row.ci_id,
+      distance: row.distance,
+      direction: row.direction,
+      contribution: row.contribution,
     })),
     edges: realEdges,
     approvers: approversResult.rows,
@@ -482,7 +567,7 @@ registerTool<FastifyInstance>("change-manager", {
     },
   },
 }, async (args, fastify) => {
-  const { status, ciId } = args as any;
+  const { status, ciId } = toolArgs(args);
   let query = `SELECT cr.id, cr.ci_id, cr.title, cr.status, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at,
                       cr.created_at, cr.risk_score, cr.blast_radius, cr.priority, cr.requester_id, cr.approver_id,
                       requester.name AS requester_name, requester.email AS requester_email,
@@ -491,7 +576,7 @@ registerTool<FastifyInstance>("change-manager", {
                LEFT JOIN users requester ON requester.id = cr.requester_id
                LEFT JOIN users approver ON approver.id = cr.approver_id
                WHERE 1=1`;
-  const params: any[] = [];
+  const params: unknown[] = [];
   let idx = 1;
   if (status) {
     query += ` AND cr.status = $${idx++}`;
@@ -503,7 +588,7 @@ registerTool<FastifyInstance>("change-manager", {
   }
   query += " ORDER BY cr.created_at DESC LIMIT 50";
   const result = await fastify.pg.query(query, params);
-  return result.rows.map((row: any) => ({
+  return (result.rows as DbRow[]).map((row) => ({
     ...row,
     requester: row.requester_id ? { id: row.requester_id, name: row.requester_name, email: row.requester_email } : null,
     approver: row.approver_id ? { id: row.approver_id, name: row.approver_name, email: row.approver_email } : null,
@@ -521,7 +606,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["ciId"],
   },
 }, async (args, fastify) => {
-  const { ciId } = args as any;
+  const { ciId } = toolArgs(args);
   const session = fastify.neo4j.session();
   try {
     const result = await session.run(
@@ -533,12 +618,12 @@ registerTool<FastifyInstance>("change-manager", {
        LIMIT 50`,
       { rootId: ciId }
     );
-    return result.records.map((r: any) => ({
-      id: r.get("id"),
-      name: r.get("name"),
-      class: r.get("class"),
-      environment: r.get("environment"),
-      distance: r.get("distance").toNumber(),
+    return result.records.map((record: Neo4jRecord) => ({
+      id: record.get("id"),
+      name: record.get("name"),
+      class: record.get("class"),
+      environment: record.get("environment"),
+      distance: record.get("distance").toNumber(),
     }));
   } finally {
     await session.close();
@@ -557,7 +642,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId", "userIds"],
   },
 }, async (args, fastify) => {
-  const { rfcId, userIds, _userId } = args as any;
+  const { rfcId, userIds, _userId } = toolArgs(args);
   if (!_userId) return { error: "Authentication required" };
 
   const client = await fastify.pg.connect();
@@ -605,7 +690,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId, _userId, _userRole } = args as any;
+  const { rfcId, _userId, _userRole } = toolArgs(args);
   if (!_userId) return { error: "Authentication required" };
 
   const client = await fastify.pg.connect();
@@ -714,7 +799,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId", "reason"],
   },
 }, async (args, fastify) => {
-  const { rfcId, reason, _userId, _userRole } = args as any;
+  const { rfcId, reason, _userId, _userRole } = toolArgs(args);
   if (!_userId) return { error: "Authentication required" };
 
   const client = await fastify.pg.connect();
@@ -775,7 +860,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId", "content"],
   },
 }, async (args, fastify) => {
-  const { rfcId, content, _userId } = args as any;
+  const { rfcId, content, _userId } = toolArgs(args);
   const result = await fastify.pg.query(
     `INSERT INTO change_request_comments (change_request_id, user_id, content) VALUES ($1, $2, $3) RETURNING id, content, created_at`,
     [rfcId, _userId || null, content]
@@ -791,7 +876,7 @@ registerTool<FastifyInstance>("change-manager", {
     properties: {},
   },
 }, async (args, fastify) => {
-  const { _userId } = args as any;
+  const { _userId } = toolArgs(args);
   if (!_userId) return { error: "Authentication required" };
   const result = await fastify.pg.query(
     `SELECT cr.* FROM change_requests cr
@@ -818,7 +903,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId } = args as any;
+  const { rfcId } = toolArgs(args);
   const pg = fastify.pg;
   const rfcResult = await pg.query("SELECT * FROM change_requests WHERE id = $1", [rfcId]);
   if (!rfcResult.rows.length) return { error: "RFC not found" };
@@ -830,7 +915,7 @@ registerTool<FastifyInstance>("change-manager", {
 
   // Check criticality via Neo4j
   const session = fastify.neo4j.session();
-  let criticalityData: any = {};
+  let criticalityData: { class?: string; environment?: string } = {};
   try {
     if (primaryCi) {
       const result = await session.run(
@@ -844,7 +929,7 @@ registerTool<FastifyInstance>("change-manager", {
   }
 
   const criticalClasses = ["BusinessService", "Database", "ApplicationService"];
-  const isCritical = criticalClasses.includes(criticalityData.class);
+  const isCritical = criticalityData.class ? criticalClasses.includes(criticalityData.class) : false;
 
   return {
     blastRadius: rfc.blast_radius || affectedCount,
@@ -874,7 +959,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId, windowHours = 48 } = args as any;
+  const { rfcId, windowHours = 48 } = toolArgs(args);
   const pg = fastify.pg;
 
   const rfcResult = await pg.query("SELECT ci_id, planned_start_at, planned_end_at, scheduled_at FROM change_requests WHERE id = $1", [rfcId]);
@@ -901,7 +986,8 @@ registerTool<FastifyInstance>("change-manager", {
   );
 
   // Dependency-aware conflicts: RFCs on different CIs that share a downstream dependency
-  const directConflictIds = new Set(conflictResult.rows.map((r: any) => r.id));
+  const conflictRows = conflictResult.rows as ChangeConflictRow[];
+  const directConflictIds = new Set(conflictRows.map((row) => row.id));
   const potentialResult = await pg.query(
     `SELECT DISTINCT cr.id, cr.number, cr.title, cr.ci_id as primary_ci, COALESCE(cr.planned_start_at, cr.scheduled_at) as planned_start_at, cr.planned_end_at, cr.status
      FROM change_requests cr
@@ -915,11 +1001,11 @@ registerTool<FastifyInstance>("change-manager", {
     [rfcId, startAt, windowHours, Array.from(directConflictIds)]
   );
 
-  const dependencyConflicts: any[] = [];
+  const dependencyConflicts: DependencyConflict[] = [];
   if (potentialResult.rows.length > 0) {
     const session = fastify.neo4j.session();
     try {
-      for (const other of potentialResult.rows) {
+      for (const other of potentialResult.rows as ChangeConflictRow[]) {
         const otherCiId = other.primary_ci;
         // Check if there's a path within 3 hops between any of our CIs and their primary CI
         const pathResult = await session.run(
@@ -945,13 +1031,13 @@ registerTool<FastifyInstance>("change-manager", {
   }
 
   const allConflicts = [
-    ...conflictResult.rows.map((r: any) => ({
-      ...r,
+    ...conflictRows.map((row) => ({
+      ...row,
       conflictType: "direct",
-      severity: r.conflicting_ci === ci_id ? "high" : "medium",
-      reason: r.conflicting_ci === ci_id
-        ? `Same primary CI ${r.conflicting_ci} is scheduled in the CAB window.`
-        : `Affected CI ${r.conflicting_ci} is also included in another active scheduled change.`,
+      severity: row.conflicting_ci === ci_id ? "high" : "medium",
+      reason: row.conflicting_ci === ci_id
+        ? `Same primary CI ${row.conflicting_ci} is scheduled in the CAB window.`
+        : `Affected CI ${row.conflicting_ci} is also included in another active scheduled change.`,
       suggestedAction: "Reschedule one change, combine CAB review, or require explicit joint approval.",
     })),
     ...dependencyConflicts,
@@ -980,7 +1066,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId } = args as any;
+  const { rfcId } = toolArgs(args);
   const pg = fastify.pg;
   const { ciIds } = await loadRfcCiContext(pg, rfcId);
   if (ciIds.length === 0) return { healthy: true, ciHealth: [] };
@@ -993,18 +1079,18 @@ registerTool<FastifyInstance>("change-manager", {
        RETURN n.id as id, n.name as name, n.class as class, count(r) as relCount`,
       { ids: ciIds }
     );
-    const ciHealth = result.records.map((r: any) => {
-      const relCount = r.get("relCount").toNumber();
+    const ciHealth: CiHealthRow[] = result.records.map((record: Neo4jRecord) => {
+      const relCount = record.get("relCount").toNumber();
       const healthy = relCount > 0;
       return {
-        id: r.get("id"),
-        name: r.get("name"),
-        class: r.get("class"),
+        id: record.get("id"),
+        name: record.get("name"),
+        class: record.get("class"),
         relationshipCount: relCount,
         healthy,
       };
     });
-    const allHealthy = ciHealth.every((ci: any) => ci.healthy);
+    const allHealthy = ciHealth.every((ci) => ci.healthy);
     return { healthy: allHealthy, ciHealth };
   } finally {
     await session.close();
@@ -1022,7 +1108,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["ciId"],
   },
 }, async (args, fastify) => {
-  const { ciId } = args as any;
+  const { ciId } = toolArgs(args);
   const result = await fastify.pg.query(
     `SELECT id, title, status, COALESCE(planned_start_at, scheduled_at) as planned_start_at, created_at
      FROM change_requests
@@ -1044,29 +1130,29 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId } = args as any;
+  const { rfcId } = toolArgs(args);
   const pg = fastify.pg;
   const ciContext = await loadRfcCiContext(pg, rfcId);
   const primaryCi = ciContext.primaryCi;
-  const affected = ciContext.rows.filter((r: any) => r.ci_id !== primaryCi);
+  const affected = ciContext.rows.filter((row) => row.ci_id !== primaryCi);
 
   // Get dependency paths from primary to affected
   const session = fastify.neo4j.session();
-  let dependencyPaths: any[] = [];
+  let dependencyPaths: DependencyPathRow[] = [];
   try {
     if (primaryCi && affected.length > 0) {
-      const affectedIds = affected.map((r: any) => r.ci_id);
+      const affectedIds = affected.map((row) => row.ci_id);
       const result = await session.run(
         `MATCH path = shortestPath((root:ConfigurationItem {id: $rootId})-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY*1..5]-(affected:ConfigurationItem))
          WHERE affected.id IN $affectedIds
          RETURN affected.id as affectedId, affected.name as affectedName, root.name as rootName, length(path) as hops`,
         { rootId: primaryCi, affectedIds }
       );
-      dependencyPaths = result.records.map((r: any) => ({
-        affectedId: r.get("affectedId"),
-        affectedName: r.get("affectedName"),
-        rootName: r.get("rootName"),
-        hops: r.get("hops").toNumber(),
+      dependencyPaths = result.records.map((record: Neo4jRecord) => ({
+        affectedId: record.get("affectedId"),
+        affectedName: record.get("affectedName"),
+        rootName: record.get("rootName"),
+        hops: record.get("hops").toNumber(),
       }));
     }
   } finally {
@@ -1092,7 +1178,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["ciId"],
   },
 }, async (args, fastify) => {
-  const { ciId, affectedCiIds } = args as any;
+  const { ciId, affectedCiIds } = toolArgs(args);
   const affected = Array.isArray(affectedCiIds) ? affectedCiIds : [];
   const score = await previewImpactScore(fastify, ciId, affected);
   return {
@@ -1117,7 +1203,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId } = args as any;
+  const { rfcId } = toolArgs(args);
   const pg = fastify.pg;
   const { primaryCi } = await loadRfcCiContext(pg, rfcId);
   if (!primaryCi) return { error: "No primary CI found" };
@@ -1186,7 +1272,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId, grade = {}, conflicts = {}, health = {}, impactPath = {}, metadata = {}, _userId } = args as any;
+  const { rfcId, grade = {}, conflicts = {}, health = {}, impactPath = {}, metadata = {}, _userId } = toolArgs(args);
   const exists = await fastify.pg.query("SELECT id FROM change_requests WHERE id = $1", [rfcId]);
   if (!exists.rows.length) return { error: "RFC not found" };
 
@@ -1237,7 +1323,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId } = args as any;
+  const { rfcId } = toolArgs(args);
   const result = await fastify.pg.query(
     `SELECT id, change_request_id, generated_by, grade, conflicts, health, impact_path, metadata, created_at
      FROM change_cab_brief_snapshots
@@ -1261,7 +1347,7 @@ registerTool<FastifyInstance>("change-manager", {
     required: ["rfcId"],
   },
 }, async (args, fastify) => {
-  const { rfcId, limit = 30 } = args as any;
+  const { rfcId, limit = 30 } = toolArgs(args);
   const history = await getRiskScoreHistory(fastify, rfcId, limit);
   return {
     rfcId,
