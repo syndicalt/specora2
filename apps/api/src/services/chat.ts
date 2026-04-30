@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { FastifyInstance } from "fastify";
 import type { Trace } from "@pathlight/sdk";
+import type { Record as Neo4jRecord } from "neo4j-driver";
 import { executeTool as executeAppTool, getToolsForSession } from "@specora/sdk";
 import { SessionTrace } from "./pathlightSession";
 import { hasPermission } from "./rbac";
@@ -56,12 +57,43 @@ type ServiceMapResult = {
   edges?: Array<{ sourceId: string; targetId: string; type?: string }>;
 };
 
+type Neo4jEntity = {
+  properties: Record<string, unknown>;
+};
+
+type Neo4jRelationship = {
+  type: string;
+  start?: Neo4jEntity;
+  end?: Neo4jEntity;
+};
+
+type CoreToolResult = unknown;
+
 function asToolCalls(value: unknown): ChatToolCall[] | undefined {
   return Array.isArray(value) ? (value as ChatToolCall[]) : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function stringArg(args: ToolArguments, key: string): string | undefined {
+  const value = args[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function nodeSummary(entity: Neo4jEntity): CiSummary {
+  const props = entity.properties;
+  return {
+    id: String(props.id || ""),
+    name: typeof props.name === "string" ? props.name : undefined,
+    class: typeof props.class === "string" ? props.class : undefined,
+    environment: typeof props.environment === "string" ? props.environment : undefined,
+  };
+}
+
+function recordNode(record: Neo4jRecord, key: string): Neo4jEntity {
+  return record.get(key) as Neo4jEntity;
 }
 
 async function callProvara(messages: ChatMessage[], tools: OpenAI.Chat.ChatCompletionTool[]): Promise<OpenAI.Chat.ChatCompletion> {
@@ -665,57 +697,52 @@ async function getAllTools(fastify: FastifyInstance, user?: { id?: string; role?
 
 async function executeCoreTool(
   name: string,
-  args: any,
+  args: ToolArguments,
   fastify: FastifyInstance
-): Promise<any> {
+): Promise<CoreToolResult> {
   const session = fastify.neo4j.session();
   try {
     switch (name) {
       case "search_cis": {
         let query = "MATCH (n:ConfigurationItem)";
-        const params: any = {};
+        const params: Record<string, string> = {};
         const conditions: string[] = [];
-        const searchName = args.name || args.query;
+        const searchName = stringArg(args, "name") || stringArg(args, "query");
         if (searchName) {
           conditions.push("n.name CONTAINS $name");
           params.name = searchName;
         }
-        if (args.class) {
+        const ciClass = stringArg(args, "class");
+        if (ciClass) {
           conditions.push("n.class = $class");
-          params.class = args.class;
+          params.class = ciClass;
         }
-        if (args.environment) {
+        const environment = stringArg(args, "environment");
+        if (environment) {
           conditions.push("n.environment = $environment");
-          params.environment = args.environment;
+          params.environment = environment;
         }
         if (conditions.length) query += " WHERE " + conditions.join(" AND ");
         query += " RETURN n LIMIT 20";
         const result = await session.run(query, params);
-        return result.records.map((r: any) => {
-          const props = r.get("n").properties;
-          return {
-            id: props.id,
-            name: props.name,
-            class: props.class,
-            environment: props.environment,
-          };
-        });
+        return result.records.map((record: Neo4jRecord) => nodeSummary(recordNode(record, "n")));
       }
       case "get_ci_details": {
+        const id = stringArg(args, "id");
         const result = await session.run(
           `MATCH (n:ConfigurationItem {id: $id}) RETURN n`,
-          { id: args.id }
+          { id }
         );
         if (!result.records.length) return null;
-        const props = result.records[0].get("n").properties;
+        const props = recordNode(result.records[0], "n").properties;
         const relResult = await session.run(
           `MATCH (n:ConfigurationItem {id: $id})-[r]-(target:ConfigurationItem)
            RETURN r, target`,
-          { id: args.id }
+          { id }
         );
-        const relationships = relResult.records.map((r: any) => {
-          const rel = r.get("r");
-          const target = r.get("target").properties;
+        const relationships = relResult.records.map((record: Neo4jRecord) => {
+          const rel = record.get("r") as Neo4jRelationship;
+          const target = recordNode(record, "target").properties;
           return {
             type: rel.type,
             direction: rel.start === props.id ? "outgoing" : "incoming",
@@ -723,7 +750,7 @@ async function executeCoreTool(
           };
         });
         return {
-          id: props.id,
+          id: String(props.id || ""),
           name: props.name,
           class: props.class,
           environment: props.environment,
@@ -731,15 +758,16 @@ async function executeCoreTool(
         };
       }
       case "get_service_map": {
+        const rootId = stringArg(args, "rootId");
         // Fetch root node first to guarantee it's included and to validate existence
         const rootResult = await session.run(
           `MATCH (root:ConfigurationItem {id: $rootId}) RETURN root`,
-          { rootId: args.rootId }
+          { rootId }
         );
         if (!rootResult.records.length) {
-          return { rootId: args.rootId, nodes: [], edges: [], error: "CI not found" };
+          return { rootId, nodes: [], edges: [], error: "CI not found" };
         }
-        const rootProps = rootResult.records[0].get("root").properties;
+        const rootProps = recordNode(rootResult.records[0], "root").properties;
 
         // Use a bounded path query to avoid combinatorial explosion on dense graphs
         const result = await session.run(
@@ -755,40 +783,44 @@ async function executeCoreTool(
            WITH DISTINCT root, rel, startNode(rel) as src, endNode(rel) as tgt
            RETURN root, rel, src, tgt
            LIMIT 50`,
-          { rootId: args.rootId }
+          { rootId }
         );
-        const nodesMap = new Map();
-        const edges: any[] = [];
-        nodesMap.set(rootProps.id, { id: rootProps.id, name: rootProps.name, class: rootProps.class });
+        const nodesMap = new Map<string, CiSummary>();
+        const edges: Array<{ type: string; sourceId: string; targetId: string }> = [];
+        nodesMap.set(String(rootProps.id || ""), { id: String(rootProps.id || ""), name: String(rootProps.name || ""), class: String(rootProps.class || "") });
         for (const record of result.records) {
-          const rel = record.get("rel");
-          const src = record.get("src").properties;
-          const tgt = record.get("tgt").properties;
-          nodesMap.set(src.id, { id: src.id, name: src.name, class: src.class });
-          nodesMap.set(tgt.id, { id: tgt.id, name: tgt.name, class: tgt.class });
+          const rel = record.get("rel") as Neo4jRelationship;
+          const src = recordNode(record, "src").properties;
+          const tgt = recordNode(record, "tgt").properties;
+          const srcId = String(src.id || "");
+          const tgtId = String(tgt.id || "");
+          nodesMap.set(srcId, { id: srcId, name: String(src.name || ""), class: String(src.class || "") });
+          nodesMap.set(tgtId, { id: tgtId, name: String(tgt.name || ""), class: String(tgt.class || "") });
           edges.push({
             type: rel.type,
-            sourceId: src.id,
-            targetId: tgt.id,
+            sourceId: srcId,
+            targetId: tgtId,
           });
         }
         return {
-          rootId: args.rootId,
+          rootId,
           nodes: Array.from(nodesMap.values()),
           edges,
         };
       }
       case "count_cis": {
         let query = "MATCH (n:ConfigurationItem)";
-        const params: any = {};
+        const params: Record<string, string> = {};
         const conditions: string[] = [];
-        if (args.class) {
+        const ciClass = stringArg(args, "class");
+        if (ciClass) {
           conditions.push("n.class = $class");
-          params.class = args.class;
+          params.class = ciClass;
         }
-        if (args.environment) {
+        const environment = stringArg(args, "environment");
+        if (environment) {
           conditions.push("n.environment = $environment");
-          params.environment = args.environment;
+          params.environment = environment;
         }
         if (conditions.length) query += " WHERE " + conditions.join(" AND ");
         query += " RETURN count(n) as total";
@@ -802,22 +834,22 @@ async function executeCoreTool(
            WITH collect(DISTINCT node) as pathNodes, path
            UNWIND relationships(path) as rel
            RETURN pathNodes, collect(DISTINCT rel) as pathRels`,
-          { fromId: args.fromId, toId: args.toId }
+          { fromId: stringArg(args, "fromId"), toId: stringArg(args, "toId") }
         );
         if (!result.records.length) {
           return { nodes: [], edges: [], found: false };
         }
         const record = result.records[0];
-        const pathNodes = record.get("pathNodes");
-        const pathRels = record.get("pathRels");
-        const nodes = pathNodes.map((n: any) => {
+        const pathNodes = record.get("pathNodes") as Neo4jEntity[];
+        const pathRels = record.get("pathRels") as Neo4jRelationship[];
+        const nodes = pathNodes.map((n) => {
           const props = n.properties;
           return { id: props.id, name: props.name, class: props.class };
         });
-        const edges = pathRels.map((rel: any) => ({
+        const edges = pathRels.map((rel) => ({
           type: rel.type,
-          sourceId: rel.start.properties.id,
-          targetId: rel.end.properties.id,
+          sourceId: rel.start?.properties.id,
+          targetId: rel.end?.properties.id,
         }));
         return { nodes, edges, found: true };
       }
@@ -827,13 +859,13 @@ async function executeCoreTool(
            WHERE NOT (n)-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT]-()
            RETURN n LIMIT 50`
         );
-        return result.records.map((r: any) => {
-          const props = r.get("n").properties;
+        return result.records.map((record: Neo4jRecord) => {
+          const props = recordNode(record, "n").properties;
           return { id: props.id, name: props.name, class: props.class, environment: props.environment };
         });
       }
       case "nl_search": {
-        const cypher = (args.cypher || "").trim();
+        const cypher = (stringArg(args, "cypher") || "").trim();
         // Safety guard: reject mutation keywords
         const upper = cypher.toUpperCase();
         const forbidden = ["CREATE", "DELETE", "SET", "MERGE", "DROP", "REMOVE", "CALL", "LOAD"];
@@ -846,23 +878,24 @@ async function executeCoreTool(
         }
         try {
           const result = await session.run(cypher);
-          const rows = result.records.map((record: any) => {
-            const obj: Record<string, any> = {};
+          const rows = result.records.map((record: Neo4jRecord) => {
+            const obj: Record<string, unknown> = {};
             for (const key of record.keys) {
+              const keyName = String(key);
               const val = record.get(key);
-              if (val && typeof val === "object" && val.properties) {
-                obj[key] = val.properties;
+              if (isRecord(val) && isRecord(val.properties)) {
+                obj[keyName] = val.properties;
               } else if (Array.isArray(val)) {
-                obj[key] = val.map((v: any) => (v && v.properties ? v.properties : v));
+                obj[keyName] = val.map((v: unknown) => (isRecord(v) && isRecord(v.properties) ? v.properties : v));
               } else {
-                obj[key] = val;
+                obj[keyName] = val;
               }
             }
             return obj;
           });
           return { rows: rows.slice(0, 50), count: rows.length };
-        } catch (err: any) {
-          return { error: `Cypher execution failed: ${err.message}` };
+        } catch (err: unknown) {
+          return { error: `Cypher execution failed: ${err instanceof Error ? err.message : "Unexpected error"}` };
         }
       }
       default:
