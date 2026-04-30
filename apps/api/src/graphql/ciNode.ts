@@ -8,12 +8,21 @@ const PROJECTED_ATTRIBUTE_RESERVED_KEYS = new Set([
   "lastDiscoveredAt",
 ]);
 
-export function parseNode(node: any) {
-  const attrs = typeof node.attributes === "string" ? JSON.parse(node.attributes) : (node.attributes || {});
+export type ParsedNode = Record<string, unknown> & {
+  id: string;
+  name: string;
+  class: string;
+  attributes: Record<string, unknown>;
+};
+
+export function parseNode(node: Record<string, unknown>): ParsedNode {
+  const attrs = typeof node.attributes === "string"
+    ? (JSON.parse(node.attributes) as Record<string, unknown>)
+    : ((node.attributes || {}) as Record<string, unknown>);
   const projectedAttrs = Object.fromEntries(
     Object.entries(node).filter(([key, value]) => !PROJECTED_ATTRIBUTE_RESERVED_KEYS.has(key) && value !== undefined && value !== null)
   );
-  return { ...node, attributes: { ...attrs, ...projectedAttrs } };
+  return { ...node, attributes: { ...attrs, ...projectedAttrs } } as ParsedNode;
 }
 
 function isNeo4jPropertyValue(value: unknown): boolean {
@@ -25,4 +34,3 @@ function isNeo4jPropertyValue(value: unknown): boolean {
 export function neo4jPropertyProps(attrs: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(attrs).filter(([, value]) => isNeo4jPropertyValue(value)));
 }
-
