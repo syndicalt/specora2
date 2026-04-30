@@ -1,5 +1,6 @@
 import { GraphQLError } from "graphql";
 import neo4j from "neo4j-driver";
+import type { Driver, Record as Neo4jRecord } from "neo4j-driver";
 import {
   CreateCIInputSchema,
   UpdateCIInputSchema,
@@ -16,9 +17,108 @@ import { checkPermission, getClassDefinition, mapEnvironmentChoice, validateCIAg
 import { savedViewMutations, savedViewQueries } from "./savedViewResolvers";
 import { userMutations, userQueries } from "./userResolvers";
 
+type QueryablePg = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+};
+
+type ResolverContext = {
+  neo4j: Driver;
+  pg: QueryablePg;
+  user?: unknown;
+};
+
+type CiFilter = {
+  class?: string;
+  environment?: string;
+  name?: string;
+};
+
+type CiListArgs = {
+  filter?: CiFilter;
+  limit?: number;
+  offset?: number;
+};
+
+type AuditLogRow = {
+  id: string;
+  actor_id?: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  old_values?: unknown;
+  new_values?: unknown;
+  metadata?: unknown;
+  created_at?: string | Date;
+};
+
+type CiClassRow = {
+  id: string;
+  name: string;
+  display_name?: string | null;
+  description?: string | null;
+  parent_class?: string | null;
+  icon?: string | null;
+  color?: string | null;
+  display_field?: string | null;
+  secondary_display_fields?: string[] | null;
+  is_system?: boolean;
+  created_by_app_id?: string | null;
+  created_at?: string | Date;
+  updated_at?: string | Date;
+};
+
+function applyCiFilter(query: string, params: Record<string, unknown>, filter?: CiFilter) {
+  const conditions: string[] = [];
+  if (filter?.class) {
+    conditions.push("n.class = $class");
+    params.class = filter.class;
+  }
+  if (filter?.environment) {
+    conditions.push("n.environment = $environment");
+    params.environment = filter.environment;
+  }
+  if (filter?.name) {
+    conditions.push("n.name CONTAINS $name");
+    params.name = filter.name;
+  }
+  return conditions.length ? `${query} WHERE ${conditions.join(" AND ")}` : query;
+}
+
+function mapAuditLogRow(row: AuditLogRow) {
+  return {
+    id: row.id,
+    actorId: row.actor_id,
+    action: row.action,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    oldValues: row.old_values,
+    newValues: row.new_values,
+    metadata: row.metadata,
+    createdAt: row.created_at,
+  };
+}
+
+function mapCiClassRow(row: CiClassRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    displayName: row.display_name,
+    description: row.description,
+    parentClass: row.parent_class,
+    icon: row.icon,
+    color: row.color,
+    displayField: row.display_field,
+    secondaryDisplayFields: row.secondary_display_fields || [],
+    isSystem: row.is_system,
+    createdByAppId: row.created_by_app_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export const resolvers = {
   Query: {
-    async ci(_parent: any, args: { id: string }, context: any) {
+    async ci(_parent: unknown, args: { id: string }, context: ResolverContext) {
       const session = context.neo4j.session();
       try {
         const result = await session.run(
@@ -32,25 +132,11 @@ export const resolvers = {
         await session.close();
       }
     },
-    async cis(_parent: any, args: { filter?: any; limit?: number; offset?: number }, context: any) {
+    async cis(_parent: unknown, args: CiListArgs, context: ResolverContext) {
       const session = context.neo4j.session();
       try {
-        let query = "MATCH (n:ConfigurationItem)";
-        const params: any = {};
-        const conditions: string[] = [];
-        if (args.filter?.class) {
-          conditions.push("n.class = $class");
-          params.class = args.filter.class;
-        }
-        if (args.filter?.environment) {
-          conditions.push("n.environment = $environment");
-          params.environment = args.filter.environment;
-        }
-        if (args.filter?.name) {
-          conditions.push("n.name CONTAINS $name");
-          params.name = args.filter.name;
-        }
-        if (conditions.length) query += " WHERE " + conditions.join(" AND ");
+        const params: Record<string, unknown> = {};
+        let query = applyCiFilter("MATCH (n:ConfigurationItem)", params, args.filter);
         query += " RETURN n";
         if (args.offset !== undefined && args.offset > 0) {
           query += " SKIP $offset";
@@ -59,30 +145,16 @@ export const resolvers = {
         query += " LIMIT $limit";
         params.limit = neo4j.int(args.limit ?? 100);
         const result = await session.run(query, params);
-        return result.records.map((r: any) => parseNode(r.get("n").properties));
+        return result.records.map((record: Neo4jRecord) => parseNode(record.get("n").properties));
       } finally {
         await session.close();
       }
     },
-    async ciCount(_parent: any, args: { filter?: any }, context: any) {
+    async ciCount(_parent: unknown, args: { filter?: CiFilter }, context: ResolverContext) {
       const session = context.neo4j.session();
       try {
-        let query = "MATCH (n:ConfigurationItem)";
-        const params: any = {};
-        const conditions: string[] = [];
-        if (args.filter?.class) {
-          conditions.push("n.class = $class");
-          params.class = args.filter.class;
-        }
-        if (args.filter?.environment) {
-          conditions.push("n.environment = $environment");
-          params.environment = args.filter.environment;
-        }
-        if (args.filter?.name) {
-          conditions.push("n.name CONTAINS $name");
-          params.name = args.filter.name;
-        }
-        if (conditions.length) query += " WHERE " + conditions.join(" AND ");
+        const params: Record<string, unknown> = {};
+        let query = applyCiFilter("MATCH (n:ConfigurationItem)", params, args.filter);
         query += " RETURN count(n) as total";
         const result = await session.run(query, params);
         return result.records[0]?.get("total")?.toNumber() ?? 0;
@@ -90,7 +162,7 @@ export const resolvers = {
         await session.close();
       }
     },
-    async ciEnvironments(_parent: any, _args: any, context: any) {
+    async ciEnvironments(_parent: unknown, _args: Record<string, never>, context: ResolverContext) {
       const session = context.neo4j.session();
       try {
         const [choiceResult, result] = await Promise.all([
@@ -105,7 +177,7 @@ export const resolvers = {
           ),
         ]);
         const values = new Set<string>();
-        for (const row of choiceResult.rows || []) {
+        for (const row of (choiceResult.rows || []) as Array<{ name?: string | null }>) {
           if (row.name) values.add(row.name);
         }
         for (const record of result.records) {
@@ -117,27 +189,13 @@ export const resolvers = {
         await session.close();
       }
     },
-    async ciClasses(_parent: any, _args: any, context: any) {
+    async ciClasses(_parent: unknown, _args: Record<string, never>, context: ResolverContext) {
       await checkPermission(context, "cmdb", "read");
       const result = await context.pg.query(
         `SELECT id, name, display_name, description, parent_class, icon, color, display_field, secondary_display_fields, is_system, created_by_app_id, created_at, updated_at
          FROM ci_classes ORDER BY name`
       );
-      return result.rows.map((row: any) => ({
-        id: row.id,
-        name: row.name,
-        displayName: row.display_name,
-        description: row.description,
-        parentClass: row.parent_class,
-        icon: row.icon,
-        color: row.color,
-        displayField: row.display_field,
-        secondaryDisplayFields: row.secondary_display_fields || [],
-        isSystem: row.is_system,
-        createdByAppId: row.created_by_app_id,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      }));
+      return (result.rows as CiClassRow[]).map(mapCiClassRow);
     },
     async ciClass(_parent: any, args: { name: string }, context: any) {
       await checkPermission(context, "cmdb", "read");
@@ -166,9 +224,9 @@ export const resolvers = {
     ...userQueries,
     ...marketplaceQueries,
     ...savedViewQueries,
-    async auditLog(_parent: any, args: { entityType?: string; entityId?: string; limit?: number; offset?: number }, context: any) {
+    async auditLog(_parent: unknown, args: { entityType?: string; entityId?: string; limit?: number; offset?: number }, context: ResolverContext) {
       let query = "SELECT id, actor_id, action, entity_type, entity_id, old_values, new_values, metadata, created_at FROM audit_log WHERE 1=1";
-      const params: any[] = [];
+      const params: unknown[] = [];
       let idx = 1;
       if (args.entityType) {
         query += ` AND entity_type = $${idx++}`;
@@ -188,19 +246,9 @@ export const resolvers = {
         params.push(args.offset);
       }
       const result = await context.pg.query(query, params);
-      return result.rows.map((row: any) => ({
-        id: row.id,
-        actorId: row.actor_id,
-        action: row.action,
-        entityType: row.entity_type,
-        entityId: row.entity_id,
-        oldValues: row.old_values,
-        newValues: row.new_values,
-        metadata: row.metadata,
-        createdAt: row.created_at,
-      }));
+      return (result.rows as AuditLogRow[]).map(mapAuditLogRow);
     },
-    async auditLogForCI(_parent: any, args: { ciId: string; limit?: number }, context: any) {
+    async auditLogForCI(_parent: unknown, args: { ciId: string; limit?: number }, context: ResolverContext) {
       const result = await context.pg.query(
         `SELECT id, actor_id, action, entity_type, entity_id, old_values, new_values, metadata, created_at
          FROM audit_log
@@ -209,17 +257,7 @@ export const resolvers = {
          LIMIT $2`,
         [args.ciId, args.limit || 50]
       );
-      return result.rows.map((row: any) => ({
-        id: row.id,
-        actorId: row.actor_id,
-        action: row.action,
-        entityType: row.entity_type,
-        entityId: row.entity_id,
-        oldValues: row.old_values,
-        newValues: row.new_values,
-        metadata: row.metadata,
-        createdAt: row.created_at,
-      }));
+      return (result.rows as AuditLogRow[]).map(mapAuditLogRow);
     },
   },
   ConfigurationItem: {
