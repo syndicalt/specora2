@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { requirePermission } from "../../services/rbac";
 import { recordAuditEvent } from "../../services/auditLog";
 
@@ -37,6 +37,16 @@ function normalizeSequenceConfig(body: { prefix?: string; nextValue?: number; pa
   return { prefix, nextValue, padding };
 }
 
+type DbError = Error & { code?: string };
+
+function dbError(err: unknown): DbError {
+  return err instanceof Error ? err as DbError : new Error(String(err)) as DbError;
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 export function registerAdminNumberSequenceRoutes(fastify: FastifyInstance) {
   fastify.get("/api/admin/number-sequences", { onRequest: [fastify.authenticate, requirePermission("number-sequences", "read")] }, async (_request, reply) => {
     try {
@@ -46,9 +56,9 @@ export function registerAdminNumberSequenceRoutes(fastify: FastifyInstance) {
          ORDER BY table_name`
       );
       return { sequences: result.rows };
-    } catch (err: any) {
+    } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to fetch number sequences" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to fetch number sequences") });
     }
   });
 
@@ -74,7 +84,7 @@ export function registerAdminNumberSequenceRoutes(fastify: FastifyInstance) {
         [option.appId, option.tableName, option.recordType, config.prefix, config.nextValue, config.padding, body.enabled !== false]
       );
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "number_sequence.created",
         entityType: "NumberSequence",
         entityId: result.rows[0].id,
@@ -82,10 +92,11 @@ export function registerAdminNumberSequenceRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console" },
       });
       return { sequence: result.rows[0] };
-    } catch (err: any) {
-      if (err.code === "23505") return reply.status(409).send({ error: "Sequence table or prefix already exists" });
+    } catch (err) {
+      const error = dbError(err);
+      if (error.code === "23505") return reply.status(409).send({ error: "Sequence table or prefix already exists" });
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to create number sequence" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to create number sequence") });
     }
   });
 
@@ -125,7 +136,7 @@ export function registerAdminNumberSequenceRoutes(fastify: FastifyInstance) {
       );
       if (!result.rows.length) return reply.status(404).send({ error: "Sequence not found" });
       await recordAuditEvent(fastify, {
-        actorId: (request.user as any)?.id,
+        actorId: request.user?.id,
         action: "number_sequence.updated",
         entityType: "NumberSequence",
         entityId: id,
@@ -133,10 +144,11 @@ export function registerAdminNumberSequenceRoutes(fastify: FastifyInstance) {
         metadata: { source: "api.admin", surface: "admin-console" },
       });
       return { sequence: result.rows[0] };
-    } catch (err: any) {
-      if (err.code === "23505") return reply.status(409).send({ error: "Prefix already exists" });
+    } catch (err) {
+      const error = dbError(err);
+      if (error.code === "23505") return reply.status(409).send({ error: "Prefix already exists" });
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to update number sequence" });
+      return reply.status(500).send({ error: errorMessage(err, "Failed to update number sequence") });
     }
   });
 }

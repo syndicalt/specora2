@@ -41,11 +41,12 @@ export function normalizePasswordPolicy(value: unknown): PasswordPolicy {
   };
 }
 
-export async function getPasswordPolicy(pg: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> }): Promise<PasswordPolicy> {
+export async function getPasswordPolicy(pg: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }): Promise<PasswordPolicy> {
   const result = await pg.query("SELECT value FROM system_properties WHERE key = 'security.password_policy'");
   if (!result.rows.length) return DEFAULT_PASSWORD_POLICY;
   try {
-    return normalizePasswordPolicy(JSON.parse(String(result.rows[0].value || "{}")));
+    const row = result.rows[0] as { value?: unknown };
+    return normalizePasswordPolicy(JSON.parse(String(row.value || "{}")));
   } catch {
     return DEFAULT_PASSWORD_POLICY;
   }
