@@ -1,5 +1,25 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { registerTool } from "@specora/sdk";
+
+type GraphNode = {
+  properties: Record<string, unknown>;
+};
+
+type GraphRelationship = {
+  type: string;
+  start: GraphNode;
+  end: GraphNode;
+};
+
+type ScoreCiArgs = {
+  ciId: string;
+};
+
+type RemediationArgs = {
+  sourceId: string;
+  targetId: string;
+  relType: string;
+};
 
 export function registerHealthMonitorTools() {
 registerTool<FastifyInstance>("health-monitor", {
@@ -25,13 +45,13 @@ registerTool<FastifyInstance>("health-monitor", {
        RETURN cycleNodes, relationships(path) as rels
        LIMIT 20`
     );
-    return result.records.map((r: any) => {
-      const nodes = r.get("cycleNodes").map((n: any) => ({
+    return result.records.map((r) => {
+      const nodes = (r.get("cycleNodes") as GraphNode[]).map((n) => ({
         id: n.properties.id,
         name: n.properties.name,
         class: n.properties.class,
       }));
-      const rels = r.get("rels").map((rel: any) => ({
+      const rels = (r.get("rels") as GraphRelationship[]).map((rel) => ({
         type: rel.type,
         sourceId: rel.start.properties.id,
         targetId: rel.end.properties.id,
@@ -57,14 +77,14 @@ registerTool<FastifyInstance>("health-monitor", {
   const session = fastify.neo4j.session();
   try {
     let query = "MATCH (n:ConfigurationItem) WHERE NOT (n)-[:PART_OF|DEPENDS_ON|HOSTED_ON|MANAGED_BY|OWNED_BY|LOCATED_AT]-()";
-    const params: any = {};
+    const params: Record<string, unknown> = {};
     if (cls) {
       query += " AND n.class = $class";
       params.class = cls;
     }
     query += " RETURN n LIMIT 50";
     const result = await session.run(query, params);
-    return result.records.map((r: any) => {
+    return result.records.map((r) => {
       const props = r.get("n").properties;
       return { id: props.id, name: props.name, class: props.class, environment: props.environment };
     });
@@ -93,7 +113,7 @@ registerTool<FastifyInstance>("health-monitor", {
        RETURN n LIMIT 50`,
       { cutoff }
     );
-    return result.records.map((r: any) => {
+    return result.records.map((r) => {
       const props = r.get("n").properties;
       return { id: props.id, name: props.name, class: props.class, environment: props.environment };
     });
@@ -113,7 +133,7 @@ registerTool<FastifyInstance>("health-monitor", {
     required: ["ciId"],
   },
 }, async (args, fastify) => {
-  const { ciId } = args as any;
+  const { ciId } = args as ScoreCiArgs;
   const session = fastify.neo4j.session();
   try {
     const result = await session.run(
@@ -158,7 +178,7 @@ registerTool<FastifyInstance>("health-monitor", {
     const session = fastify.neo4j.session();
     try {
       const result = await session.run(rule.cypher);
-      return result.records.map((r: any) => ({
+      return result.records.map((r) => ({
         ruleId: rule.id,
         ruleName: rule.name,
         severity: rule.severity,
@@ -231,7 +251,7 @@ registerTool<FastifyInstance>("health-monitor", {
   },
 }, async (args, fastify) => {
   const { applyRemediation } = await import("../remediation");
-  const a = args as any;
+  const a = args as RemediationArgs;
   return applyRemediation(fastify, {
     type: "create_relationship",
     description: `Create ${a.relType} from ${a.sourceId} to ${a.targetId}`,
