@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS marketplace_apps (
     description TEXT,
     url TEXT NOT NULL,
     icon VARCHAR(255) NOT NULL DEFAULT 'Compass',
+    icon_color VARCHAR(32),
     version VARCHAR(50) NOT NULL DEFAULT '1.0.0',
     permissions JSONB NOT NULL DEFAULT '[]',
     react_version VARCHAR(50) NOT NULL DEFAULT '^18.0.0',

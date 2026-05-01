@@ -95,6 +95,7 @@ const typeDefs = `
     description: String
     url: String!
     icon: String!
+    iconColor: String
     version: String!
     permissions: [String!]!
     reactVersion: String!
@@ -308,7 +309,7 @@ const typeDefs = `
     updatePreferences(preferences: JSON!): User!
     updateProfile(name: String!): User!
     changePassword(currentPassword: String!, newPassword: String!): User!
-    submitMarketplaceApp(id: ID!, name: String!, description: String, url: String!, icon: String, version: String, permissions: [String!], reactVersion: String, author: String!, authorUrl: String): MarketplaceApp!
+    submitMarketplaceApp(id: ID!, name: String!, description: String, url: String!, icon: String, iconColor: String, version: String, permissions: [String!], reactVersion: String, author: String!, authorUrl: String): MarketplaceApp!
     approveMarketplaceApp(id: ID!): MarketplaceApp!
     rejectMarketplaceApp(id: ID!): MarketplaceApp!
     createSavedView(name: String!, rootId: String!, classFilter: [String!], environmentFilter: [String!], relationshipFilter: [String!], cameraX: Float, cameraY: Float, cameraZoom: Float): SavedView!

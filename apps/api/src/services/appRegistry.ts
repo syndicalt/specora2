@@ -11,6 +11,7 @@ export type ServerAppRegistryEntry = {
   name: string;
   description?: string;
   icon: string;
+  iconColor?: string;
   version: string;
   permissions: string[];
   defaultMode: AppMode;
@@ -35,12 +36,13 @@ export type ServerAppRegistryEntry = {
 };
 
 const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
-  { id: "service-map", name: "Service Map", description: "Visualize service dependencies with interactive graph layouts.", icon: "Map", version: "1.0.0", permissions: ["read:cmdb", "read:relationships"], defaultMode: "canvas", installKey: "builtin_service-map", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "service-map", name: "Service Map", description: "Visualize service dependencies with interactive graph layouts.", icon: "Map", iconColor: "#38bdf8", version: "1.0.0", permissions: ["read:cmdb", "read:relationships"], defaultMode: "canvas", installKey: "builtin_service-map", source: "built-in", publisher: "Specora", installedAt: 0 },
   {
     id: "cmdb-explorer",
     name: "CMDB Explorer",
     description: "Search, filter, and inspect Configuration Items in your CMDB.",
     icon: "Database",
+    iconColor: "#22d3ee",
     version: "1.0.0",
     permissions: ["read:cmdb", "read:relationships"],
     defaultMode: "canvas",
@@ -56,15 +58,16 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
       { id: "cmdb.find-path", label: "Find dependency path", description: "Find the graph path between two CIs", prompt: "Find the dependency path between two CIs", icon: "Route" },
     ],
   },
-  { id: "settings", name: "Settings", description: "Manage profile, theme, and platform preferences.", icon: "Settings", version: "1.0.0", permissions: ["read:profile", "write:profile"], defaultMode: "window", installKey: "builtin_settings", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "discovery", name: "Discovery", description: "Upload and ingest infrastructure data into the graph.", icon: "Upload", version: "1.0.0", permissions: ["read:discovery", "write:discovery"], defaultMode: "canvas", installKey: "builtin_discovery", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "arc", name: "Specora Arc", description: "Discover and manage apps in the Specora ecosystem.", icon: "Compass", version: "1.0.0", permissions: ["app:install", "app:uninstall"], defaultMode: "window", installKey: "builtin_arc", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "change-manager", name: "Change Manager", description: "Create and manage change requests with approval workflows.", icon: "GitPullRequest", version: "1.0.0", permissions: ["itsm:change:read", "itsm:change:write"], defaultMode: "canvas", installKey: "builtin_change-manager", source: "built-in", publisher: "Specora ITSM", installedAt: 0, adminPanels: [{ id: "change-manager-state-machine", name: "Change State Machine", icon: "GitBranch", permissions: ["system-properties:write"] }] },
+  { id: "settings", name: "Settings", description: "Manage profile, theme, and platform preferences.", icon: "Settings", iconColor: "#94a3b8", version: "1.0.0", permissions: ["read:profile", "write:profile"], defaultMode: "window", installKey: "builtin_settings", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "discovery", name: "Discovery", description: "Upload and ingest infrastructure data into the graph.", icon: "Upload", iconColor: "#34d399", version: "1.0.0", permissions: ["read:discovery", "write:discovery"], defaultMode: "canvas", installKey: "builtin_discovery", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "arc", name: "Specora Arc", description: "Discover and manage apps in the Specora ecosystem.", icon: "Compass", iconColor: "#a78bfa", version: "1.0.0", permissions: ["app:install", "app:uninstall"], defaultMode: "window", installKey: "builtin_arc", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "change-manager", name: "Change Manager", description: "Create and manage change requests with approval workflows.", icon: "GitPullRequest", iconColor: "#f59e0b", version: "1.0.0", permissions: ["itsm:change:read", "itsm:change:write"], defaultMode: "canvas", installKey: "builtin_change-manager", source: "built-in", publisher: "Specora ITSM", installedAt: 0, adminPanels: [{ id: "change-manager-state-machine", name: "Change State Machine", icon: "GitBranch", permissions: ["system-properties:write"] }] },
   {
     id: "incident-manager",
     name: "Incident Command Center",
     description: "AI-first incident triage, command, remediation, and learning workflows.",
     icon: "Siren",
+    iconColor: "#fb7185",
     version: "1.0.0",
     permissions: ["itsm:incident:read", "itsm:incident:write"],
     defaultMode: "canvas",
@@ -84,6 +87,7 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
     name: "Knowledge Core",
     description: "AI-governed knowledge graph for answers, runbooks, stewardship, and operational learning.",
     icon: "Brain",
+    iconColor: "#c084fc",
     version: "1.0.0",
     permissions: ["itsm:knowledge:read", "itsm:knowledge:write"],
     defaultMode: "canvas",
@@ -103,6 +107,7 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
     name: "Prevention Center",
     description: "Reliability prevention engine for recurring incidents, known errors, corrective actions, and measured reduction.",
     icon: "ShieldCheck",
+    iconColor: "#2dd4bf",
     version: "1.0.0",
     permissions: ["itsm:prevention:read", "itsm:prevention:write"],
     defaultMode: "canvas",
@@ -121,6 +126,7 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
     name: "Asset Command Center",
     description: "AI-first ITAM for hardware custody, software entitlements, contract extraction, reconciliation, and savings.",
     icon: "PackageSearch",
+    iconColor: "#fbbf24",
     version: "1.0.0",
     permissions: ["itsm:asset:read", "itsm:asset:write"],
     defaultMode: "canvas",
@@ -140,6 +146,7 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
     name: "Customer Portal",
     description: "AI-first self-service front door for knowledge deflection, catalog requests, request status, and support handoffs.",
     icon: "MessageSquare",
+    iconColor: "#60a5fa",
     version: "0.1.0",
     permissions: ["customer-portal:read", "customer-portal:write"],
     defaultMode: "canvas",
@@ -159,6 +166,7 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
     name: "Engage Agent Workspace",
     description: "Unified agent command center for catalog request fulfillment, AI briefs, knowledge, links, handoffs, and requester updates.",
     icon: "ClipboardList",
+    iconColor: "#f472b6",
     version: "0.1.0",
     permissions: ["engage:agent:read", "engage:agent:write", "customer-portal:read"],
     defaultMode: "canvas",
@@ -173,13 +181,14 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
     ],
     events: ["catalog.request.submitted", "catalog.request.updated", "support.handoff.requested"],
   },
-  { id: "discovery-insights", name: "Discovery Insights", description: "Analyze discovery coverage and suggest next scans.", icon: "Radar", version: "1.0.0", permissions: ["itsm:discovery:read", "read:cmdb"], defaultMode: "canvas", installKey: "builtin_discovery-insights", source: "built-in", publisher: "Specora ITSM", installedAt: 0, events: ["discovery.completed"] },
-  { id: "health-monitor", name: "Health Monitor", description: "Detect anomalies and monitor CI health scores.", icon: "HeartPulse", version: "1.0.0", permissions: ["itsm:health:read", "itsm:health:write", "read:cmdb", "read:relationships"], defaultMode: "canvas", installKey: "builtin_health-monitor", source: "built-in", publisher: "Specora ITSM", installedAt: 0, events: ["ci.updated"] },
+  { id: "discovery-insights", name: "Discovery Insights", description: "Analyze discovery coverage and suggest next scans.", icon: "Radar", iconColor: "#38bdf8", version: "1.0.0", permissions: ["itsm:discovery:read", "read:cmdb"], defaultMode: "canvas", installKey: "builtin_discovery-insights", source: "built-in", publisher: "Specora ITSM", installedAt: 0, events: ["discovery.completed"] },
+  { id: "health-monitor", name: "Health Monitor", description: "Detect anomalies and monitor CI health scores.", icon: "HeartPulse", iconColor: "#4ade80", version: "1.0.0", permissions: ["itsm:health:read", "itsm:health:write", "read:cmdb", "read:relationships"], defaultMode: "canvas", installKey: "builtin_health-monitor", source: "built-in", publisher: "Specora ITSM", installedAt: 0, events: ["ci.updated"] },
   {
     id: "it-visibility-dcim",
     name: "DCIM Command Center",
     description: "Premium IT Visibility package app for facility topology, rack intelligence, power/cooling risk, and event correlation.",
     icon: "Network",
+    iconColor: "#06b6d4",
     version: "0.1.0",
     permissions: ["it-visibility:read", "it-visibility:write", "it-visibility:operate"],
     defaultMode: "canvas",
@@ -199,12 +208,12 @@ const BUILT_IN_APPS: ServerAppRegistryEntry[] = [
     ],
     events: ["dcim.event.ingested", "dcim.capacity.changed", "dcim.risk.detected"],
   },
-  { id: "audit-log", name: "Audit Log", description: "View audit trail of CMDB mutations and ITSM changes.", icon: "ScrollText", version: "1.0.0", permissions: ["audit-log:read"], defaultMode: "canvas", installKey: "builtin_audit-log", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "reporting", name: "Reporting", description: "Operational KPI dashboards, governed report previews, and BI contract handoff.", icon: "LayoutDashboard", version: "1.0.0", permissions: ["reporting:read", "reporting:write"], defaultMode: "canvas", installKey: "builtin_reporting", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "admin-console", name: "Admin Console", description: "Govern access, registries, counters, system properties, and app-owned admin panels.", icon: "Shield", version: "1.0.0", permissions: ["rbac:read", "rbac:write", "number-sequences:read", "number-sequences:write", "system-properties:read", "system-properties:write"], defaultMode: "canvas", installKey: "builtin_admin-console", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "ci-class-manager", name: "CI Class Manager", description: "Define CI classes, attributes, and data quality rules.", icon: "Layers", version: "1.0.0", permissions: ["admin:cmdb"], defaultMode: "window", installKey: "builtin_ci-class-manager", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "tables", name: "Tables", description: "Browse and maintain platform tables through RBAC-aware CRUD APIs.", icon: "TableProperties", version: "1.0.0", permissions: ["tables:read", "tables:write"], defaultMode: "canvas", installKey: "builtin_tables", source: "built-in", publisher: "Specora", installedAt: 0 },
-  { id: "data-foundations", name: "Data Foundations", description: "Govern CSDMv5 foundation data quality, ownership, and readiness.", icon: "Building2", version: "1.0.0", permissions: ["data-foundations:read", "data-foundations:write", "tables:read"], defaultMode: "canvas", installKey: "builtin_data-foundations", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "audit-log", name: "Audit Log", description: "View audit trail of CMDB mutations and ITSM changes.", icon: "ScrollText", iconColor: "#e2e8f0", version: "1.0.0", permissions: ["audit-log:read"], defaultMode: "canvas", installKey: "builtin_audit-log", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "reporting", name: "Reporting", description: "Operational KPI dashboards, governed report previews, and BI contract handoff.", icon: "LayoutDashboard", iconColor: "#818cf8", version: "1.0.0", permissions: ["reporting:read", "reporting:write"], defaultMode: "canvas", installKey: "builtin_reporting", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "admin-console", name: "Admin Console", description: "Govern access, registries, counters, system properties, and app-owned admin panels.", icon: "Shield", iconColor: "#f97316", version: "1.0.0", permissions: ["rbac:read", "rbac:write", "number-sequences:read", "number-sequences:write", "system-properties:read", "system-properties:write"], defaultMode: "canvas", installKey: "builtin_admin-console", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "ci-class-manager", name: "CI Class Manager", description: "Define CI classes, attributes, and data quality rules.", icon: "Layers", iconColor: "#14b8a6", version: "1.0.0", permissions: ["admin:cmdb"], defaultMode: "window", installKey: "builtin_ci-class-manager", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "tables", name: "Tables", description: "Browse and maintain platform tables through RBAC-aware CRUD APIs.", icon: "TableProperties", iconColor: "#a3e635", version: "1.0.0", permissions: ["tables:read", "tables:write"], defaultMode: "canvas", installKey: "builtin_tables", source: "built-in", publisher: "Specora", installedAt: 0 },
+  { id: "data-foundations", name: "Data Foundations", description: "Govern CSDMv5 foundation data quality, ownership, and readiness.", icon: "Building2", iconColor: "#10b981", version: "1.0.0", permissions: ["data-foundations:read", "data-foundations:write", "tables:read"], defaultMode: "canvas", installKey: "builtin_data-foundations", source: "built-in", publisher: "Specora", installedAt: 0 },
 ];
 
 export function permissionToResourceAction(permission: string): { resource: string; action: string } | null {
@@ -292,6 +301,7 @@ async function getApprovedMarketplaceApps(fastify: FastifyInstance): Promise<Ser
     description?: string;
     url?: string;
     icon?: string | null;
+    icon_color?: string | null;
     version?: string | null;
     permissions?: unknown;
     react_version?: string | null;
@@ -304,7 +314,7 @@ async function getApprovedMarketplaceApps(fastify: FastifyInstance): Promise<Ser
     bundled_with_platform?: boolean | null;
   };
   const result = await fastify.pg.query(
-    `SELECT id, name, description, url, icon, version, permissions, react_version, author, created_at,
+    `SELECT id, name, description, url, icon, icon_color, version, permissions, react_version, author, created_at,
             package_id, package_name, premium, entitlement_mode, bundled_with_platform
      FROM marketplace_apps WHERE status = 'approved' ORDER BY name`
   );
@@ -313,6 +323,7 @@ async function getApprovedMarketplaceApps(fastify: FastifyInstance): Promise<Ser
     name: row.name,
     description: row.description,
     icon: row.icon || "Compass",
+    iconColor: row.icon_color || undefined,
     version: row.version || "1.0.0",
     permissions: Array.isArray(row.permissions) ? row.permissions.map(String) : JSON.parse(String(row.permissions || "[]")),
     defaultMode: "window" as const,

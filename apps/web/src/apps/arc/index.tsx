@@ -7,22 +7,23 @@ import { getAvailableRegistry, getRegistry, installApp, reinstallOptionalApp, un
 import type { RegistryEntry } from "@/sdk/types";
 import { Download, Trash2, CheckCircle, XCircle, Clock, Compass, Shield } from "lucide-react";
 import { APP_ICONS } from "@/lib/icons";
+import { appIconTileStyle } from "@/shell/appIconStyles";
 
 const MARKETPLACE_APPS_QUERY = `
   query MarketplaceApps($status: String) {
     marketplaceApps(status: $status) {
-      id name description url icon version permissions reactVersion author authorUrl status createdAt
+      id name description url icon iconColor version permissions reactVersion author authorUrl status createdAt
     }
   }
 `;
 
-const SUBMIT_APP_MUTATION = `mutation SubmitMarketplaceApp($id: ID!, $name: String!, $description: String, $url: String!, $author: String!) { submitMarketplaceApp(id: $id, name: $name, description: $description, url: $url, author: $author) { id name status } }`;
+const SUBMIT_APP_MUTATION = `mutation SubmitMarketplaceApp($id: ID!, $name: String!, $description: String, $url: String!, $iconColor: String, $author: String!) { submitMarketplaceApp(id: $id, name: $name, description: $description, url: $url, iconColor: $iconColor, author: $author) { id name status } }`;
 const APPROVE_APP_MUTATION = `mutation ApproveMarketplaceApp($id: ID!) { approveMarketplaceApp(id: $id) { id name status } }`;
 const REJECT_APP_MUTATION = `mutation RejectMarketplaceApp($id: ID!) { rejectMarketplaceApp(id: $id) { id name status } }`;
 const ME_QUERY = `query { me { id name email role } }`;
 
 interface MarketplaceApp {
-  id: string; name: string; description: string | null; url: string; icon: string;
+  id: string; name: string; description: string | null; url: string; icon: string; iconColor?: string | null;
   version: string; permissions: string[]; reactVersion: string; author: string;
   authorUrl: string | null; status: string; createdAt: string;
 }
@@ -67,7 +68,7 @@ export default function ArcApp() {
   const handleInstall = async (app: MarketplaceApp) => {
     try {
       await installApp({ id: app.id, name: app.name, icon: app.icon, version: app.version,
-        permissions: app.permissions, defaultMode: "canvas", url: app.url, reactVersion: app.reactVersion });
+        iconColor: app.iconColor || undefined, permissions: app.permissions, defaultMode: "canvas", url: app.url, reactVersion: app.reactVersion });
       dispatch({ type: "NOTIFY", notification: { id: crypto.randomUUID(), message: app.name + " installed", type: "success" } });
       fetchRegistry();
     } catch {
@@ -178,7 +179,7 @@ export default function ArcApp() {
                 return (
                   <div key={entry.id} data-testid={`arc-discover-card-${entry.id}`} className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
                     <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+                      <div className="w-10 h-10 flex items-center justify-center rounded-lg border" style={appIconTileStyle(entry)}>
                         <Icon className="w-5 h-5" />
                       </div>
                       <div className="flex-1 min-w-0">
@@ -216,7 +217,7 @@ export default function ArcApp() {
               return (
                 <div key={app.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
                   <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+                    <div className="w-10 h-10 flex items-center justify-center rounded-lg border" style={appIconTileStyle(app)}>
                       <Icon className="w-5 h-5" />
                     </div>
                     <div className="flex-1 min-w-0">
@@ -259,7 +260,7 @@ export default function ArcApp() {
                     const Icon = iconFor(app.icon);
                     return (
                       <div key={app.id} data-testid={`arc-installed-package-${app.id}`} className="flex items-center gap-4 px-4 py-3 rounded-xl bg-gray-900 border border-gray-800">
-                        <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+                        <div className="w-10 h-10 flex items-center justify-center rounded-lg border" style={appIconTileStyle(app)}>
                           <Icon className="w-5 h-5" />
                         </div>
                         <div className="flex-1 min-w-0">
@@ -291,7 +292,7 @@ export default function ArcApp() {
                     const Icon = iconFor(app.icon);
                     return (
                       <div key={app.id} className="flex items-center gap-4 px-4 py-3 rounded-xl bg-gray-900 border border-gray-800">
-                        <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-amber-500/10 text-amber-300">
+                        <div className="w-10 h-10 flex items-center justify-center rounded-lg border" style={appIconTileStyle(app)}>
                           <Icon className="w-5 h-5" />
                         </div>
                         <div className="flex-1 min-w-0">
@@ -324,7 +325,7 @@ export default function ArcApp() {
                     const Icon = iconFor(app.icon);
                     return (
                       <div key={app.id} className="flex items-center gap-4 px-4 py-3 rounded-xl bg-gray-900 border border-gray-800">
-                        <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+                        <div className="w-10 h-10 flex items-center justify-center rounded-lg border" style={appIconTileStyle(app)}>
                           <Icon className="w-5 h-5" />
                         </div>
                         <div className="flex-1 min-w-0">
@@ -357,7 +358,7 @@ export default function ArcApp() {
                 const Icon = iconFor(app.icon);
                 return (
                   <div key={app.id} className="flex items-center gap-4 px-4 py-3 rounded-xl bg-gray-900 border border-gray-800">
-                    <div className="w-10 h-10 flex items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+                    <div className="w-10 h-10 flex items-center justify-center rounded-lg border" style={appIconTileStyle(app)}>
                       <Icon className="w-5 h-5" />
                     </div>
                     <div className="flex-1 min-w-0">
@@ -405,7 +406,7 @@ function GovernanceNote({ title, detail, tone }: { title: string; detail: string
 }
 
 function SubmitForm({ onSubmit }: { onSubmit: () => void }) {
-  const [form, setForm] = useState({ id: "", name: "", description: "", url: "", author: "" });
+  const [form, setForm] = useState({ id: "", name: "", description: "", url: "", iconColor: "", author: "" });
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -414,7 +415,7 @@ function SubmitForm({ onSubmit }: { onSubmit: () => void }) {
     try {
       await graphqlClient.request(SUBMIT_APP_MUTATION, {
         id: form.id, name: form.name, description: form.description || null,
-        url: form.url, author: form.author
+        url: form.url, iconColor: form.iconColor || null, author: form.author
       });
       onSubmit();
     } catch {
@@ -445,6 +446,11 @@ function SubmitForm({ onSubmit }: { onSubmit: () => void }) {
         <label className="block text-xs text-gray-500 mb-1">Bundle URL</label>
         <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })}
           className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" placeholder="https://..." required />
+      </div>
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">Icon Color</label>
+        <input value={form.iconColor} onChange={(e) => setForm({ ...form, iconColor: e.target.value })}
+          className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" placeholder="#38bdf8" pattern="^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" />
       </div>
       <div>
         <label className="block text-xs text-gray-500 mb-1">Author</label>

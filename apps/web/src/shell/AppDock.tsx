@@ -6,6 +6,7 @@ import type { RegistryEntry } from "@/sdk/types";
 import { APP_ICONS, LogOut, X, MessageSquare, PinOff, Pin } from "@/lib/icons";
 import { removeToken } from "@/lib/auth";
 import { graphqlClient } from "@/lib/api";
+import { appIconColor, appIconTileStyle } from "./appIconStyles";
 
 const ME_QUERY = `query { me { id name email } }`;
 
@@ -321,12 +322,13 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
                         ? "bg-white/15 text-white"
                         : "text-gray-400 hover:text-white hover:bg-white/10"
                     } ${isDragging ? "opacity-40 scale-95" : ""}`}
+                    style={appIconTileStyle(entry, { active, elevated: active })}
                     title={entry.name}
                   >
                     <Icon className={`w-5 h-5 transition-transform duration-200 ${active ? "scale-110" : "group-hover:scale-110"}`} />
                     {/* Active indicator dot */}
                     {active && (
-                      <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-400 rounded-full shadow-[0_0_6px_rgba(99,102,241,0.6)]" />
+                      <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full" style={{ backgroundColor: appIconColor(entry) }} />
                     )}
                     {/* Open but dormant indicator */}
                     {!active && open && (
@@ -359,12 +361,13 @@ export function AppDock({ registry }: { registry: RegistryEntry[] }) {
                           ? "bg-white/15 text-white"
                           : "text-gray-400 hover:text-white hover:bg-white/10"
                       }`}
+                      style={appIconTileStyle(entry, { active, elevated: active })}
                       title={entry.name}
                     >
                       <Icon className={`w-5 h-5 transition-transform duration-200 ${active ? "scale-110" : "group-hover:scale-110"}`} />
                       {/* Active indicator dot */}
                       {active && (
-                        <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-400 rounded-full shadow-[0_0_6px_rgba(99,102,241,0.6)]" />
+                        <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full" style={{ backgroundColor: appIconColor(entry) }} />
                       )}
                       {/* Dormant indicator */}
                       {!active && (

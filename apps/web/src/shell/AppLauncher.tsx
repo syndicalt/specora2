@@ -7,6 +7,7 @@ import { Search, X } from "lucide-react";
 import { APP_ICONS } from "@/lib/icons";
 import { getUserRole } from "@/lib/auth";
 import { filterRegistryByRole } from "./AppAccess";
+import { appIconTileStyle } from "./appIconStyles";
 
 export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
   const { state, dispatch } = useShell();
@@ -123,7 +124,10 @@ export function AppLauncher({ registry }: { registry: RegistryEntry[] }) {
                     onClick={() => handleOpen(entry)}
                     className="group flex min-h-32 flex-col items-center gap-2 rounded-xl border border-transparent bg-gray-800/50 p-4 transition-colors hover:border-gray-600 hover:bg-gray-800"
                   >
-                    <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400 transition-colors group-hover:bg-indigo-500/20">
+                    <div
+                      className="flex h-12 w-12 items-center justify-center rounded-lg border transition-transform group-hover:scale-105"
+                      style={appIconTileStyle(entry, { elevated: true })}
+                    >
                       <Icon className="w-6 h-6" />
                     </div>
                     <div className="min-w-0 text-center">

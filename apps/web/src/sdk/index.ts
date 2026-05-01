@@ -934,7 +934,7 @@ Only call this tool once all required information is gathered.`,
     if (!e) return false;
     // Compare key fields that affect runtime behavior
     const fieldsToCompare: (keyof RegistryEntry)[] = [
-      "name", "description", "icon", "version", "permissions",
+      "name", "description", "icon", "iconColor", "version", "permissions",
       "defaultMode", "adminPanels", "chatTools", "chatCapabilities", "events",
       "packageId", "packageName", "premium", "entitlementMode", "bundledWithPlatform",
     ];

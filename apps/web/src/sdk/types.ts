@@ -46,6 +46,7 @@ export interface AppManifest {
   id: string;
   name: string;
   icon: string;
+  iconColor?: string;
   version: string;
   description?: string;
   permissions: string[];
